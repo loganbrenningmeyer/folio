@@ -649,6 +649,14 @@ function createEditorExtensions(theme: Theme) {
           padding: "0",
           cursor: "text",
         },
+        ".cm-selectionLayer": {
+          zIndex: "3",
+          pointerEvents: "none",
+        },
+        ".cm-cursorLayer": {
+          zIndex: "4",
+          pointerEvents: "none",
+        },
         ".cm-cursor, .cm-dropCursor": {
           borderLeftColor: "var(--accent)",
           borderLeftWidth: "1.5px",
@@ -670,7 +678,7 @@ function createEditorExtensions(theme: Theme) {
         },
         ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
           backgroundColor:
-            "color-mix(in srgb, var(--accent) 28%, transparent) !important",
+            "color-mix(in srgb, var(--accent) 42%, transparent) !important",
         },
         ".cm-folio-code-line": {
           backgroundColor: "var(--syntax-code-bg)",

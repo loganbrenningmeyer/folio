@@ -81,6 +81,7 @@ test("ships the requested reading, editing, and organization capabilities", asyn
   assert.match(css, /\.folio-code-editor/);
   assert.match(page, /theme="none"/);
   assert.match(css, /cursor:\s*text !important/);
+  assert.match(css, /\.cm-selectionLayer\s*\{[^}]*z-index:\s*3/);
   assert.match(css, /\.font-popover/);
   assert.doesNotMatch(css, /user-select:\s*text !important/);
   assert.match(css, /--syntax-math:\s*#266fa9/);
