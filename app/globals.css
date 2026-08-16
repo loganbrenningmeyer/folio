@@ -3107,3 +3107,55 @@ kbd {
 @keyframes folio-spin {
   to { transform: rotate(360deg); }
 }
+
+/* Collapsible code fences in Write view */
+
+.folio-code-editor .cm-fence-fold-gutter {
+  padding-right: 2px;
+  border: 0;
+  background: transparent;
+}
+
+/* The gutter itself must stay a block container — its children are the
+   per-line elements, and making it a flex row collapses them. */
+.folio-code-editor .cm-fence-fold-gutter .cm-gutterElement {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.folio-code-editor .cm-fence-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 20px;
+  color: var(--faint);
+  cursor: pointer;
+  transition: color .12s ease, transform .12s ease;
+}
+
+.folio-code-editor .cm-fence-fold svg { width: 11px; height: 11px; }
+.folio-code-editor .cm-fence-fold:hover { color: var(--accent); }
+.folio-code-editor .cm-fence-fold.folded { transform: rotate(-90deg); color: var(--accent); }
+
+/* Stands in for the hidden body, on the fence's own line. */
+.folio-code-editor .cm-fence-placeholder {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--paper-deep);
+  color: var(--muted);
+  cursor: pointer;
+  font: 10px var(--font-ui);
+  vertical-align: baseline;
+}
+
+.folio-code-editor .cm-fence-placeholder:hover,
+.folio-code-editor .cm-fence-placeholder:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  outline: none;
+}

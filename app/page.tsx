@@ -49,6 +49,12 @@ import {
   shortcutMatches,
   toCodeMirrorSnippet,
 } from "@/app/editor-utils.js";
+import {
+  editorFolding,
+  rememberedFolds,
+  rememberFolds,
+  restoreFolds,
+} from "@/app/editor-folding";
 import { editorImages } from "@/app/editor-images";
 import {
   imageAltFromName,
@@ -2045,6 +2051,7 @@ export default function Home() {
     });
     splitScrollMapRef.current = undefined;
     splitScrollRefreshRef.current?.("editor");
+    restoreFolds(editor, rememberedFolds(activeIdRef.current));
   }, []);
   const handlePreviewScroll = useCallback(() => {
     splitScrollEventRef.current?.("preview");
@@ -2061,6 +2068,7 @@ export default function Home() {
     () => [
       ...createEditorExtensions(theme),
       createSnippetExtension(textSnippets, appShortcuts),
+      editorFolding(rememberFolds(activeId)),
       ...createEditorImageExtensions({
         notePath: imageNotePath,
         nativeStore: imageNativeStore,
@@ -2068,6 +2076,7 @@ export default function Home() {
       }),
     ],
     [
+      activeId,
       appShortcuts,
       imageNativeStore,
       imageNotePath,
