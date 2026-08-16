@@ -33,6 +33,9 @@ test("server-renders the Folio reader", async () => {
   assert.match(html, /Welcome to Folio/);
   assert.match(html, /Open folder/);
   assert.match(html, /Find a page/);
+  assert.match(html, /class="katex"/);
+  assert.match(html, /<math/);
+  assert.doesNotMatch(html, /\$E = mc\^2\$/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
 
@@ -47,6 +50,9 @@ test("ships the requested reading and editing capabilities", async () => {
   assert.match(page, /createWritable/);
   assert.match(page, /ReactMarkdown/);
   assert.match(page, /rehypeHighlight/);
+  assert.match(page, /remarkMath/);
+  assert.match(page, /rehypeKatex/);
+  assert.match(page, /normalizeMathDelimiters/);
   assert.match(page, /remarkGfm/);
   assert.match(page, /withWikiLinks/);
   assert.match(page, /"preview" \| "editor" \| "split"/);
@@ -54,6 +60,8 @@ test("ships the requested reading and editing capabilities", async () => {
   assert.match(layout, /\/og\.png/);
   assert.match(packageJson, /"name": "folio-markdown-reader"/);
   assert.match(packageJson, /"rehype-highlight": "\^7\.0\.2"/);
+  assert.match(packageJson, /"remark-math": "\^6\.0\.0"/);
+  assert.match(packageJson, /"rehype-katex": "\^7\.0\.1"/);
 
   await access(new URL("../public/og.png", import.meta.url));
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));

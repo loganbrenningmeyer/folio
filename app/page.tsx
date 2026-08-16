@@ -12,8 +12,10 @@ import React, {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
-import rehypeSanitize from "rehype-sanitize";
+import rehypeKatex from "rehype-katex";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import {
   ArrowLeft,
   ArrowRight,
@@ -49,6 +51,12 @@ type FileHandleLike = {
   name: string;
   getFile: () => Promise<File>;
   createWritable?: () => Promise<WritableLike>;
+  queryPermission?: (options: {
+    mode: "read" | "readwrite";
+  }) => Promise<PermissionState>;
+  requestPermission?: (options: {
+    mode: "read" | "readwrite";
+  }) => Promise<PermissionState>;
 };
 
 type DirectoryHandleLike = {
@@ -61,6 +69,7 @@ declare global {
   interface Window {
     showDirectoryPicker?: (options?: {
       mode?: "read" | "readwrite";
+      id?: string;
     }) => Promise<DirectoryHandleLike>;
   }
 }
@@ -75,6 +84,17 @@ type Note = {
 
 type ViewMode = "preview" | "editor" | "split";
 type Theme = "light" | "dark";
+
+const markdownSanitizeSchema = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    code: [
+      ...(defaultSchema.attributes?.code ?? []),
+      ["className", /^language-./, "math-inline", "math-display"],
+    ],
+  },
+};
 
 const SAMPLE_NOTES: Note[] = [
   {
@@ -105,6 +125,14 @@ Link to a page with standard Markdown, like [The shape of good notes](../02 Rese
 
 An idea connected to [[Another page]].
 \`\`\`
+
+## Mathematical notes
+
+Inline notation such as $E = mc^2$ stays within the sentence, while display notation gets room to breathe:
+
+$$
+\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}
+$$
 
 Continue to [[Reading your library]] when you are ready.`,
   },
@@ -290,6 +318,20 @@ function withWikiLinks(content: string) {
   });
 }
 
+function normalizeMathDelimiters(content: string) {
+  return content
+    .split(/(\x60{3}[\s\S]*?\x60{3}|~~~[\s\S]*?~~~)/g)
+    .map((part, index) => {
+      if (index % 2 === 1) return part;
+      return part
+        .replace(/\\\[([\s\S]*?)\\\]/g, (_, expression) => {
+          return "$$\n" + expression.trim() + "\n$$";
+        })
+        .replace(/\\\((.*?)\\\)/g, (_, expression) => "$" + expression + "$");
+    })
+    .join("");
+}
+
 function headingsFrom(content: string) {
   return content
     .split("\n")
@@ -437,20 +479,37 @@ export default function Home() {
     setSaved(false);
   };
 
+  const downloadNote = useCallback((note: Note) => {
+    const blob = new Blob([note.content], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${note.title}.md`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
   const saveActive = useCallback(async () => {
     if (!active) return;
     if (active.handle?.createWritable) {
-      const writable = await active.handle.createWritable();
-      await writable.write(active.content);
-      await writable.close();
+      const permissionOptions = { mode: "readwrite" as const };
+      const existingPermission = active.handle.queryPermission
+        ? await active.handle.queryPermission(permissionOptions)
+        : "prompt";
+      const permission =
+        existingPermission === "granted" || !active.handle.requestPermission
+          ? existingPermission
+          : await active.handle.requestPermission(permissionOptions);
+
+      if (permission === "granted" || !active.handle.requestPermission) {
+        const writable = await active.handle.createWritable();
+        await writable.write(active.content);
+        await writable.close();
+      } else {
+        downloadNote(active);
+      }
     } else {
-      const blob = new Blob([active.content], { type: "text/markdown;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${active.title}.md`;
-      link.click();
-      URL.revokeObjectURL(url);
+      downloadNote(active);
     }
     setDirty((current) => {
       const next = new Set(current);
@@ -459,7 +518,7 @@ export default function Home() {
     });
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1800);
-  }, [active]);
+  }, [active, downloadNote]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -495,7 +554,10 @@ export default function Home() {
       return;
     }
     try {
-      const directory = await window.showDirectoryPicker({ mode: "readwrite" });
+      const directory = await window.showDirectoryPicker({
+        mode: "read",
+        id: "folio-markdown-library",
+      });
       const loaded = await readDirectory(directory);
       if (!loaded.length) {
         window.alert("This folder does not contain any Markdown files.");
@@ -573,8 +635,23 @@ export default function Home() {
 
   const markdown = (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeSanitize, rehypeHighlight]}
+      remarkPlugins={[
+        remarkGfm,
+        [remarkMath, { singleDollarTextMath: true }],
+      ]}
+      rehypePlugins={[
+        [rehypeSanitize, markdownSanitizeSchema],
+        [
+          rehypeKatex,
+          {
+            strict: false,
+            trust: false,
+            output: "htmlAndMathml",
+            errorColor: "#b6574f",
+          },
+        ],
+        rehypeHighlight,
+      ]}
       urlTransform={(url) => url}
       components={{
         h1: ({ children }) => <h1 id={slugify(nodeText(children))}>{children}</h1>,
@@ -600,7 +677,7 @@ export default function Home() {
         ),
       }}
     >
-      {withWikiLinks(active?.content ?? "")}
+      {withWikiLinks(normalizeMathDelimiters(active?.content ?? ""))}
     </ReactMarkdown>
   );
 

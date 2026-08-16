@@ -15,13 +15,16 @@
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
+    "katex": "^0.16.47",
     "lucide-react": "^0.539.0",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
+    "rehype-katex": "^7.0.1",
     "rehype-sanitize": "^6.0.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.37.1",

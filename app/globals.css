@@ -487,6 +487,32 @@ kbd {
   text-transform: uppercase;
 }
 
+.markdown-body .katex {
+  color: var(--ink);
+  font-size: 1.05em;
+}
+
+.markdown-body .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 2em 0;
+  padding: .7em .2em;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.markdown-body .katex-display > .katex {
+  min-width: max-content;
+  text-align: center;
+}
+
+.markdown-body .katex-error {
+  color: #b6574f;
+  font-family: var(--font-code);
+  font-size: .88em;
+}
+
 .markdown-body .hljs-keyword,
 .markdown-body .hljs-selector-tag,
 .markdown-body .hljs-literal,
