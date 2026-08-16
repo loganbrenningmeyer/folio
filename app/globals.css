@@ -2097,6 +2097,63 @@ kbd {
   color: var(--accent-ink);
 }
 
+.editor-table-menu { position: relative; display: flex; }
+
+/* Size picker, anchored under the Table button. */
+.table-popover {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  right: 0;
+  padding: 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--paper);
+  box-shadow: 0 10px 26px rgb(0 0 0 / 14%);
+}
+
+.table-grid { display: grid; gap: 3px; }
+.table-grid-row { display: flex; gap: 3px; }
+
+.table-grid-cell {
+  width: 19px;
+  height: 15px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--paper-deep);
+  cursor: pointer;
+  transition: background 90ms ease, border-color 90ms ease;
+}
+
+/* The top row is the table's header, so it reads differently. */
+.table-grid-cell.heading { border-color: var(--line-strong); background: var(--panel); }
+
+.table-grid-cell.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 26%, var(--paper));
+}
+
+.table-grid-cell.heading.active {
+  background: color-mix(in srgb, var(--accent) 52%, var(--paper));
+}
+
+.table-grid-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.table-readout {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 8px 0 0;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
+
+.table-readout strong { color: var(--ink); font: 650 11px var(--font-ui); }
+.table-readout span { color: var(--muted); font-size: 9px; white-space: nowrap; }
+
+
 .editor-workspace {
   min-height: 0;
   flex: 1;

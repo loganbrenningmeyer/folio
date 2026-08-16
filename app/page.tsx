@@ -107,6 +107,7 @@ import {
   Save,
   Search,
   Sun,
+  Table2,
   Trash2,
   X,
 } from "lucide-react";
@@ -1628,6 +1629,70 @@ function insertImageMarkdown(
   view.focus();
 }
 
+const TABLE_MAX_COLUMNS = 8;
+const TABLE_MAX_ROWS = 8;
+const TABLE_FIRST_HEADING = "Column 1";
+
+/** `rows` counts the header, matching what the size picker shows. */
+function tableMarkdown(columns: number, rows: number) {
+  const headings = Array.from(
+    { length: columns },
+    (_, index) => `Column ${index + 1}`,
+  );
+  const blanks = Array.from({ length: columns }, () => "");
+  const line = (cells: string[]) => `| ${cells.join(" | ")} |`;
+  return [
+    line(headings),
+    line(Array.from({ length: columns }, () => "---")),
+    ...Array.from({ length: Math.max(0, rows - 1) }, () => line(blanks)),
+  ].join("\n");
+}
+
+/**
+ * Inserts a table as its own block. GFM only recognises a table when it starts
+ * a block, so a blank line is added on either side when the neighbouring lines
+ * have content. The first heading is selected, ready to be typed over.
+ */
+function insertTableMarkdown(
+  view: EditorView,
+  columns: number,
+  rows: number,
+) {
+  const { doc } = view.state;
+  const line = doc.lineAt(
+    Math.min(view.state.selection.main.head, doc.length),
+  );
+  const table = tableMarkdown(columns, rows);
+  const blank = !line.text.trim();
+  const from = blank ? line.from : line.to;
+  const to = line.to;
+
+  // Whatever ends up directly above the table decides how much separation it
+  // needs. Landing on a blank line still requires a leading newline when the
+  // line above it has content, or the table would be swallowed by that
+  // paragraph instead of starting a block of its own.
+  const above = blank
+    ? line.number > 1
+      ? doc.line(line.number - 1)
+      : undefined
+    : line;
+  const leading = above?.text.trim() ? (blank ? "\n" : "\n\n") : "";
+  const below = line.number < doc.lines ? doc.line(line.number + 1) : undefined;
+  const trailing = below?.text.trim() ? "\n" : "";
+  const insert = `${leading}${table}${trailing}`;
+
+  const headingAt = from + insert.indexOf(TABLE_FIRST_HEADING);
+  view.dispatch({
+    changes: { from, to, insert },
+    selection: {
+      anchor: headingAt,
+      head: headingAt + TABLE_FIRST_HEADING.length,
+    },
+    scrollIntoView: true,
+  });
+  view.focus();
+}
+
 // Stores each file for the note and inserts the resulting Markdown. Files a
 // save rejects are reported and skipped, never blocking the rest.
 async function saveImagesIntoView(
@@ -1721,6 +1786,10 @@ export default function Home() {
   const activeIdRef = useRef(activeId);
   const lastSingleViewRef = useRef<Exclude<ViewMode, "split">>("preview");
   const imageFileInput = useRef<HTMLInputElement>(null);
+  const tableMenu = useRef<HTMLDivElement>(null);
+  const tableGrid = useRef<HTMLDivElement>(null);
+  const [tableMenuOpen, setTableMenuOpen] = useState(false);
+  const [tableSize, setTableSize] = useState({ columns: 3, rows: 3 });
 
   const activeIndex = Math.max(
     0,
@@ -2247,6 +2316,56 @@ export default function Home() {
       imageFileInput.current?.click();
     }
   }, [active.id, active.path, desktopMode, nativeLibraryOpen, showNotice]);
+
+  // The size picker closes on Escape or a click elsewhere, like a menu.
+  useEffect(() => {
+    if (!tableMenuOpen) return undefined;
+    const onPointerDown = (event: globalThis.MouseEvent) => {
+      if (!tableMenu.current?.contains(event.target as Node)) {
+        setTableMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setTableMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [tableMenuOpen]);
+
+  const insertTable = (columns: number, rows: number) => {
+    setTableMenuOpen(false);
+    const editor = editorViewRef.current;
+    if (editor) insertTableMarkdown(editor, columns, rows);
+  };
+
+  // Arrow keys move through the grid; the focused cell is the chosen size.
+  const handleTableGridKey = (event: React.KeyboardEvent<HTMLElement>) => {
+    const deltas: Record<string, [number, number]> = {
+      ArrowLeft: [-1, 0],
+      ArrowRight: [1, 0],
+      ArrowUp: [0, -1],
+      ArrowDown: [0, 1],
+    };
+    const delta = deltas[event.key];
+    if (!delta) return;
+    event.preventDefault();
+    const columns = Math.min(
+      TABLE_MAX_COLUMNS,
+      Math.max(1, tableSize.columns + delta[0]),
+    );
+    const rows = Math.min(TABLE_MAX_ROWS, Math.max(1, tableSize.rows + delta[1]));
+    setTableSize({ columns, rows });
+    tableGrid.current
+      ?.querySelector<HTMLButtonElement>(`[data-cell="${columns}x${rows}"]`)
+      ?.focus();
+  };
 
   const handleImageFilePick = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -4032,6 +4151,79 @@ export default function Home() {
                       hidden
                       onChange={handleImageFilePick}
                     />
+                    <div className="editor-table-menu" ref={tableMenu}>
+                      <button
+                        type="button"
+                        className="editor-image-button"
+                        onClick={() => setTableMenuOpen((open) => !open)}
+                        title="Insert a table"
+                        aria-label="Insert a table"
+                        aria-expanded={tableMenuOpen}
+                        aria-haspopup="dialog"
+                      >
+                        <Table2 size={13} aria-hidden="true" />
+                        <span>Table</span>
+                      </button>
+                      {tableMenuOpen && (
+                        <div className="table-popover" role="dialog" aria-label="Table size">
+                          <div
+                            className="table-grid"
+                            ref={tableGrid}
+                            role="group"
+                            aria-label="Table size"
+                          >
+                            {Array.from({ length: TABLE_MAX_ROWS }, (_, row) => (
+                              <div className="table-grid-row" key={row}>
+                                {Array.from(
+                                  { length: TABLE_MAX_COLUMNS },
+                                  (_, column) => {
+                                    const columns = column + 1;
+                                    const rows = row + 1;
+                                    const active =
+                                      columns <= tableSize.columns &&
+                                      rows <= tableSize.rows;
+                                    return (
+                                      <button
+                                        type="button"
+                                        key={column}
+                                        data-cell={`${columns}x${rows}`}
+                                        className={`table-grid-cell${active ? " active" : ""}${
+                                          rows === 1 ? " heading" : ""
+                                        }`}
+                                        tabIndex={
+                                          columns === tableSize.columns &&
+                                          rows === tableSize.rows
+                                            ? 0
+                                            : -1
+                                        }
+                                        aria-label={`${columns} columns by ${rows} rows`}
+                                        onKeyDown={handleTableGridKey}
+                                        onMouseEnter={() =>
+                                          setTableSize({ columns, rows })
+                                        }
+                                        onFocus={() => setTableSize({ columns, rows })}
+                                        onClick={() => insertTable(columns, rows)}
+                                      />
+                                    );
+                                  },
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                          <p className="table-readout" aria-live="polite">
+                            <strong>
+                              {tableSize.columns} × {tableSize.rows}
+                            </strong>
+                            <span>
+                              {tableSize.columns} column
+                              {tableSize.columns === 1 ? "" : "s"}, header +{" "}
+                              {tableSize.rows - 1} row
+                              {tableSize.rows - 1 === 1 ? "" : "s"}
+                            </span>
+                          </p>
+                        </div>
+                      )}
+                    </div>
                     <span className="editor-language">Markdown</span>
                   </span>
                 </div>
