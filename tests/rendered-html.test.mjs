@@ -65,8 +65,17 @@ test("ships the requested reading, editing, and organization capabilities", asyn
   assert.match(page, /removeEntry/);
   assert.match(page, /createEntry/);
   assert.match(page, /draggable/);
+  assert.match(page, /renderEditorSyntax/);
+  assert.match(page, /syntax-math-block/);
+  assert.match(page, /syntax-code-language/);
+  assert.match(page, /syntax-quote-text/);
+  assert.match(page, /syncEditorScroll/);
   assert.match(css, /\.markdown-body h3\s*\{[^}]*font-size:\s*20px/);
   assert.match(css, /\.markdown-body h4\s*\{[^}]*font-size:\s*17px[^}]*font-weight:\s*700/);
+  assert.match(css, /\.editor-highlight/);
+  assert.match(css, /\.syntax-math-block/);
+  assert.match(css, /\.syntax-code-keyword/);
+  assert.match(css, /\.syntax-quote-text/);
   assert.match(layout, /\/og\.png/);
   assert.match(packageJson, /"name": "folio-markdown-reader"/);
   assert.match(packageJson, /"rehype-highlight": "\^7\.0\.2"/);

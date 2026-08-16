@@ -409,6 +409,235 @@ function normalizeMathDelimiters(content: string) {
     .join("");
 }
 
+const INLINE_MARKDOWN_PATTERN =
+  /(\x60[^\x60\n]+\x60|\\\((?:\\.|[^\\\n])*?\\\)|\\\[(?:\\.|[^\\\n])*?\\\]|\$\$[^$\n]+?\$\$|\$[^$\n]+?\$|!\[[^\]\n]*\]\([^)]+\)|\[[^\]\n]+\]\([^)]+\)|\[\[[^\]\n]+\]\]|~~[^~\n]+~~|\*\*[^*\n]+\*\*|__[^_\n]+__|(?<!\*)\*[^*\n]+\*(?!\*)|(?<!_)_[^_\n]+_(?!_)|https?:\/\/[^\s<]+|<\/?[A-Za-z][^>\n]*>)/g;
+
+const CODE_TOKEN_PATTERN =
+  /(\/\/.*$|\/\*.*?\*\/|#(?!\[).*?$|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60(?:\\.|[^\x60\\])*\x60|\b(?:as|async|await|break|case|catch|class|const|continue|crate|def|default|else|enum|export|extends|false|fn|for|from|function|if|impl|import|in|interface|let|loop|match|mod|move|mut|new|null|of|pub|ref|return|self|Self|Some|static|struct|super|switch|throw|trait|true|try|type|use|var|where|while|yield|None|Ok|Err)\b|\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b|\b[A-Z][A-Za-z0-9_]*\b|\b[a-zA-Z_][A-Za-z0-9_]*(?=\s*\())/g;
+
+function inlineTokenClass(token: string) {
+  if (
+    token.startsWith("$") ||
+    token.startsWith("\\(") ||
+    token.startsWith("\\[")
+  ) {
+    return "syntax-math";
+  }
+  if (token.startsWith("\x60")) return "syntax-inline-code";
+  if (
+    token.startsWith("[") ||
+    token.startsWith("![") ||
+    token.startsWith("http")
+  ) {
+    return "syntax-link";
+  }
+  if (token.startsWith("<")) return "syntax-html";
+  return "syntax-emphasis";
+}
+
+function renderPatternTokens(
+  value: string,
+  pattern: RegExp,
+  classForToken: (token: string) => string,
+  keyPrefix: string,
+) {
+  const output: ReactNode[] = [];
+  let cursor = 0;
+  pattern.lastIndex = 0;
+  for (const match of value.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > cursor) output.push(value.slice(cursor, index));
+    output.push(
+      <span className={classForToken(match[0])} key={keyPrefix + "-" + index}>
+        {match[0]}
+      </span>,
+    );
+    cursor = index + match[0].length;
+  }
+  if (cursor < value.length) output.push(value.slice(cursor));
+  return output;
+}
+
+function renderInlineMarkdown(value: string, keyPrefix: string) {
+  return renderPatternTokens(
+    value,
+    INLINE_MARKDOWN_PATTERN,
+    inlineTokenClass,
+    keyPrefix,
+  );
+}
+
+function codeTokenClass(token: string) {
+  if (/^(?:\/\/|\/\*|#)/.test(token)) return "syntax-code-comment";
+  if (/^["'\x60]/.test(token)) return "syntax-code-string";
+  if (/^\d/.test(token)) return "syntax-code-number";
+  if (/^(?:as|async|await|break|case|catch|class|const|continue|crate|def|default|else|enum|export|extends|false|fn|for|from|function|if|impl|import|in|interface|let|loop|match|mod|move|mut|new|null|of|pub|ref|return|self|Self|Some|static|struct|super|switch|throw|trait|true|try|type|use|var|where|while|yield|None|Ok|Err)$/.test(token)) {
+    return "syntax-code-keyword";
+  }
+  if (/^[A-Z]/.test(token)) return "syntax-code-type";
+  return "syntax-code-function";
+}
+
+function renderCodeLine(value: string, keyPrefix: string) {
+  return renderPatternTokens(value, CODE_TOKEN_PATTERN, codeTokenClass, keyPrefix);
+}
+
+function renderEditorSyntax(source: string) {
+  let fenceCharacter: string | undefined;
+  let inFrontmatter = false;
+  let mathCloser: "$$" | "\\]" | undefined;
+
+  return source.split("\n").map((line, index) => {
+    const trimmed = line.trim();
+    const key = "editor-line-" + index;
+
+    if (index === 0 && trimmed === "---") {
+      inFrontmatter = true;
+      return (
+        <span className="syntax-line syntax-frontmatter syntax-frontmatter-line" key={key}>
+          {line}
+        </span>
+      );
+    }
+
+    if (inFrontmatter) {
+      if (trimmed === "---" || trimmed === "...") {
+        inFrontmatter = false;
+        return (
+          <span className="syntax-line syntax-frontmatter syntax-frontmatter-line" key={key}>
+            {line}
+          </span>
+        );
+      }
+      const yaml = line.match(/^(\s*)([A-Za-z0-9_.-]+)(\s*:)(.*)$/);
+      return (
+        <span className="syntax-line syntax-frontmatter-line" key={key}>
+          {yaml ? (
+            <>
+              {yaml[1]}
+              <span className="syntax-frontmatter-key">{yaml[2]}</span>
+              <span className="syntax-punctuation">{yaml[3]}</span>
+              <span className="syntax-frontmatter-value">{yaml[4]}</span>
+            </>
+          ) : (
+            <span className="syntax-frontmatter-value">{line}</span>
+          )}
+        </span>
+      );
+    }
+
+    if (fenceCharacter) {
+      const closesFence =
+        fenceCharacter === "\x60"
+          ? /^\s*\x60{3,}\s*$/.test(line)
+          : /^\s*~{3,}\s*$/.test(line);
+      if (closesFence) {
+        fenceCharacter = undefined;
+        return (
+          <span className="syntax-line syntax-code-fence" key={key}>
+            {line}
+          </span>
+        );
+      }
+      return (
+        <span className="syntax-line syntax-code-line" key={key}>
+          {renderCodeLine(line, key)}
+        </span>
+      );
+    }
+
+    const fence = line.match(/^(\s*)((?:\x60{3,})|(?:~{3,}))(\s*)(.*)$/);
+    if (fence) {
+      fenceCharacter = fence[2][0];
+      return (
+        <span className="syntax-line syntax-code-fence" key={key}>
+          {fence[1]}
+          <span className="syntax-punctuation">{fence[2]}</span>
+          {fence[3]}
+          <span className="syntax-code-language">{fence[4]}</span>
+        </span>
+      );
+    }
+
+    if (mathCloser) {
+      const closesMath = line.includes(mathCloser);
+      if (closesMath) mathCloser = undefined;
+      return (
+        <span className="syntax-line syntax-math-block" key={key}>
+          {line}
+        </span>
+      );
+    }
+
+    if (trimmed.startsWith("$$") || trimmed.startsWith("\\[")) {
+      const opener = trimmed.startsWith("$$") ? "$$" : "\\[";
+      const closer = opener === "$$" ? "$$" : "\\]";
+      if (trimmed.slice(opener.length).includes(closer)) {
+        mathCloser = undefined;
+      } else {
+        mathCloser = closer;
+      }
+      return (
+        <span className="syntax-line syntax-math-block" key={key}>
+          {line}
+        </span>
+      );
+    }
+
+    const heading = line.match(/^(\s*)(#{1,6})(\s+)(.*)$/);
+    if (heading) {
+      return (
+        <span className="syntax-line syntax-heading" key={key}>
+          {heading[1]}
+          <span className="syntax-punctuation">{heading[2]}</span>
+          {heading[3]}
+          {renderInlineMarkdown(heading[4], key)}
+        </span>
+      );
+    }
+
+    const quote = line.match(/^(\s*)(>+)(\s?)(.*)$/);
+    if (quote) {
+      return (
+        <span className="syntax-line syntax-quote-line" key={key}>
+          {quote[1]}
+          <span className="syntax-quote-marker">{quote[2]}</span>
+          {quote[3]}
+          <span className="syntax-quote-text">
+            {renderInlineMarkdown(quote[4], key)}
+          </span>
+        </span>
+      );
+    }
+
+    const list = line.match(/^(\s*)([-+*]|\d+[.)])(\s+)(.*)$/);
+    if (list) {
+      return (
+        <span className="syntax-line" key={key}>
+          {list[1]}
+          <span className="syntax-list-marker">{list[2]}</span>
+          {list[3]}
+          {renderInlineMarkdown(list[4], key)}
+        </span>
+      );
+    }
+
+    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      return (
+        <span className="syntax-line syntax-divider" key={key}>
+          {line}
+        </span>
+      );
+    }
+
+    return (
+      <span className="syntax-line" key={key}>
+        {renderInlineMarkdown(line, key)}
+      </span>
+    );
+  });
+}
+
 function headingsFrom(content: string) {
   return content
     .split("\n")
@@ -488,12 +717,18 @@ export default function Home() {
   const [dropTarget, setDropTarget] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const folderInput = useRef<HTMLInputElement>(null);
+  const editorHighlight = useRef<HTMLPreElement>(null);
+  const editorLineNumbers = useRef<HTMLDivElement>(null);
 
   const activeIndex = Math.max(
     0,
     notes.findIndex((note) => note.id === activeId),
   );
   const active = notes[activeIndex] ?? EMPTY_NOTE;
+  const editorSyntax = useMemo(
+    () => renderEditorSyntax(active.content),
+    [active.content],
+  );
 
   const grouped = useMemo(() => {
     const groups = new Map<string, Note[]>([
@@ -582,6 +817,16 @@ export default function Home() {
     );
     setDirty((current) => new Set(current).add(active.id));
     setSaved(false);
+  };
+
+  const syncEditorScroll = (event: React.UIEvent<HTMLTextAreaElement>) => {
+    if (editorHighlight.current) {
+      editorHighlight.current.scrollTop = event.currentTarget.scrollTop;
+      editorHighlight.current.scrollLeft = event.currentTarget.scrollLeft;
+    }
+    if (editorLineNumbers.current) {
+      editorLineNumbers.current.scrollTop = event.currentTarget.scrollTop;
+    }
   };
 
   const beginCreate = (kind: CreateKind) => {
@@ -1270,17 +1515,31 @@ export default function Home() {
                   <span className="editor-language">Markdown</span>
                 </div>
                 <div className="editor-workspace">
-                  <div className="line-numbers" aria-hidden="true">
+                  <div
+                    className="line-numbers"
+                    ref={editorLineNumbers}
+                    aria-hidden="true"
+                  >
                     {active.content.split("\n").map((_, index) => (
                       <span key={index}>{index + 1}</span>
                     ))}
                   </div>
-                  <textarea
-                    value={active.content}
-                    onChange={(event) => updateContent(event.target.value)}
-                    spellCheck="true"
-                    aria-label={`Edit ${active.title}`}
-                  />
+                  <div className="editor-source">
+                    <pre
+                      className="editor-highlight"
+                      ref={editorHighlight}
+                      aria-hidden="true"
+                    >
+                      {editorSyntax}
+                    </pre>
+                    <textarea
+                      value={active.content}
+                      onChange={(event) => updateContent(event.target.value)}
+                      onScroll={syncEditorScroll}
+                      spellCheck="true"
+                      aria-label={`Edit ${active.title}`}
+                    />
+                  </div>
                 </div>
                 <div className="editor-status">
                   <span>Markdown</span>
