@@ -50,11 +50,11 @@ import {
   ListTree,
   Menu,
   Moon,
+  Palette,
   PanelRight,
   Save,
   Search,
   Sun,
-  Type,
   X,
 } from "lucide-react";
 
@@ -149,6 +149,20 @@ function isFontId(value: string | null): value is FontId {
 
 function fontStack(id: FontId) {
   return FONT_CHOICES.find((font) => font.id === id)?.stack ?? FONT_CHOICES[0].stack;
+}
+
+const COLOR_PALETTES = [
+  { id: "sage", label: "Sage", description: "Greenish gray", swatches: ["#f3f1ea", "#45664e", "#252621"] },
+  { id: "slate", label: "Slate", description: "Bluish gray", swatches: ["#edf1f4", "#476d8a", "#20262b"] },
+  { id: "graphite", label: "Graphite", description: "Neutral gray", swatches: ["#f1f1f1", "#61666b", "#222222"] },
+  { id: "sepia", label: "Sepia", description: "Warm paper", swatches: ["#f3ecdf", "#876342", "#2b251e"] },
+  { id: "plum", label: "Plum", description: "Muted violet", swatches: ["#f1edf3", "#765d82", "#29232c"] },
+] as const;
+
+type PaletteId = (typeof COLOR_PALETTES)[number]["id"];
+
+function isPaletteId(value: string | null): value is PaletteId {
+  return COLOR_PALETTES.some((palette) => palette.id === value);
 }
 
 const markdownSanitizeSchema = {
@@ -772,6 +786,7 @@ export default function Home() {
   const [libraryName, setLibraryName] = useState("The Folio Field Guide");
   const [view, setView] = useState<ViewMode>("preview");
   const [theme, setTheme] = useState<Theme>("light");
+  const [palette, setPalette] = useState<PaletteId>("sage");
   const [readerFont, setReaderFont] = useState<FontId>("iowan");
   const [editorFont, setEditorFont] = useState<FontId>("sf-mono");
   const [fontPanelOpen, setFontPanelOpen] = useState(false);
@@ -863,6 +878,16 @@ export default function Home() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("folio-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const storedPalette = localStorage.getItem("folio-color-palette");
+    if (isPaletteId(storedPalette)) setPalette(storedPalette);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.palette = palette;
+    localStorage.setItem("folio-color-palette", palette);
+  }, [palette]);
 
   useEffect(() => {
     const storedReaderFont = localStorage.getItem("folio-reader-font");
@@ -1354,11 +1379,11 @@ export default function Home() {
           <button
             className={`icon-button ${fontPanelOpen ? "active" : ""}`}
             onClick={() => setFontPanelOpen((open) => !open)}
-            aria-label="Choose reader and editor fonts"
+            aria-label="Choose colors and fonts"
             aria-expanded={fontPanelOpen}
-            title="Fonts"
+            title="Appearance"
           >
-            <Type size={17} />
+            <Palette size={17} />
           </button>
           <button
             className="icon-button"
@@ -1405,8 +1430,8 @@ export default function Home() {
           >
             <div className="font-popover-head">
               <span>
-                <small>Appearance</small>
-                <strong>Typography</strong>
+                <small>Preferences</small>
+                <strong>Colors &amp; type</strong>
               </span>
               <button
                 className="subtle-icon"
@@ -1416,6 +1441,34 @@ export default function Home() {
                 <X size={16} />
               </button>
             </div>
+
+            <fieldset className="palette-control">
+              <legend>Color scheme</legend>
+              <div className="palette-grid" role="radiogroup" aria-label="Color scheme">
+                {COLOR_PALETTES.map((colorPalette) => (
+                  <button
+                    type="button"
+                    key={colorPalette.id}
+                    className={palette === colorPalette.id ? "selected" : ""}
+                    onClick={() => setPalette(colorPalette.id)}
+                    role="radio"
+                    aria-checked={palette === colorPalette.id}
+                    title={colorPalette.description}
+                  >
+                    <span className="palette-swatches" aria-hidden="true">
+                      {colorPalette.swatches.map((color) => (
+                        <i key={color} style={{ background: color }} />
+                      ))}
+                    </span>
+                    <span>
+                      <strong>{colorPalette.label}</strong>
+                      <small>{colorPalette.description}</small>
+                    </span>
+                    {palette === colorPalette.id && <Check size={13} />}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
 
             <label className="font-control">
               <span>Reader font</span>

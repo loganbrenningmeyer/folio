@@ -73,9 +73,11 @@ test("ships the requested reading, editing, and organization capabilities", asyn
   assert.match(page, /drawSelection: true/);
   assert.match(page, /EditorView\.lineWrapping/);
   assert.match(page, /FONT_CHOICES/);
+  assert.match(page, /COLOR_PALETTES/);
   assert.match(page, /folio-reader-font/);
   assert.match(page, /folio-editor-font/);
-  assert.match(page, /Choose reader and editor fonts/);
+  assert.match(page, /folio-color-palette/);
+  assert.match(page, /Choose colors and fonts/);
   assert.doesNotMatch(page, /spellCheck="true"|syncEditorScroll|renderEditorSyntax/);
   assert.match(css, /\.markdown-body h3\s*\{[^}]*font-size:\s*20px/);
   assert.match(css, /\.markdown-body h4\s*\{[^}]*font-size:\s*17px[^}]*font-weight:\s*700/);
@@ -85,6 +87,9 @@ test("ships the requested reading, editing, and organization capabilities", asyn
   assert.match(css, /\.cm-selectionLayer\s*\{[^}]*z-index:\s*3/);
   assert.match(css, /\.cm-lineWrapping\s*\{[^}]*overflow-wrap:\s*anywhere/);
   assert.match(css, /\.font-popover/);
+  assert.match(css, /\.palette-grid/);
+  assert.match(css, /data-palette="slate"/);
+  assert.match(css, /data-palette="graphite"/);
   assert.doesNotMatch(css, /user-select:\s*text !important/);
   assert.match(css, /--syntax-math:\s*#266fa9/);
   assert.match(layout, /\/og\.png/);
