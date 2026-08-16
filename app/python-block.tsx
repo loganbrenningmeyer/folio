@@ -787,7 +787,6 @@ export function PythonCodeBlock({
             <figure className="python-block-figure" key={index}>
               {/* Figures arrive as data URIs from the local interpreter, so
                   next/image optimization has nothing to fetch or cache. */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={`data:image/png;base64,${image}`}
                 alt={`Python figure ${index + 1}`}
