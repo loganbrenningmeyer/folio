@@ -141,6 +141,19 @@ export function readAsset(
   return invokeNative("read_asset", { notePath, src });
 }
 
+/**
+ * Renames an image where it sits, returning the new file name. The Markdown
+ * pointing at it is the caller's to rewrite — pages are edited in the app, so
+ * a write from the backend could discard an unsaved edit.
+ */
+export function renameAsset(
+  notePath: RelativePath,
+  src: string,
+  name: string,
+): Promise<string> {
+  return invokeNative("rename_asset", { notePath, src, name });
+}
+
 export const nativeLibrary = Object.freeze({
   isAvailable: isNativeRuntime,
   restore: restoreLibrary,
@@ -156,6 +169,7 @@ export const nativeLibrary = Object.freeze({
   writeAsset,
   importAssets,
   readAsset,
+  renameAsset,
 });
 
 export type NativeLibraryBridge = typeof nativeLibrary;

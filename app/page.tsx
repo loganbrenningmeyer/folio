@@ -43,8 +43,13 @@ import {
   mapScrollOffset,
   imageLineText,
   markdownBlockCompletion,
+  markdownImageSrc,
+  decodeImageSrc,
+  noteImageAttachments,
   type NoteLink,
   parseImageTitle,
+  renamedImageSrc,
+  renameImageInContent,
   resolveNoteLink,
   setPythonFenceRunnable,
   shortcutFromEvent,
@@ -97,6 +102,7 @@ import {
   FolderPlus,
   FolderOpen,
   GripVertical,
+  ImageIcon,
   ImagePlus,
   Keyboard,
   Link2,
@@ -1869,6 +1875,33 @@ function insertImageMarkdown(
 /** A page or folder in the library panel, addressed by its relative path. */
 type LibraryEntry = { kind: "note" | "folder"; path: string };
 
+/**
+ * An image in the library panel. It takes both halves to name one: the src is
+ * written relative to the page that shows it, so the same file reads as
+ * `plot.png` under one page and `../figs/plot.png` under another.
+ */
+type AttachmentEntry = { noteId: string; notePath: string; src: string };
+
+function sameAttachment(
+  a: AttachmentEntry | undefined,
+  b: AttachmentEntry | undefined,
+) {
+  return Boolean(a && b && a.noteId === b.noteId && a.src === b.src);
+}
+
+/**
+ * Where an image src lands inside the library, so references written from
+ * different folders can be compared. Undefined for a src that leaves the
+ * library, which is not Folio's to rename.
+ */
+function attachmentPath(notePath: string, src: string) {
+  const resolved = resolveNoteLink(notePath, src);
+  return resolved.kind === "page" && !resolved.escapes
+    ? resolved.path
+    : undefined;
+}
+
+
 function sameEntry(a: LibraryEntry | undefined, b: LibraryEntry | undefined) {
   return Boolean(a && b && a.kind === b.kind && a.path === b.path);
 }
@@ -2001,7 +2034,10 @@ async function saveImagesIntoView(
   for (const file of files) {
     try {
       const src = await saveNoteImage(notePath, file, nativeLibraryOpen);
-      images.push({ src, alt: imageAltFromName(file.name || "") });
+      images.push({
+        src: markdownImageSrc(src),
+        alt: imageAltFromName(file.name || ""),
+      });
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error));
     }
@@ -2050,6 +2086,14 @@ export default function Home() {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     new Set(),
   );
+  // The panel only lists folders that hold Markdown, so a folder created here
+  // would vanish before anything is in it. Those stay listed for the session.
+  const [revealedFolders, setRevealedFolders] = useState<Set<string>>(
+    new Set(),
+  );
+  const [expandedAttachments, setExpandedAttachments] = useState<Set<string>>(
+    new Set(),
+  );
   const [createKind, setCreateKind] = useState<CreateKind>();
   const [newEntryName, setNewEntryName] = useState("");
   const [newEntryParent, setNewEntryParent] = useState("");
@@ -2059,6 +2103,8 @@ export default function Home() {
   // selected for rename or delete without being a page you can open.
   const [selectedEntry, setSelectedEntry] = useState<LibraryEntry>();
   const [renamingEntry, setRenamingEntry] = useState<LibraryEntry>();
+  const [renamingAttachment, setRenamingAttachment] =
+    useState<AttachmentEntry>();
   const [refreshing, setRefreshing] = useState(false);
   const deleteEntryRef = useRef<(entry: LibraryEntry) => void>(() => undefined);
   const [entryMenu, setEntryMenu] = useState<
@@ -2151,7 +2197,20 @@ export default function Home() {
     ],
   );
 
-  const grouped = useMemo(() => {
+  // Images belong to the page whose Markdown points at them, so deleting the
+  // reference drops the attachment from the panel with it.
+  const attachments = useMemo(() => {
+    const byNote = new Map<string, ReturnType<typeof noteImageAttachments>>();
+    notes.forEach((note) => {
+      const items = noteImageAttachments(note.content);
+      if (items.length) byNote.set(note.id, items);
+    });
+    return byNote;
+  }, [notes]);
+
+  // Every folder in the library, including the root, paired with the pages
+  // sitting directly inside it. Drop targets need the full list.
+  const allGroups = useMemo(() => {
     const groups = new Map<string, Note[]>([
       ["", []],
       ...folders.map((folder): [string, Note[]] => [folder, []]),
@@ -2165,6 +2224,21 @@ export default function Home() {
       a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
     );
   }, [folders, notes]);
+
+  // Folders without Markdown of their own are noise in a reading sidebar, so
+  // they are left out — the library root included, when nothing sits there.
+  const grouped = useMemo(
+    () =>
+      allGroups.filter(
+        ([group, groupNotes]) =>
+          groupNotes.length > 0 || revealedFolders.has(group),
+      ),
+    [allGroups, revealedFolders],
+  );
+
+  // While a page is being dragged every folder is listed, so an empty folder —
+  // or the root, once the last page has moved out of it — stays reachable.
+  const listedGroups = draggedNoteId ? allGroups : grouped;
 
   const activeGroupPath = useMemo(() => {
     const segments = active.path.split("/");
@@ -2251,6 +2325,11 @@ export default function Home() {
       setNativeLibraryOpen(true);
       setDirty(new Set());
       setCollapsedGroups(new Set());
+      setRevealedFolders((current) =>
+        current.size
+          ? new Set(snapshot.folders.filter((folder) => current.has(folder)))
+          : current,
+      );
     },
     [],
   );
@@ -2677,7 +2756,10 @@ export default function Home() {
         insertImageMarkdown(
           editor,
           editor.state.selection.main.head,
-          names.map((name) => ({ src: name, alt: imageAltFromName(name) })),
+          names.map((name) => ({
+            src: markdownImageSrc(name),
+            alt: imageAltFromName(name),
+          })),
         );
       } catch (error) {
         showNotice(error instanceof Error ? error.message : String(error));
@@ -3273,6 +3355,7 @@ export default function Home() {
           next.delete(folderPath);
           return next;
         });
+        setRevealedFolders((current) => new Set(current).add(folderPath));
         setCreateKind(undefined);
         showNotice(`Created ${displayGroup(folderPath)}.`);
       } catch {
@@ -3472,9 +3555,83 @@ export default function Home() {
           : entry.kind === "folder" && active.path.startsWith(`${entry.path}/`)
             ? `${destination}${active.path.slice(entry.path.length)}`
             : active.path;
+      // Carry a still-empty folder's place in the panel over to its new name.
+      if (entry.kind === "folder") {
+        setRevealedFolders((current) => {
+          const next = new Set<string>();
+          current.forEach((folder) => {
+            if (folder === entry.path) next.add(destination);
+            else if (folder.startsWith(`${entry.path}/`))
+              next.add(`${destination}${folder.slice(entry.path.length)}`);
+            else next.add(folder);
+          });
+          return next;
+        });
+      }
       applyNativeLibrary(snapshot, openPath);
       setSelectedEntry({ kind: entry.kind, path: destination });
       showNotice(`Renamed to ${name}.`);
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  // Renaming an image is two halves that have to agree: the file moves on
+  // disk, and every page pointing at it is rewritten to the new name. Pages
+  // are matched on where the src lands in the library, not on its text, so a
+  // page reaching the image through `../` is fixed up along with its neighbour.
+  const renameAttachment = async (entry: AttachmentEntry, rawName: string) => {
+    setRenamingAttachment(undefined);
+    const name = rawName.trim();
+    const current = fileNameFromPath(decodeImageSrc(entry.src));
+    if (!name || name === current) return;
+    if (name.includes("/") || name.includes("\\")) {
+      showNotice("Names cannot contain slashes.");
+      return;
+    }
+    if (!desktopMode || !nativeLibraryOpen) {
+      showNotice("Open a folder to rename an image.");
+      return;
+    }
+
+    try {
+      // Pending edits land first: the rewrite below is computed from the notes
+      // in memory and written straight to disk, so nothing may be in flight.
+      await flushAllNativeSaves();
+      const newName = await nativeLibrary.renameAsset(
+        entry.notePath,
+        entry.src,
+        name,
+      );
+      const target = attachmentPath(entry.notePath, entry.src);
+      const rewritten = notes.flatMap((note) => {
+        let content = note.content;
+        for (const image of noteImageAttachments(note.content)) {
+          if (!target || attachmentPath(note.path, image.src) !== target) {
+            continue;
+          }
+          content = renameImageInContent(
+            content,
+            image.src,
+            renamedImageSrc(image.src, newName),
+          );
+        }
+        return content === note.content ? [] : [{ note, content }];
+      });
+
+      for (const { note, content } of rewritten) {
+        await nativeLibrary.write(note.path, content);
+      }
+      setNotes((currentNotes) =>
+        currentNotes.map((note) => {
+          const update = rewritten.find((item) => item.note.id === note.id);
+          return update ? { ...note, content: update.content } : note;
+        }),
+      );
+      const pages = rewritten.length;
+      showNotice(
+        `Renamed to ${newName} on ${pages} page${pages === 1 ? "" : "s"}.`,
+      );
     } catch (error) {
       showNotice(error instanceof Error ? error.message : String(error));
     }
@@ -3496,6 +3653,10 @@ export default function Home() {
       setFolders(snapshot.folders);
       setLibraryName(snapshot.name);
       setDirty(new Set());
+      setRevealedFolders(
+        (current) =>
+          new Set(snapshot.folders.filter((folder) => current.has(folder))),
+      );
       // Collapsed folders and the open page are left as they were, unless the
       // page itself is gone from disk.
       if (!snapshot.notes.some((note) => note.id === activeIdRef.current)) {
@@ -3685,6 +3846,7 @@ export default function Home() {
       setLibraryName(directory.name);
       setDirty(new Set());
       setCollapsedGroups(new Set());
+      setRevealedFolders(new Set());
       setView("preview");
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
@@ -3838,6 +4000,7 @@ export default function Home() {
     );
     setRootDirectory(undefined);
     setActiveId(loaded[0].id);
+    setRevealedFolders(new Set());
     setLibraryName(files[0].webkitRelativePath.split("/")[0] || "My notes");
     event.target.value = "";
   };
@@ -4175,14 +4338,6 @@ export default function Home() {
             ) : (
               <PanelRightClose size={16} />
             )}
-          </button>
-          <button className="open-button" onClick={openFolder}>
-            <FolderOpen size={16} />
-            <span>
-              {desktopMode && nativeLibraryOpen
-                ? "Change folder"
-                : "Open folder"}
-            </span>
           </button>
           {!desktopMode && (
             <input
@@ -4663,7 +4818,12 @@ export default function Home() {
           </div>
 
           <nav className="section-list" aria-label="Library pages">
-            {grouped.map(([group, groupNotes], groupIndex) => {
+            {!listedGroups.length && (
+              <p className="library-empty">
+                No Markdown files here yet. Create one to start this library.
+              </p>
+            )}
+            {listedGroups.map(([group, groupNotes], groupIndex) => {
               const collapsed = collapsedGroups.has(group);
               return (
                 <section
@@ -4754,71 +4914,174 @@ export default function Home() {
                   )}
                   {!collapsed && (
                     <div className="page-list">
-                      {groupNotes.map((note, noteIndex) =>
-                        renamingEntry?.kind === "note" &&
-                        renamingEntry.path === note.path ? (
-                          <EntryRenameField
-                            key={note.id}
-                            className="page-row renaming"
-                            initial={entryEditName(renamingEntry, note.path)}
-                            onCommit={(value) =>
-                              void renameEntry(renamingEntry, value)
-                            }
-                            onCancel={() => setRenamingEntry(undefined)}
-                          />
-                        ) : (
-                          <button
-                            key={note.id}
-                            className={`page-row ${note.id === active.id ? "active" : ""} ${
-                              draggedNoteId === note.id ? "dragging" : ""
-                            } ${
-                              sameEntry(selectedEntry, {
-                                kind: "note",
-                                path: note.path,
-                              })
-                                ? "selected-entry"
-                                : ""
-                            }`}
-                            onClick={() => {
-                              setSelectedEntry({
-                                kind: "note",
-                                path: note.path,
-                              });
-                              selectNote(note.id);
-                            }}
-                            onContextMenu={(event) =>
-                              openEntryMenu(event, {
-                                kind: "note",
-                                path: note.path,
-                              })
-                            }
-                            draggable
-                            onDragStart={(event) =>
-                              startNoteDrag(event, note.id)
-                            }
-                            onDragEnd={() => {
-                              draggedNoteIdRef.current = undefined;
-                              setDraggedNoteId(undefined);
-                              setDropTarget(undefined);
-                            }}
-                            title="Open this page, or drag it into another folder"
-                          >
-                            <span className="page-spine" />
-                            <span className="page-order">
-                              {String(noteIndex + 1).padStart(2, "0")}
-                            </span>
-                            <span className="page-title">{note.title}</span>
-                            {dirty.has(note.id) && (
-                              <i aria-label="Unsaved changes" />
-                            )}
-                            <GripVertical
-                              className="drag-handle"
-                              size={13}
-                              aria-hidden="true"
+                      {groupNotes.map((note, noteIndex) => {
+                        if (
+                          renamingEntry?.kind === "note" &&
+                          renamingEntry.path === note.path
+                        ) {
+                          return (
+                            <EntryRenameField
+                              key={note.id}
+                              className="page-row renaming"
+                              initial={entryEditName(renamingEntry, note.path)}
+                              onCommit={(value) =>
+                                void renameEntry(renamingEntry, value)
+                              }
+                              onCancel={() => setRenamingEntry(undefined)}
                             />
-                          </button>
-                        ),
-                      )}
+                          );
+                        }
+                        const noteImages = attachments.get(note.id);
+                        const imagesOpen = expandedAttachments.has(note.id);
+                        return (
+                          <div className="page-entry" key={note.id}>
+                            <button
+                              className={`page-row ${note.id === active.id ? "active" : ""} ${
+                                draggedNoteId === note.id ? "dragging" : ""
+                              } ${noteImages ? "has-attachments" : ""} ${
+                                sameEntry(selectedEntry, {
+                                  kind: "note",
+                                  path: note.path,
+                                })
+                                  ? "selected-entry"
+                                  : ""
+                              }`}
+                              onClick={() => {
+                                setSelectedEntry({
+                                  kind: "note",
+                                  path: note.path,
+                                });
+                                selectNote(note.id);
+                              }}
+                              onContextMenu={(event) =>
+                                openEntryMenu(event, {
+                                  kind: "note",
+                                  path: note.path,
+                                })
+                              }
+                              draggable
+                              onDragStart={(event) =>
+                                startNoteDrag(event, note.id)
+                              }
+                              onDragEnd={() => {
+                                draggedNoteIdRef.current = undefined;
+                                setDraggedNoteId(undefined);
+                                setDropTarget(undefined);
+                              }}
+                              title="Open this page, or drag it into another folder"
+                            >
+                              <span className="page-spine" />
+                              <span className="page-order">
+                                {String(noteIndex + 1).padStart(2, "0")}
+                              </span>
+                              <span className="page-title">{note.title}</span>
+                              {dirty.has(note.id) && (
+                                <i aria-label="Unsaved changes" />
+                              )}
+                              <GripVertical
+                                className="drag-handle"
+                                size={13}
+                                aria-hidden="true"
+                              />
+                            </button>
+                            {noteImages && (
+                              <button
+                                className="attachment-toggle"
+                                onClick={() =>
+                                  setExpandedAttachments((current) => {
+                                    const next = new Set(current);
+                                    if (next.has(note.id)) next.delete(note.id);
+                                    else next.add(note.id);
+                                    return next;
+                                  })
+                                }
+                                aria-expanded={imagesOpen}
+                                aria-controls={`attachments-${note.id}`}
+                                aria-label={`${imagesOpen ? "Hide" : "Show"} the ${
+                                  noteImages.length
+                                } image${
+                                  noteImages.length === 1 ? "" : "s"
+                                } in ${note.title}`}
+                                title={`${noteImages.length} image${
+                                  noteImages.length === 1 ? "" : "s"
+                                } in this page`}
+                              >
+                                <ChevronRight
+                                  size={10}
+                                  className={imagesOpen ? "rotated" : ""}
+                                  aria-hidden="true"
+                                />
+                                <ImageIcon size={11} aria-hidden="true" />
+                                <span>{noteImages.length}</span>
+                              </button>
+                            )}
+                            {noteImages && imagesOpen && (
+                              <ul
+                                className="attachment-list"
+                                id={`attachments-${note.id}`}
+                              >
+                                {noteImages.map((image) => {
+                                  const attachment = {
+                                    noteId: note.id,
+                                    notePath: note.path,
+                                    src: image.src,
+                                  };
+                                  if (
+                                    sameAttachment(
+                                      renamingAttachment,
+                                      attachment,
+                                    )
+                                  ) {
+                                    return (
+                                      <li key={image.src}>
+                                        <EntryRenameField
+                                          className="attachment-row renaming"
+                                          initial={image.name}
+                                          onCommit={(value) =>
+                                            void renameAttachment(
+                                              attachment,
+                                              value,
+                                            )
+                                          }
+                                          onCancel={() =>
+                                            setRenamingAttachment(undefined)
+                                          }
+                                        />
+                                      </li>
+                                    );
+                                  }
+                                  return (
+                                    <li
+                                      className="attachment-row"
+                                      key={image.src}
+                                      title={image.src}
+                                      onDoubleClick={() =>
+                                        setRenamingAttachment(attachment)
+                                      }
+                                    >
+                                      <ImageIcon size={11} aria-hidden="true" />
+                                      <span>{image.name}</span>
+                                      <button
+                                        className="attachment-rename"
+                                        onClick={() =>
+                                          setRenamingAttachment(attachment)
+                                        }
+                                        aria-label={`Rename ${image.name}`}
+                                        title="Rename this image and every link to it"
+                                      >
+                                        <PenLine
+                                          size={11}
+                                          aria-hidden="true"
+                                        />
+                                      </button>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </section>
@@ -4832,7 +5095,10 @@ export default function Home() {
               <span>{notes.length} pages</span>
             </div>
             <button className="mini-open" onClick={openFolder}>
-              <FolderOpen size={15} /> Change folder
+              <FolderOpen size={15} />
+              {desktopMode && nativeLibraryOpen
+                ? "Change folder"
+                : "Open folder"}
             </button>
           </div>
         </aside>

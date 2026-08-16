@@ -594,6 +594,15 @@ fn validate_entry_name(value: &str, kind: PathKind) -> Result<String, String> {
                 format!("{trimmed}.md")
             }
         }
+        // The caller settles the extension before asking for the rename, so
+        // that the file keeps the format its bytes actually are.
+        PathKind::ImageFile => {
+            if has_image_extension(Path::new(trimmed)) {
+                trimmed.to_string()
+            } else {
+                return Err("Images keep their file extension.".to_string());
+            }
+        }
     };
 
     // Round-trip through the strict validator so a rename can never widen what
@@ -619,8 +628,9 @@ async fn write_asset(
     store_asset(&root, &note_path, &file_name, &bytes)
 }
 
-/// Opens the native image picker and copies each selection into the note's
-/// folder. Returns the stored file names; an empty list means "cancelled".
+/// Opens the native image picker and brings each selection into the note's
+/// folder. Returns the file names to reference; an empty list means
+/// "cancelled".
 #[tauri::command]
 async fn import_assets(
     app: AppHandle,
@@ -640,11 +650,18 @@ async fn import_assets(
 
     let _operation = state.lock_operation()?;
     let root = require_library_root(&state)?;
+    let directory = resolve_existing_directory(&root, &note_directory(&note_path)?)?;
     let mut names = Vec::new();
     for picked in selection {
         let path = picked
             .into_path()
             .map_err(|_| "A selected image is not available as a local file.".to_string())?;
+        // An image already sitting beside the page is referenced where it is.
+        // Copying it would leave the folder holding the same picture twice.
+        if let Some(name) = asset_already_beside_note(&directory, &path) {
+            names.push(name);
+            continue;
+        }
         let bytes =
             fs::read(&path).map_err(|error| io_error("read the selected image", &path, error))?;
         let name = path
@@ -654,6 +671,83 @@ async fn import_assets(
         names.push(store_asset(&root, &note_path, name, &bytes)?);
     }
     Ok(names)
+}
+
+/// The file name to link, when `path` is already a file in the note's own
+/// folder. `directory` is canonical, so this compares canonical parents and
+/// never mistakes a symlinked or aliased route to the folder for a copy.
+fn asset_already_beside_note(directory: &Path, path: &Path) -> Option<String> {
+    let parent = fs::canonicalize(path.parent()?).ok()?;
+    if parent != directory {
+        return None;
+    }
+    referenceable_asset_name(path)
+}
+
+/// An image file's name, when Markdown can point back at it. A name holding a
+/// separator or a control character returns None, which sends the image down
+/// the copying path instead — that rewrites the name into something safe.
+fn referenceable_asset_name(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let usable = !name.contains('\\')
+        && !name.contains('/')
+        && !name.chars().any(char::is_control)
+        && path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(is_image_extension);
+    usable.then(|| name.to_string())
+}
+
+/// Renames an image a page points at, in the folder it already lives in, and
+/// returns the new file name. Rewriting the Markdown that points at the image
+/// is the caller's half of the job: the pages that reference it are open in the
+/// app, where an unsaved edit would otherwise be lost to a write from here.
+#[tauri::command]
+async fn rename_asset(
+    note_path: String,
+    src: String,
+    name: String,
+    state: State<'_, LibraryState>,
+) -> Result<String, String> {
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    let relative = resolve_asset_src(&note_directory(&note_path)?, &src)?;
+    let extension = relative
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| is_image_extension(extension))
+        .ok_or_else(|| "Only images can be renamed from a page.".to_string())?
+        .to_string();
+    let new_name = asset_rename_name(&name, &extension)?;
+    rename_in_library(
+        &root,
+        &relative_path_to_string(&relative)?,
+        &new_name,
+        PathKind::ImageFile,
+    )?;
+    Ok(new_name)
+}
+
+/// Settles the extension of a typed image name. The format follows the bytes,
+/// not the typing: a name given without an extension keeps the file's own, and
+/// a name that would change one image format into another is refused rather
+/// than quietly producing a file that lies about its contents.
+fn asset_rename_name(value: &str, extension: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    match trimmed.rsplit_once('.') {
+        Some((stem, given)) if given.eq_ignore_ascii_case(extension) => {
+            if stem.trim().is_empty() {
+                Err("A name is required.".to_string())
+            } else {
+                Ok(trimmed.to_string())
+            }
+        }
+        Some((_, given)) if is_image_extension(given) => Err(format!(
+            "This image is a .{extension} file, so it cannot be renamed to .{given}."
+        )),
+        _ => Ok(format!("{trimmed}.{extension}")),
+    }
 }
 
 /// Reads an image a note references and returns it as base64. The source is
@@ -724,10 +818,41 @@ fn sanitize_asset_name(value: &str) -> Result<(String, String), String> {
     Ok((stem.to_string(), extension))
 }
 
+/// The name of an image in the folder that already holds exactly these bytes.
+///
+/// Pasting and dropping carry pixels, not a path, so this is what recognizes an
+/// image that is already beside the page: a file dragged out of the page's own
+/// folder, or the same picture pasted twice. Lengths are compared first, so
+/// only a genuine candidate is ever read. Names are sorted for a stable answer
+/// when the folder holds more than one copy.
+fn asset_with_same_bytes(directory: &Path, bytes: &[u8]) -> Option<String> {
+    let mut candidates: Vec<String> = fs::read_dir(directory)
+        .ok()?
+        .flatten()
+        .filter(|entry| {
+            entry.file_type().is_ok_and(|kind| kind.is_file())
+                && entry
+                    .metadata()
+                    .is_ok_and(|metadata| metadata.len() == bytes.len() as u64)
+        })
+        .filter_map(|entry| referenceable_asset_name(&entry.path()))
+        .collect();
+    candidates.sort();
+    candidates
+        .into_iter()
+        .find(|name| fs::read(directory.join(name)).is_ok_and(|existing| existing == bytes))
+}
+
 fn store_asset(root: &Path, note_path: &str, name: &str, bytes: &[u8]) -> Result<String, String> {
     let note_directory = note_directory(note_path)?;
     let directory = resolve_existing_directory(root, &note_directory)?;
     let (stem, extension) = sanitize_asset_name(name)?;
+
+    // Nothing is copied into a folder that already holds this picture; the
+    // page points at the file that is there.
+    if let Some(existing) = asset_with_same_bytes(&directory, bytes) {
+        return Ok(existing);
+    }
 
     for attempt in 1..1000u32 {
         let candidate = if attempt == 1 {
@@ -948,6 +1073,7 @@ fn clean_title(path: &str) -> String {
 enum PathKind {
     Folder,
     MarkdownFile,
+    ImageFile,
 }
 
 fn validate_relative_path(value: &str, kind: PathKind) -> Result<PathBuf, String> {
@@ -984,6 +1110,9 @@ fn validate_relative_path(value: &str, kind: PathKind) -> Result<PathBuf, String
     if matches!(kind, PathKind::MarkdownFile) && !has_markdown_extension(&relative) {
         return Err("Markdown file paths must end in .md.".to_string());
     }
+    if matches!(kind, PathKind::ImageFile) && !has_image_extension(&relative) {
+        return Err("Image paths must end in an image extension.".to_string());
+    }
 
     Ok(relative)
 }
@@ -992,6 +1121,12 @@ fn has_markdown_extension(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+}
+
+fn has_image_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(is_image_extension)
 }
 
 fn resolve_existing_directory(root: &Path, relative: &Path) -> Result<PathBuf, String> {
@@ -1244,7 +1379,8 @@ pub fn run() {
             delete_entry,
             write_asset,
             import_assets,
-            read_asset
+            read_asset,
+            rename_asset
         ])
         .run(tauri::generate_context!())
         .expect("error while running Folio");
@@ -1377,6 +1513,162 @@ mod tests {
         );
 
         fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn images_already_beside_a_page_are_linked_instead_of_copied() {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "folio-asset-reuse-test-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create test root");
+        let root = fs::canonicalize(&root).expect("canonicalize root");
+        fs::create_dir(root.join("Research")).expect("create page folder");
+        fs::create_dir(root.join("Elsewhere")).expect("create other folder");
+        fs::write(root.join("Research/Idea.md"), "body").expect("write page");
+        fs::write(root.join("Research/My Plot.png"), b"plot").expect("write neighbour");
+        fs::write(root.join("Elsewhere/Away.png"), b"away").expect("write outsider");
+
+        let directory = root.join("Research");
+        // Beside the page: linked under the name it already has, spaces and all.
+        assert_eq!(
+            asset_already_beside_note(&directory, &root.join("Research/My Plot.png")),
+            Some("My Plot.png".to_string())
+        );
+        // Anywhere else, including the library root, is a copy.
+        assert_eq!(
+            asset_already_beside_note(&directory, &root.join("Elsewhere/Away.png")),
+            None
+        );
+        // A route through `..` still resolves to the page's own folder.
+        assert_eq!(
+            asset_already_beside_note(&directory, &root.join("Elsewhere/../Research/My Plot.png")),
+            Some("My Plot.png".to_string())
+        );
+
+        // Dropped or pasted pixels that already sit in the folder link to the
+        // file that holds them, whatever it is called.
+        assert_eq!(
+            store_asset(&root, "Research/Idea.md", "My Plot.png", b"plot").unwrap(),
+            "My Plot.png"
+        );
+        assert_eq!(
+            store_asset(&root, "Research/Idea.md", "screenshot.png", b"plot").unwrap(),
+            "My Plot.png"
+        );
+        assert!(!root.join("Research/My-Plot.png").exists());
+
+        // A picture the folder does not hold is copied in, and a second,
+        // different picture under the same name still gets its own file.
+        assert_eq!(
+            store_asset(&root, "Research/Idea.md", "My Plot.png", b"other pixels").unwrap(),
+            "My-Plot.png"
+        );
+        assert_eq!(
+            store_asset(&root, "Research/Idea.md", "My Plot.png", b"third picture").unwrap(),
+            "My-Plot-2.png"
+        );
+        assert_eq!(
+            fs::read(root.join("Research/My Plot.png")).expect("read neighbour"),
+            b"plot"
+        );
+
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn image_renames_keep_the_format_the_bytes_are() {
+        // A name typed without an extension takes the file's own.
+        assert_eq!(
+            asset_rename_name("Variance drift", "png").unwrap(),
+            "Variance drift.png"
+        );
+        // Typing the extension is fine, in any case.
+        assert_eq!(asset_rename_name("drift.PNG", "png").unwrap(), "drift.PNG");
+        assert_eq!(
+            asset_rename_name("  drift.png  ", "png").unwrap(),
+            "drift.png"
+        );
+        // A name that merely contains a dot keeps all of it.
+        assert_eq!(
+            asset_rename_name("figure 2.1", "jpg").unwrap(),
+            "figure 2.1.jpg"
+        );
+        // Renaming cannot turn one image format into another.
+        assert!(asset_rename_name("drift.jpg", "png").is_err());
+        assert!(asset_rename_name(".png", "png").is_err());
+    }
+
+    #[test]
+    fn renames_an_image_where_it_sits() {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "folio-asset-rename-test-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create test root");
+        let root = fs::canonicalize(&root).expect("canonicalize root");
+        fs::create_dir(root.join("Research")).expect("create page folder");
+        fs::create_dir(root.join("figs")).expect("create image folder");
+        fs::write(root.join("Research/Idea.md"), "body").expect("write page");
+        fs::write(root.join("Research/plot.png"), b"plot").expect("write image");
+        fs::write(root.join("figs/shared.png"), b"shared").expect("write shared image");
+        fs::write(root.join("figs/taken.png"), b"taken").expect("write taken name");
+
+        // Beside the page.
+        rename_in_library(
+            &root,
+            "Research/plot.png",
+            "Variance drift.png",
+            PathKind::ImageFile,
+        )
+        .expect("rename image");
+        assert!(!root.join("Research/plot.png").exists());
+        assert_eq!(
+            fs::read(root.join("Research/Variance drift.png")).expect("read renamed"),
+            b"plot"
+        );
+
+        // Reached through `..`, resolved from the page that shows it.
+        let relative = resolve_asset_src(Path::new("Research"), "../figs/shared.png").unwrap();
+        assert_eq!(relative, PathBuf::from("figs/shared.png"));
+        rename_in_library(
+            &root,
+            &relative_path_to_string(&relative).unwrap(),
+            "diagram.png",
+            PathKind::ImageFile,
+        )
+        .expect("rename shared image");
+        assert_eq!(
+            fs::read(root.join("figs/diagram.png")).expect("read renamed shared"),
+            b"shared"
+        );
+
+        // A name already in use is refused, leaving both files as they were.
+        assert!(
+            rename_in_library(&root, "figs/diagram.png", "taken.png", PathKind::ImageFile).is_err()
+        );
+        assert_eq!(
+            fs::read(root.join("figs/taken.png")).expect("read taken"),
+            b"taken"
+        );
+        assert!(root.join("figs/diagram.png").exists());
+
+        // Markdown and folders cannot be renamed through the image path, and an
+        // image cannot be renamed out of its folder.
+        assert!(
+            rename_in_library(&root, "Research/Idea.md", "x.png", PathKind::ImageFile).is_err()
+        );
+        assert!(rename_in_library(
+            &root,
+            "figs/diagram.png",
+            "../escape.png",
+            PathKind::ImageFile
+        )
+        .is_err());
+
+        fs::remove_dir_all(root).expect("remove test root");
     }
 
     #[test]

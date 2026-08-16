@@ -10,6 +10,10 @@ import {
   isRecordedShortcut,
   markdownBlockCompletion,
   imageLineText,
+  decodeImageSrc,
+  noteImageAttachments,
+  renamedImageSrc,
+  renameImageInContent,
   imageTitleText,
   mapScrollOffset,
   parseImageLine,
@@ -530,6 +534,138 @@ test("captions round-trip through a whole image line", () => {
     width: 480,
     align: "center",
   });
+});
+
+test("attachments list the library images a page references, once each", () => {
+  const content = [
+    "# Diffusion",
+    "",
+    '![Noise](bad_noise.png "Variance grows | width=480 center")',
+    "",
+    "Inline ![again](bad_noise.png) and ![second](figs/schedule.svg).",
+    "",
+    "![spaced](<my figures/beta%20plot.jpg>)",
+  ].join("\n");
+  assert.deepEqual(noteImageAttachments(content), [
+    { src: "bad_noise.png", name: "bad_noise.png" },
+    { src: "figs/schedule.svg", name: "schedule.svg" },
+    { src: "my figures/beta%20plot.jpg", name: "beta plot.jpg" },
+  ]);
+});
+
+test("attachments ignore images that are not files in the library", () => {
+  const content = [
+    "![data](data:image/png;base64,AAAA)",
+    "![remote](https://example.com/plot.png)",
+    "![absolute](/tmp/plot.png)",
+    "![document](notes.md)",
+    "[not an image](plot.png)",
+    "",
+    "```markdown",
+    "![sample](inside-a-fence.png)",
+    "```",
+    "",
+    "~~~",
+    "![tilde](tilde-fence.png)",
+    "~~~",
+  ].join("\n");
+  assert.deepEqual(noteImageAttachments(content), []);
+});
+
+test("attachments follow the page text as images are added and removed", () => {
+  const withImage = "Body\n\n![Noise](bad_noise.png)\n";
+  const withoutImage = "Body\n\nThe image reference is gone.\n";
+  assert.deepEqual(noteImageAttachments(withImage), [
+    { src: "bad_noise.png", name: "bad_noise.png" },
+  ]);
+  assert.deepEqual(noteImageAttachments(withoutImage), []);
+});
+
+test("renaming an image rewrites every reference and nothing else", () => {
+  const content = [
+    "# Diffusion",
+    "",
+    '![Noise](bad_noise.png "Variance grows | width=480 center")',
+    "",
+    "Shown again as ![noise](bad_noise.png) and beside ![other](good_noise.png).",
+    "",
+    "```markdown",
+    "![sample](bad_noise.png)",
+    "```",
+    "",
+    "The text bad_noise.png is prose, and [a link](bad_noise.png) is not an image.",
+  ].join("\n");
+  const renamed = renameImageInContent(
+    content,
+    "bad_noise.png",
+    "variance-drift.png",
+  );
+  assert.equal(
+    renamed,
+    [
+      "# Diffusion",
+      "",
+      '![Noise](variance-drift.png "Variance grows | width=480 center")',
+      "",
+      "Shown again as ![noise](variance-drift.png) and beside ![other](good_noise.png).",
+      "",
+      "```markdown",
+      "![sample](bad_noise.png)",
+      "```",
+      "",
+      "The text bad_noise.png is prose, and [a link](bad_noise.png) is not an image.",
+    ].join("\n"),
+  );
+});
+
+test("renaming an image matches the src as written, encoding and all", () => {
+  const content = [
+    "![a](figs/beta%20plot.jpg)",
+    "![b](<figs/beta plot.jpg>)",
+    "![c](../figs/beta%20plot.jpg)",
+  ].join("\n");
+  const renamed = renameImageInContent(
+    content,
+    "figs/beta%20plot.jpg",
+    "figs/gamma.jpg",
+  );
+  assert.equal(
+    renamed,
+    [
+      "![a](figs/gamma.jpg)",
+      "![b](<figs/beta plot.jpg>)",
+      "![c](../figs/beta%20plot.jpg)",
+    ].join("\n"),
+  );
+  // A renamed page still parses as one image line, so the widget survives.
+  assert.equal(parseImageLine("![a](figs/gamma.jpg)")?.src, "figs/gamma.jpg");
+});
+
+test("a renamed image keeps the folder its reference already pointed through", () => {
+  assert.equal(renamedImageSrc("bad_noise.png", "drift.png"), "drift.png");
+  assert.equal(
+    renamedImageSrc("figs/bad_noise.png", "variance drift.png"),
+    "figs/variance%20drift.png",
+  );
+  assert.equal(
+    renamedImageSrc("../figs/beta%20plot.jpg", "gamma (2).jpg"),
+    "../figs/gamma%20%282%29.jpg",
+  );
+  // Encoded names survive the round trip back to a readable file name.
+  assert.equal(decodeImageSrc("figs/variance%20drift.png"), "figs/variance drift.png");
+});
+
+test("references from different folders resolve to the same library file", () => {
+  // This is what lets a rename fix up every page that shows the image, not
+  // just the one it was renamed from.
+  assert.equal(
+    resolveNoteLink("02 Research/Idea.md", "../figs/plot.png").path,
+    "figs/plot.png",
+  );
+  assert.equal(resolveNoteLink("figs/Gallery.md", "plot.png").path, "figs/plot.png");
+  assert.equal(resolveNoteLink("figs/Gallery.md", "./plot.png").path, "figs/plot.png");
+  // An image outside the library is left alone.
+  assert.equal(resolveNoteLink("Idea.md", "../outside.png").escapes, true);
 });
 
 test("page links resolve against the page that holds them", () => {

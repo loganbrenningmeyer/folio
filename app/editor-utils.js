@@ -777,3 +777,195 @@ export function imageLineText(image) {
   const titlePart = title ? ` "${title}"` : "";
   return `${image.indent ?? ""}![${image.alt ?? ""}](${image.src}${titlePart})`;
 }
+
+// The src half of a Markdown image, with an optional title after it. Angle
+// brackets are Markdown's way of wrapping a path that contains spaces.
+const IMAGE_REFERENCE_PATTERN =
+  /!\[[^\]]*\]\(\s*(<[^<>]+>|[^\s()]+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g;
+
+const CODE_FENCE_PATTERN = /^\s{0,3}(`{3,}|~{3,})/;
+
+const ATTACHMENT_EXTENSIONS = new Set([
+  "avif",
+  "bmp",
+  "gif",
+  "jpeg",
+  "jpg",
+  "png",
+  "svg",
+  "webp",
+]);
+
+/**
+ * Rebuilds the note with `transform` applied to its prose lines only. Fenced
+ * code blocks pass through untouched, so an image written as a code sample is
+ * neither counted as one the page shows nor rewritten under it.
+ *
+ * @param {string} content
+ * @param {(line: string) => string} transform
+ * @returns {string}
+ */
+function mapProseLines(content, transform) {
+  /** @type {string | undefined} */
+  let fence;
+  return content
+    .split("\n")
+    .map((line) => {
+      const marker = CODE_FENCE_PATTERN.exec(line)?.[1];
+      if (fence) {
+        // A closing fence uses the same character and is at least as long.
+        if (marker && marker[0] === fence[0] && marker.length >= fence.length) {
+          fence = undefined;
+        }
+        return line;
+      }
+      if (marker) {
+        fence = marker;
+        return line;
+      }
+      return transform(line);
+    })
+    .join("\n");
+}
+
+/**
+ * @param {string} content
+ * @returns {string[]}
+ */
+function proseLines(content) {
+  const lines = [];
+  mapProseLines(content, (line) => {
+    lines.push(line);
+    return line;
+  });
+  return lines;
+}
+
+/**
+ * Percent-encoded paths are what editors write for names with spaces; the
+ * panel shows the readable form.
+ *
+ * @param {string} src
+ * @returns {string}
+ */
+export function decodeImageSrc(src) {
+  try {
+    return decodeURIComponent(src);
+  } catch {
+    // Not percent-encoded; the raw source is already readable.
+    return src;
+  }
+}
+
+/**
+ * True for a src that names an image file stored inside the library. Data
+ * URIs, remote images and absolute paths all belong to something else.
+ *
+ * @param {string} src
+ * @returns {boolean}
+ */
+function isLibraryImageSrc(src) {
+  if (!src || /^[a-z][a-z0-9+.-]*:/i.test(src)) return false;
+  if (src.startsWith("/") || src.startsWith("#") || src.includes("\\")) {
+    return false;
+  }
+  const extension = decodeImageSrc(src).split(".").pop()?.toLowerCase() ?? "";
+  return ATTACHMENT_EXTENSIONS.has(extension);
+}
+
+// Attachments are re-read whenever any page changes, so results are kept
+// against the exact text they came from and only an edited page is scanned
+// again. The cap keeps a long session from holding on to every revision.
+const attachmentCache = new Map();
+const ATTACHMENT_CACHE_LIMIT = 300;
+
+/**
+ * The library images a page currently references, in the order they appear and
+ * without duplicates. Because this reads the page's own Markdown, an image is
+ * attached for exactly as long as the text points at it.
+ *
+ * @param {string} content
+ * @returns {{ src: string; name: string }[]}
+ */
+export function noteImageAttachments(content) {
+  const cached = attachmentCache.get(content);
+  if (cached) return cached;
+
+  /** @type {Map<string, { src: string; name: string }>} */
+  const found = new Map();
+  for (const line of proseLines(content)) {
+    for (const match of line.matchAll(IMAGE_REFERENCE_PATTERN)) {
+      const src = match[1].replace(/^<|>$/g, "");
+      if (found.has(src) || !isLibraryImageSrc(src)) continue;
+      const decoded = decodeImageSrc(src);
+      found.set(src, { src, name: decoded.split("/").pop() ?? decoded });
+    }
+  }
+
+  const items = Array.from(found.values());
+  if (attachmentCache.size >= ATTACHMENT_CACHE_LIMIT) attachmentCache.clear();
+  attachmentCache.set(content, items);
+  return items;
+}
+
+/** @param {string} character */
+function percentEncode(character) {
+  return `%${character.charCodeAt(0).toString(16).toUpperCase()}`;
+}
+
+/**
+ * Percent-encodes a stored file name into a Markdown src. Names Folio writes
+ * itself never need this, but an image already beside the page is referenced
+ * under the name it has, which may hold spaces or brackets that would
+ * otherwise end the link early. Data URIs and remote sources pass through.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+export function markdownImageSrc(name) {
+  if (URI_SCHEME_PATTERN.test(name)) return name;
+  return name
+    .split("/")
+    .map((segment) => encodeURIComponent(segment).replace(/[()]/g, percentEncode))
+    .join("/");
+}
+
+/**
+ * The same src pointing at a new file name in the folder it already lives in,
+ * so a reference written as `../figs/old.png` comes back as `../figs/new.png`.
+ *
+ * @param {string} src
+ * @param {string} name
+ * @returns {string}
+ */
+export function renamedImageSrc(src, name) {
+  const decoded = decodeImageSrc(src);
+  const cut = decoded.lastIndexOf("/");
+  return markdownImageSrc(`${cut < 0 ? "" : decoded.slice(0, cut + 1)}${name}`);
+}
+
+/** @param {string} value */
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Points every Markdown image reference of `fromSrc` at `toSrc`, so renaming
+ * the file on disk leaves no link behind pointing at the old name. Only the
+ * src is touched: alt text, title directives, and the caption stay as written.
+ *
+ * @param {string} content
+ * @param {string} fromSrc — the src exactly as it appears in the Markdown
+ * @param {string} toSrc
+ * @returns {string}
+ */
+export function renameImageInContent(content, fromSrc, toSrc) {
+  if (!fromSrc || fromSrc === toSrc || !content.includes("![")) return content;
+  const reference = new RegExp(
+    `(!\\[[^\\]]*\\]\\(\\s*<?)${escapeRegExp(fromSrc)}(>?(?:\\s+(?:"[^"]*"|'[^']*'))?\\s*\\))`,
+    "g",
+  );
+  return mapProseLines(content, (line) =>
+    line.replace(reference, (_match, before, after) => `${before}${toSrc}${after}`),
+  );
+}
