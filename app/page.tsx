@@ -11,6 +11,7 @@ import React, {
   useState,
 } from "react";
 import ReactMarkdown from "react-markdown";
+import rehypeHighlight from "rehype-highlight";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import {
@@ -573,12 +574,24 @@ export default function Home() {
   const markdown = (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeSanitize]}
+      rehypePlugins={[rehypeSanitize, rehypeHighlight]}
       urlTransform={(url) => url}
       components={{
         h1: ({ children }) => <h1 id={slugify(nodeText(children))}>{children}</h1>,
         h2: ({ children }) => <h2 id={slugify(nodeText(children))}>{children}</h2>,
         h3: ({ children }) => <h3 id={slugify(nodeText(children))}>{children}</h3>,
+        code: ({ className, children, node: _node, ...props }) => {
+          const language = className?.match(/language-([\w-]+)/)?.[1];
+          return (
+            <code
+              className={className}
+              data-language={language}
+              {...props}
+            >
+              {children}
+            </code>
+          );
+        },
         a: ({ href, children }) => (
           <a href={href} onClick={(event) => handleMarkdownLink(event, href)}>
             {href?.startsWith("wiki:") && <Link2 size={13} aria-hidden="true" />}

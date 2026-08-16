@@ -292,7 +292,14 @@ kbd {
   font-size: 11px;
 }
 
-.document-area { min-width: 0; display: flex; flex-direction: column; background: var(--paper); }
+.document-area {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--paper);
+}
 
 .document-toolbar {
   height: 53px;
@@ -347,7 +354,14 @@ kbd {
 .save-button:hover:not(:disabled) { border-color: var(--line-strong); }
 .save-button:disabled { opacity: .42; cursor: default; }
 .save-button.saved { border-color: var(--accent); color: var(--accent-ink); }
-.reading-scroll { flex: 1; min-height: 0; overflow: auto; }
+.reading-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
 
 .markdown-page {
   width: min(100%, 760px);
@@ -441,9 +455,10 @@ kbd {
 }
 
 .markdown-body pre {
+  position: relative;
   overflow-x: auto;
   margin: 2em 0;
-  padding: 20px 22px;
+  padding: 39px 22px 20px;
   border-radius: 10px;
   background: var(--code-bg);
   color: var(--code-ink);
@@ -451,7 +466,61 @@ kbd {
   line-height: 1.65;
 }
 
-.markdown-body pre code { padding: 0; border: 0; background: transparent; color: inherit; font-size: 12px; }
+.markdown-body pre code {
+  display: block;
+  min-width: max-content;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+}
+
+.markdown-body pre code[data-language]::before {
+  content: attr(data-language);
+  position: absolute;
+  top: 11px;
+  right: 14px;
+  color: #899184;
+  font: 600 9px var(--font-ui);
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+
+.markdown-body .hljs-keyword,
+.markdown-body .hljs-selector-tag,
+.markdown-body .hljs-literal,
+.markdown-body .hljs-section,
+.markdown-body .hljs-link { color: #d79b74; }
+
+.markdown-body .hljs-string,
+.markdown-body .hljs-title,
+.markdown-body .hljs-name,
+.markdown-body .hljs-type,
+.markdown-body .hljs-attribute,
+.markdown-body .hljs-symbol,
+.markdown-body .hljs-bullet,
+.markdown-body .hljs-addition,
+.markdown-body .hljs-variable,
+.markdown-body .hljs-template-tag,
+.markdown-body .hljs-template-variable { color: #a8c58c; }
+
+.markdown-body .hljs-comment,
+.markdown-body .hljs-quote,
+.markdown-body .hljs-deletion,
+.markdown-body .hljs-meta { color: #879083; }
+
+.markdown-body .hljs-number,
+.markdown-body .hljs-regexp,
+.markdown-body .hljs-built_in,
+.markdown-body .hljs-params { color: #c3b2df; }
+
+.markdown-body .hljs-function,
+.markdown-body .hljs-class .hljs-title,
+.markdown-body .hljs-title.function_ { color: #83b6c2; }
+
+.markdown-body .hljs-emphasis { font-style: italic; }
+.markdown-body .hljs-strong { font-weight: 700; }
 
 .markdown-body table {
   width: 100%;

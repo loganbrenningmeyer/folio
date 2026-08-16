@@ -46,12 +46,14 @@ test("ships the requested reading and editing capabilities", async () => {
   assert.match(page, /showDirectoryPicker/);
   assert.match(page, /createWritable/);
   assert.match(page, /ReactMarkdown/);
+  assert.match(page, /rehypeHighlight/);
   assert.match(page, /remarkGfm/);
   assert.match(page, /withWikiLinks/);
   assert.match(page, /"preview" \| "editor" \| "split"/);
   assert.match(page, /prefers-color-scheme: dark/);
   assert.match(layout, /\/og\.png/);
   assert.match(packageJson, /"name": "folio-markdown-reader"/);
+  assert.match(packageJson, /"rehype-highlight": "\^7\.0\.2"/);
 
   await access(new URL("../public/og.png", import.meta.url));
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
