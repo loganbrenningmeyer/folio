@@ -3,6 +3,7 @@
 import React, {
   type ChangeEvent,
   type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type ReactNode,
   useCallback,
@@ -13,18 +14,38 @@ import React, {
 } from "react";
 import ReactMarkdown from "react-markdown";
 import CodeMirror from "@uiw/react-codemirror";
+import { snippet as applyCodeMirrorSnippet } from "@codemirror/autocomplete";
 import { markdown } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { RangeSetBuilder } from "@codemirror/state";
+import {
+  Prec,
+  RangeSetBuilder,
+  Transaction,
+  type Extension,
+} from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
   EditorView,
+  keymap,
+  type KeyBinding,
   ViewPlugin,
   type ViewUpdate,
 } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
+import {
+  alignScrollAnchors,
+  extractSearchExcerpts,
+  formatShortcut,
+  isCommandShortcut,
+  isRecordedShortcut,
+  mapScrollOffset,
+  markdownBlockCompletion,
+  shortcutFromEvent,
+  shortcutMatches,
+  toCodeMirrorSnippet,
+} from "@/app/editor-utils.js";
 import {
   isNativeRuntime,
   nativeLibrary,
@@ -44,6 +65,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Columns2,
+  Command,
   Download,
   FileCode2,
   FilePlus2,
@@ -51,15 +73,24 @@ import {
   FolderPlus,
   FolderOpen,
   GripVertical,
+  Keyboard,
   Link2,
   ListTree,
+  Lock,
+  LockOpen,
   Menu,
   Moon,
   Palette,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelRight,
+  PanelRightClose,
+  PanelRightOpen,
+  Plus,
   Save,
   Search,
   Sun,
+  Trash2,
   X,
 } from "lucide-react";
 
@@ -122,8 +153,131 @@ type Note = {
 type ViewMode = "preview" | "editor" | "split";
 type Theme = "light" | "dark";
 type CreateKind = "file" | "folder";
+type PreferenceTab = "appearance" | "shortcuts" | "snippets";
+type TextSnippet = {
+  id: string;
+  name: string;
+  shortcut: string;
+  template: string;
+  enabled: boolean;
+};
+type StoredSnippetSettings = {
+  version: 1;
+  snippets: TextSnippet[];
+};
+type SearchExcerpt = { line: number; text: string };
+type SearchResult = {
+  note: Note;
+  score: number;
+  excerpts: SearchExcerpt[];
+};
+type MarkdownAstNode = {
+  type?: string;
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  children?: MarkdownAstNode[];
+  position?: {
+    start?: { line?: number };
+    end?: { line?: number };
+  };
+};
+type NormalizedMarkdown = {
+  content: string;
+  sourceLines: number[];
+};
+type ScrollSide = "editor" | "preview";
+type SplitScrollMap = {
+  editorOffsets: number[];
+  previewOffsets: number[];
+  // CodeMirror only measures rendered lines and estimates the rest, so the
+  // editor's scroll height keeps growing as more of the document is visited.
+  // Recording the geometry lets a stale map rebuild itself on the next sync.
+  geometry: string;
+};
 const FOLIO_NOTE_DRAG_TYPE = "application/x-folio-note";
 type LibraryScan = { notes: Note[]; folders: string[] };
+
+const DEFAULT_TEXT_SNIPPETS: TextSnippet[] = [
+  {
+    id: "equation",
+    name: "Equation",
+    shortcut: "Ctrl-Shift-e",
+    template: String.raw`$$
+\begin{equation}
+$0
+\end{equation}
+$$`,
+    enabled: true,
+  },
+  {
+    id: "code-block",
+    name: "Code block",
+    shortcut: "Ctrl-Shift-\\",
+    template: ["```$1", "$0", "```"].join("\n"),
+    enabled: true,
+  },
+];
+
+const APP_SHORTCUT_COMMANDS = [
+  { id: "find", label: "Find a page", group: "General", defaultShortcut: "Meta-k" },
+  { id: "save", label: "Save now", group: "General", defaultShortcut: "Meta-s" },
+  {
+    id: "previous-page",
+    label: "Previous page",
+    group: "Navigation",
+    defaultShortcut: "Meta-ArrowLeft",
+  },
+  {
+    id: "next-page",
+    label: "Next page",
+    group: "Navigation",
+    defaultShortcut: "Meta-ArrowRight",
+  },
+  { id: "new-file", label: "New file", group: "Files", defaultShortcut: "Meta-n" },
+  {
+    id: "new-folder",
+    label: "New folder",
+    group: "Files",
+    defaultShortcut: "Meta-Shift-n",
+  },
+  { id: "open-folder", label: "Open folder", group: "Files", defaultShortcut: "Meta-o" },
+  {
+    id: "toggle-read-write",
+    label: "Toggle Read / Write",
+    group: "View",
+    defaultShortcut: "Meta-e",
+  },
+  {
+    id: "toggle-split",
+    label: "Toggle Split view",
+    group: "View",
+    defaultShortcut: "Meta-Shift-e",
+  },
+  {
+    id: "toggle-library",
+    label: "Toggle library panel",
+    group: "View",
+    defaultShortcut: "",
+  },
+  {
+    id: "toggle-outline",
+    label: "Toggle outline panel",
+    group: "View",
+    defaultShortcut: "",
+  },
+] as const;
+
+type AppCommandId = (typeof APP_SHORTCUT_COMMANDS)[number]["id"];
+type AppShortcuts = Record<AppCommandId, string>;
+type StoredAppShortcutSettings = { version: 1; shortcuts: AppShortcuts };
+
+const EDITOR_BASIC_SETUP = {
+  lineNumbers: true,
+  drawSelection: true,
+  foldGutter: false,
+  highlightActiveLine: false,
+  highlightActiveLineGutter: false,
+} as const;
 
 const FONT_CHOICES = [
   { id: "iowan", label: "Iowan Old Style", category: "Serif", stack: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif' },
@@ -196,9 +350,9 @@ Folio turns a folder of Markdown files into a calm, connected reading space. You
 ## Start here
 
 - Open a folder using the button in the sidebar.
-- Move between pages with the arrows or your keyboard.
+- Move between pages with the page controls or your configured keyboard shortcuts.
 - Switch between **Read**, **Write**, and **Split** views.
-- Press \`⌘ K\` to find any page and \`⌘ S\` to save your work.
+- Open **Preferences → Keyboard shortcuts** to personalize navigation, file, folder, and view commands.
 
 ## Make connections
 
@@ -422,6 +576,166 @@ function joinPath(parent: string, name: string) {
   return normalizePath(parent ? `${parent}/${name}` : name);
 }
 
+function freshDefaultTextSnippets() {
+  return DEFAULT_TEXT_SNIPPETS.map((snippet) => ({ ...snippet }));
+}
+
+function freshDefaultAppShortcuts() {
+  return Object.fromEntries(
+    APP_SHORTCUT_COMMANDS.map(({ id, defaultShortcut }) => [id, defaultShortcut]),
+  ) as AppShortcuts;
+}
+
+function parseStoredAppShortcuts(value: string | null) {
+  if (!value) return;
+  try {
+    const stored = JSON.parse(value) as Partial<StoredAppShortcutSettings>;
+    if (stored.version !== 1 || !stored.shortcuts || typeof stored.shortcuts !== "object") {
+      return;
+    }
+    const shortcuts = freshDefaultAppShortcuts();
+    for (const { id } of APP_SHORTCUT_COMMANDS) {
+      const shortcut = stored.shortcuts[id];
+      if (typeof shortcut === "string" && (!shortcut || isCommandShortcut(shortcut))) {
+        shortcuts[id] = shortcut;
+      }
+    }
+    return shortcuts;
+  } catch {
+    // Invalid local preferences should never prevent the app from opening.
+  }
+}
+
+function snippetShortcutIssue(
+  textSnippet: TextSnippet,
+  snippets: TextSnippet[],
+  appShortcuts: AppShortcuts,
+) {
+  if (!textSnippet.shortcut) return "Record a shortcut to enable this snippet.";
+  if (
+    snippets.some(
+      (candidate) =>
+        candidate.id !== textSnippet.id &&
+        candidate.shortcut.toLowerCase() === textSnippet.shortcut.toLowerCase(),
+    )
+  ) {
+    return "That shortcut is already assigned.";
+  }
+  const appConflict = APP_SHORTCUT_COMMANDS.find(
+    ({ id }) =>
+      appShortcuts[id] &&
+      appShortcuts[id].toLowerCase() === textSnippet.shortcut.toLowerCase(),
+  );
+  if (appConflict) return `Already assigned to ${appConflict.label}.`;
+}
+
+function appShortcutIssue(
+  commandId: AppCommandId,
+  appShortcuts: AppShortcuts,
+  snippets: TextSnippet[],
+) {
+  const shortcut = appShortcuts[commandId];
+  if (!shortcut) return;
+  const commandConflict = APP_SHORTCUT_COMMANDS.find(
+    ({ id }) =>
+      id !== commandId &&
+      appShortcuts[id] &&
+      appShortcuts[id].toLowerCase() === shortcut.toLowerCase(),
+  );
+  if (commandConflict) return `Already assigned to ${commandConflict.label}.`;
+  const snippetConflict = snippets.find(
+    (textSnippet) =>
+      textSnippet.shortcut.toLowerCase() === shortcut.toLowerCase(),
+  );
+  if (snippetConflict) return `Already assigned to ${snippetConflict.name || "a text snippet"}.`;
+}
+
+function isTextSnippet(value: unknown): value is TextSnippet {
+  if (!value || typeof value !== "object") return false;
+  const snippet = value as Partial<TextSnippet>;
+  return (
+    typeof snippet.id === "string" &&
+    typeof snippet.name === "string" &&
+    typeof snippet.shortcut === "string" &&
+    (!snippet.shortcut || isRecordedShortcut(snippet.shortcut)) &&
+    typeof snippet.template === "string" &&
+    typeof snippet.enabled === "boolean"
+  );
+}
+
+function parseStoredTextSnippets(value: string | null) {
+  if (!value) return;
+  try {
+    const stored = JSON.parse(value) as Partial<StoredSnippetSettings>;
+    if (
+      stored.version === 1 &&
+      Array.isArray(stored.snippets) &&
+      stored.snippets.every(isTextSnippet)
+    ) {
+      return stored.snippets;
+    }
+  } catch {
+    // Invalid local preferences should never prevent the editor from opening.
+  }
+}
+
+function createSnippetExtension(
+  snippets: TextSnippet[],
+  appShortcuts: AppShortcuts,
+): Extension {
+  const seen = new Set<string>();
+  const appBindings = new Set(
+    Object.values(appShortcuts).filter(Boolean).map((shortcut) => shortcut.toLowerCase()),
+  );
+  const bindings: KeyBinding[] = [];
+
+  for (const textSnippet of snippets) {
+    const normalized = textSnippet.shortcut.toLowerCase();
+    if (
+      !textSnippet.enabled ||
+      !textSnippet.template ||
+      !isRecordedShortcut(textSnippet.shortcut) ||
+      appBindings.has(normalized) ||
+      seen.has(normalized)
+    ) {
+      continue;
+    }
+    seen.add(normalized);
+    const insert = applyCodeMirrorSnippet(toCodeMirrorSnippet(textSnippet.template));
+    bindings.push({
+      key: textSnippet.shortcut,
+      preventDefault: true,
+      stopPropagation: true,
+      run(view) {
+        const { from, to } = view.state.selection.main;
+        insert(view, null, from, to);
+        return true;
+      },
+    });
+  }
+
+  return Prec.high(keymap.of(bindings));
+}
+
+function highlightSearchText(value: string, query: string): ReactNode {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return value;
+  const normalizedValue = value.toLowerCase();
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  let matchIndex = normalizedValue.indexOf(normalizedQuery);
+
+  while (matchIndex >= 0) {
+    if (matchIndex > cursor) parts.push(value.slice(cursor, matchIndex));
+    const end = matchIndex + normalizedQuery.length;
+    parts.push(<mark key={`${matchIndex}-${end}`}>{value.slice(matchIndex, end)}</mark>);
+    cursor = end;
+    matchIndex = normalizedValue.indexOf(normalizedQuery, cursor);
+  }
+  if (cursor < value.length) parts.push(value.slice(cursor));
+  return parts.length ? parts : value;
+}
+
 async function getDirectoryAtPath(
   root: DirectoryHandleLike,
   path: string,
@@ -461,18 +775,139 @@ function withWikiLinks(content: string) {
   });
 }
 
-function normalizeMathDelimiters(content: string) {
-  return content
-    .split(/(\x60{3}[\s\S]*?\x60{3}|~~~[\s\S]*?~~~)/g)
-    .map((part, index) => {
-      if (index % 2 === 1) return part;
-      return part
-        .replace(/\\\[([\s\S]*?)\\\]/g, (_, expression) => {
-          return "$$\n" + expression.trim() + "\n$$";
-        })
-        .replace(/\\\((.*?)\\\)/g, (_, expression) => "$" + expression + "$");
-    })
-    .join("");
+function normalizeMathDelimiters(content: string): NormalizedMarkdown {
+  let output = "";
+  let originalLine = 1;
+  const sourceLines = [1];
+
+  const appendUnchanged = (value: string) => {
+    output += value;
+    for (const character of value) {
+      if (character !== "\n") continue;
+      originalLine += 1;
+      sourceLines.push(originalLine);
+    }
+  };
+
+  const appendReplacement = (original: string, replacement: string) => {
+    const startLine = originalLine;
+    const endLine = startLine + (original.match(/\n/g)?.length ?? 0);
+    let replacementLine = 0;
+    output += replacement;
+    for (const character of replacement) {
+      if (character !== "\n") continue;
+      replacementLine += 1;
+      sourceLines.push(Math.min(startLine + replacementLine, endLine));
+    }
+    originalLine = endLine;
+  };
+
+  const appendMath = (value: string) => {
+    const pattern = /\\\[([\s\S]*?)\\\]|\\\((.*?)\\\)/g;
+    let cursor = 0;
+    for (const match of value.matchAll(pattern)) {
+      const index = match.index ?? cursor;
+      appendUnchanged(value.slice(cursor, index));
+      const original = match[0];
+      const replacement = match[1] !== undefined
+        ? `$$\n${match[1].trim()}\n$$`
+        : `$${match[2] ?? ""}$`;
+      appendReplacement(original, replacement);
+      cursor = index + original.length;
+    }
+    appendUnchanged(value.slice(cursor));
+  };
+
+  const fencedCode = /(?:\x60{3}|~{3})[\s\S]*?(?:\x60{3}|~{3})/g;
+  let cursor = 0;
+  for (const match of content.matchAll(fencedCode)) {
+    const index = match.index ?? cursor;
+    appendMath(content.slice(cursor, index));
+    appendUnchanged(match[0]);
+    cursor = index + match[0].length;
+  }
+  appendMath(content.slice(cursor));
+
+  return { content: output, sourceLines };
+}
+
+const SOURCE_LINE_TAGS = new Set([
+  "blockquote",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "hr",
+  "li",
+  "ol",
+  "p",
+  "pre",
+  "table",
+  "tr",
+  "ul",
+]);
+
+function nodeClassNames(node: MarkdownAstNode) {
+  const className = node.properties?.className;
+  if (Array.isArray(className)) return className.map(String);
+  if (typeof className === "string") return className.split(/\s+/);
+  return [];
+}
+
+// Display math reaches this point as <pre><code class="language-math">, since
+// sanitizing keeps the language class but drops math-display. Inline math is a
+// bare <code> inside a paragraph, which is already anchored, so only the <pre>
+// form needs its own anchor.
+function isDisplayMath(node: MarkdownAstNode) {
+  if (nodeClassNames(node).includes("math-display")) return true;
+  return (
+    node.tagName === "pre" &&
+    (node.children ?? []).some((child) =>
+      nodeClassNames(child).some(
+        (name) => name === "math-display" || name === "language-math",
+      ),
+    )
+  );
+}
+
+function rehypeSourceLines(options?: { sourceLines?: number[] }) {
+  const sourceLines = options?.sourceLines ?? [];
+  const resolveLine = (parsedLine: number) =>
+    sourceLines[parsedLine - 1] ?? parsedLine;
+
+  return (tree: MarkdownAstNode) => {
+    const visit = (node: MarkdownAstNode) => {
+      if (node.children) {
+        node.children = node.children.map((child) => {
+          visit(child);
+          const parsedLine = child.position?.start?.line;
+          // KaTeX swaps the whole math element out for its rendered output, so
+          // an anchor set on it would be discarded. Wrap it in a plain block
+          // that survives, keeping display math on the scroll-sync map.
+          if (child.tagName && parsedLine && isDisplayMath(child)) {
+            return {
+              type: "element",
+              tagName: "div",
+              properties: { "data-source-line": resolveLine(parsedLine) },
+              children: [child],
+            };
+          }
+          return child;
+        });
+      }
+
+      const parsedLine = node.position?.start?.line;
+      if (node.tagName && parsedLine && SOURCE_LINE_TAGS.has(node.tagName)) {
+        node.properties = {
+          ...node.properties,
+          "data-source-line": resolveLine(parsedLine),
+        };
+      }
+    };
+    visit(tree);
+  };
 }
 
 const INLINE_MATH_PATTERN =
@@ -579,6 +1014,44 @@ const editorDecorationPlugin = ViewPlugin.fromClass(
   },
 );
 
+const markdownBlockAutoCloseExtension = Prec.high(
+  EditorView.inputHandler.of((view, from, to, text, insert) => {
+    const selection = view.state.selection;
+    if (
+      view.compositionStarted ||
+      selection.ranges.length !== 1 ||
+      !selection.main.empty ||
+      selection.main.from !== from ||
+      selection.main.to !== to ||
+      from !== to
+    ) {
+      return false;
+    }
+
+    const defaultTransaction = insert();
+    if (!defaultTransaction.isUserEvent("input.type")) return false;
+    const completion = markdownBlockCompletion(
+      view.state.doc.toString(),
+      from,
+      to,
+      text,
+    );
+    if (!completion) return false;
+
+    view.dispatch({
+      changes: {
+        from: completion.from,
+        to: completion.to,
+        insert: completion.insert,
+      },
+      selection: { anchor: completion.anchor },
+      scrollIntoView: true,
+      annotations: Transaction.userEvent.of("input.type"),
+    });
+    return true;
+  }),
+);
+
 function createEditorExtensions(theme: Theme) {
   const dark = theme === "dark";
   const highlightStyle = HighlightStyle.define([
@@ -634,6 +1107,7 @@ function createEditorExtensions(theme: Theme) {
     markdown({ codeLanguages: languages }),
     syntaxHighlighting(highlightStyle),
     editorDecorationPlugin,
+    markdownBlockAutoCloseExtension,
     EditorView.lineWrapping,
     EditorView.contentAttributes.of({
       spellcheck: "false",
@@ -739,6 +1213,30 @@ function headingsFrom(content: string) {
     }));
 }
 
+// Forward the renderer props (notably data-source-line, which split-view
+// scroll sync reads) while replacing the hast node with a heading anchor id.
+function markdownHeading<Tag extends "h1" | "h2" | "h3" | "h4">(HeadingTag: Tag) {
+  return function MarkdownHeading({
+    node,
+    children,
+    ...props
+  }: React.ComponentPropsWithoutRef<Tag> & { node?: unknown }) {
+    void node;
+    return (
+      <HeadingTag {...props} id={slugify(nodeText(children))}>
+        {children}
+      </HeadingTag>
+    );
+  };
+}
+
+const MARKDOWN_HEADING_COMPONENTS = {
+  h1: markdownHeading("h1"),
+  h2: markdownHeading("h2"),
+  h3: markdownHeading("h3"),
+  h4: markdownHeading("h4"),
+};
+
 function nodeText(children: ReactNode): string {
   return React.Children.toArray(children)
     .map((child) => {
@@ -795,6 +1293,20 @@ export default function Home() {
   const [palette, setPalette] = useState<PaletteId>("sage");
   const [readerFont, setReaderFont] = useState<FontId>("iowan");
   const [editorFont, setEditorFont] = useState<FontId>("sf-mono");
+  const [appearancePreferencesLoaded, setAppearancePreferencesLoaded] = useState(false);
+  const [preferenceTab, setPreferenceTab] = useState<PreferenceTab>("appearance");
+  const [textSnippets, setTextSnippets] = useState<TextSnippet[]>(
+    freshDefaultTextSnippets,
+  );
+  const [snippetPreferencesLoaded, setSnippetPreferencesLoaded] = useState(false);
+  const [appShortcuts, setAppShortcuts] = useState<AppShortcuts>(
+    freshDefaultAppShortcuts,
+  );
+  const [appShortcutsLoaded, setAppShortcutsLoaded] = useState(false);
+  const [libraryCollapsed, setLibraryCollapsed] = useState(false);
+  const [outlineCollapsed, setOutlineCollapsed] = useState(false);
+  const [splitScrollLocked, setSplitScrollLocked] = useState(true);
+  const [layoutPreferencesLoaded, setLayoutPreferencesLoaded] = useState(false);
   const [desktopMode] = useState(() => isNativeRuntime());
   const [nativeLibraryOpen, setNativeLibraryOpen] = useState(false);
   const [fontPanelOpen, setFontPanelOpen] = useState(false);
@@ -812,7 +1324,24 @@ export default function Home() {
   const [dropTarget, setDropTarget] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const folderInput = useRef<HTMLInputElement>(null);
-  const draggedNoteIdRef = useRef<string>();
+  const createNameInput = useRef<HTMLInputElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const preferencesTrigger = useRef<HTMLButtonElement>(null);
+  const preferencesDialog = useRef<HTMLElement>(null);
+  const previewScrollRef = useRef<HTMLElement>(null);
+  const markdownBodyRef = useRef<HTMLDivElement>(null);
+  const editorViewRef = useRef<EditorView>(null);
+  const splitScrollMapRef = useRef<SplitScrollMap>();
+  const splitScrollFrameRef = useRef<number>();
+  const splitScrollGuardFrameRef = useRef<number>();
+  const pendingScrollSideRef = useRef<ScrollSide>("editor");
+  const lastUserScrollerRef = useRef<ScrollSide>("preview");
+  const splitScrollGuardRef = useRef<{ side: ScrollSide; target: number }>();
+  const splitScrollEventRef = useRef<(side: ScrollSide) => void>();
+  const splitScrollRefreshRef = useRef<(side?: ScrollSide) => void>();
+  const splitScrollLockedRef = useRef(splitScrollLocked);
+  const viewRef = useRef(view);
+  const draggedNoteIdRef = useRef<string | undefined>(undefined);
   const nativeSaveTimers = useRef<Map<string, number>>(new Map());
   const nativePendingSaves = useRef<
     Map<string, { path: string; content: string }>
@@ -821,15 +1350,34 @@ export default function Home() {
   const nativeSavedTimer = useRef<number | undefined>(undefined);
   const nativeWindowClosing = useRef(false);
   const activeIdRef = useRef(activeId);
+  const lastSingleViewRef = useRef<Exclude<ViewMode, "split">>("preview");
 
   const activeIndex = Math.max(
     0,
     notes.findIndex((note) => note.id === activeId),
   );
   const active = notes[activeIndex] ?? EMPTY_NOTE;
+  useEffect(() => {
+    splitScrollLockedRef.current = splitScrollLocked;
+    viewRef.current = view;
+  }, [splitScrollLocked, view]);
+  const handleEditorCreate = useCallback((editor: EditorView) => {
+    editorViewRef.current = editor;
+    editor.scrollDOM.addEventListener("scroll", () => {
+      if (editorViewRef.current === editor) splitScrollEventRef.current?.("editor");
+    });
+    splitScrollMapRef.current = undefined;
+    splitScrollRefreshRef.current?.("editor");
+  }, []);
+  const handlePreviewScroll = useCallback(() => {
+    splitScrollEventRef.current?.("preview");
+  }, []);
   const editorExtensions = useMemo(
-    () => createEditorExtensions(theme),
-    [theme],
+    () => [
+      ...createEditorExtensions(theme),
+      createSnippetExtension(textSnippets, appShortcuts),
+    ],
+    [appShortcuts, textSnippets, theme],
   );
 
   const grouped = useMemo(() => {
@@ -883,19 +1431,29 @@ export default function Home() {
   }, [active, notes]);
 
   const searchResults = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) return notes;
+    const query = searchQuery.trim();
+    const normalizedQuery = query.toLowerCase();
+    if (!normalizedQuery) {
+      return notes.map<SearchResult>((note) => ({ note, score: 0, excerpts: [] }));
+    }
     return notes
-      .map((note) => ({
-        note,
-        score:
-          (note.title.toLowerCase().includes(query) ? 3 : 0) +
-          (note.path.toLowerCase().includes(query) ? 2 : 0) +
-          (note.content.toLowerCase().includes(query) ? 1 : 0),
-      }))
+      .map<SearchResult>((note) => {
+        const titleMatch = note.title.toLowerCase().includes(normalizedQuery);
+        const pathMatch = note.path.toLowerCase().includes(normalizedQuery);
+        const contentMatch = note.content.toLowerCase().includes(normalizedQuery);
+        const excerpts = contentMatch ? extractSearchExcerpts(note.content, query) : [];
+        return {
+          note,
+          excerpts,
+          score:
+            (titleMatch ? 300 : 0) +
+            (pathMatch ? 200 : 0) +
+            (contentMatch ? 100 : 0) +
+            excerpts.length,
+        };
+      })
       .filter((result) => result.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .map((result) => result.note);
+      .sort((a, b) => b.score - a.score);
   }, [notes, searchQuery]);
 
   const applyNativeLibrary = useCallback(
@@ -920,36 +1478,245 @@ export default function Home() {
   }, [activeId]);
 
   useEffect(() => {
-    const stored = localStorage.getItem("folio-theme") as Theme | null;
-    const preferred = window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
-    setTheme(stored ?? preferred);
+    if (view !== "split") lastSingleViewRef.current = view;
+  }, [view]);
+
+  useEffect(() => {
+    const scrollGeometry = (scroller: HTMLElement, preview: HTMLElement) =>
+      [
+        scroller.scrollHeight,
+        scroller.clientHeight,
+        preview.scrollHeight,
+        preview.clientHeight,
+      ].join(":");
+
+    const buildSplitScrollMap = (): SplitScrollMap | undefined => {
+      const editor = editorViewRef.current;
+      const preview = previewScrollRef.current;
+      const body = markdownBodyRef.current;
+      if (!editor || !preview || !body) return undefined;
+
+      const editorOffsets = [0];
+      const previewOffsets = [0];
+      const previewOrigin = preview.getBoundingClientRect().top - preview.scrollTop;
+      const lastLine = editor.state.doc.lines;
+      const scroller = editor.scrollDOM;
+
+      for (const anchor of body.querySelectorAll<HTMLElement>("[data-source-line]")) {
+        const sourceLine = Number(anchor.dataset.sourceLine);
+        if (!Number.isInteger(sourceLine) || sourceLine < 1 || sourceLine > lastLine) {
+          continue;
+        }
+        const editorOffset =
+          editor.documentPadding.top +
+          editor.lineBlockAt(editor.state.doc.line(sourceLine).from).top;
+        const previewOffset = anchor.getBoundingClientRect().top - previewOrigin;
+        // Interpolation needs both anchor sequences to increase together, so
+        // nested blocks that revisit an earlier source line are skipped.
+        if (
+          editorOffset <= editorOffsets[editorOffsets.length - 1] ||
+          previewOffset <= previewOffsets[previewOffsets.length - 1]
+        ) {
+          continue;
+        }
+        editorOffsets.push(editorOffset);
+        previewOffsets.push(previewOffset);
+      }
+
+      // The scrollable content ends correspond exactly; this pair sits beyond
+      // both scroll limits but keeps the interpolation slope truthful through
+      // the tail of the document.
+      if (
+        scroller.scrollHeight > editorOffsets[editorOffsets.length - 1] &&
+        preview.scrollHeight > previewOffsets[previewOffsets.length - 1]
+      ) {
+        editorOffsets.push(scroller.scrollHeight);
+        previewOffsets.push(preview.scrollHeight);
+      }
+
+      return {
+        ...alignScrollAnchors({
+          editorOffsets,
+          previewOffsets,
+          editorLimit: scroller.scrollHeight - scroller.clientHeight,
+          previewLimit: preview.scrollHeight - preview.clientHeight,
+          rampSpan: scroller.clientHeight,
+        }),
+        geometry: scrollGeometry(scroller, preview),
+      };
+    };
+
+    const syncSplitScroll = () => {
+      splitScrollFrameRef.current = undefined;
+      if (viewRef.current !== "split" || !splitScrollLockedRef.current) return;
+      const editor = editorViewRef.current;
+      const preview = previewScrollRef.current;
+      if (!editor || !preview) return;
+      const cached = splitScrollMapRef.current;
+      const map =
+        cached && cached.geometry === scrollGeometry(editor.scrollDOM, preview)
+          ? cached
+          : (splitScrollMapRef.current = buildSplitScrollMap());
+      if (!map) return;
+
+      const side = pendingScrollSideRef.current;
+      const source = side === "editor" ? editor.scrollDOM : preview;
+      const target = side === "editor" ? preview : editor.scrollDOM;
+      const mapped =
+        side === "editor"
+          ? mapScrollOffset(source.scrollTop, map.editorOffsets, map.previewOffsets)
+          : mapScrollOffset(source.scrollTop, map.previewOffsets, map.editorOffsets);
+      const limit = Math.max(0, target.scrollHeight - target.clientHeight);
+      const next = Math.min(Math.round(mapped), limit);
+      if (Math.abs(target.scrollTop - next) < 1) return;
+
+      // Remember the write so the scroll event it raises on the other pane is
+      // not mistaken for user input, which would sync back and stutter.
+      splitScrollGuardRef.current = {
+        side: side === "editor" ? "preview" : "editor",
+        target: next,
+      };
+      if (splitScrollGuardFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(splitScrollGuardFrameRef.current);
+      }
+      splitScrollGuardFrameRef.current = window.requestAnimationFrame(() => {
+        splitScrollGuardFrameRef.current = window.requestAnimationFrame(() => {
+          splitScrollGuardFrameRef.current = undefined;
+          splitScrollGuardRef.current = undefined;
+        });
+      });
+      target.scrollTo({ top: next, behavior: "instant" });
+    };
+
+    const scheduleSplitScrollSync = (side: ScrollSide) => {
+      pendingScrollSideRef.current = side;
+      if (splitScrollFrameRef.current !== undefined) return;
+      splitScrollFrameRef.current = window.requestAnimationFrame(syncSplitScroll);
+    };
+
+    splitScrollEventRef.current = (side) => {
+      if (viewRef.current !== "split") return;
+      const guard = splitScrollGuardRef.current;
+      if (guard && guard.side === side) {
+        splitScrollGuardRef.current = undefined;
+        const element =
+          side === "editor"
+            ? editorViewRef.current?.scrollDOM
+            : previewScrollRef.current;
+        if (element && Math.abs(element.scrollTop - guard.target) <= 2) return;
+      }
+      lastUserScrollerRef.current = side;
+      if (!splitScrollLockedRef.current) return;
+      scheduleSplitScrollSync(side);
+    };
+
+    splitScrollRefreshRef.current = (side) => {
+      splitScrollMapRef.current = undefined;
+      if (viewRef.current !== "split" || !splitScrollLockedRef.current) return;
+      if (side) lastUserScrollerRef.current = side;
+      scheduleSplitScrollSync(side ?? lastUserScrollerRef.current);
+    };
+
+    return () => {
+      splitScrollEventRef.current = undefined;
+      splitScrollRefreshRef.current = undefined;
+      if (splitScrollFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(splitScrollFrameRef.current);
+        splitScrollFrameRef.current = undefined;
+      }
+      if (splitScrollGuardFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(splitScrollGuardFrameRef.current);
+        splitScrollGuardFrameRef.current = undefined;
+      }
+    };
   }, []);
 
   useEffect(() => {
+    if (view !== "split") return;
+    splitScrollRefreshRef.current?.("editor");
+  }, [active.content, active.id, view]);
+
+  useEffect(() => {
+    if (!splitScrollLocked) return;
+    splitScrollRefreshRef.current?.();
+  }, [splitScrollLocked]);
+
+  useEffect(() => {
+    if (view !== "split" || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => splitScrollRefreshRef.current?.());
+    const preview = previewScrollRef.current;
+    const body = markdownBodyRef.current;
+    const editor = editorViewRef.current;
+    if (preview) observer.observe(preview);
+    if (body) observer.observe(body);
+    if (editor) {
+      observer.observe(editor.scrollDOM);
+      observer.observe(editor.contentDOM);
+    }
+    return () => observer.disconnect();
+  }, [active.id, view]);
+
+  useEffect(() => {
+    if (!createKind) return;
+    const frame = window.requestAnimationFrame(() => createNameInput.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [createKind]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const frame = window.requestAnimationFrame(() => searchInput.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [searchOpen]);
+
+  useEffect(() => {
+    if (!fontPanelOpen) return;
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : preferencesTrigger.current;
+    const frame = window.requestAnimationFrame(() => {
+      preferencesDialog.current
+        ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+        ?.focus();
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      previouslyFocused?.focus();
+    };
+  }, [fontPanelOpen]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const storedTheme = localStorage.getItem("folio-theme") as Theme | null;
+      const preferred = window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+      const storedPalette = localStorage.getItem("folio-color-palette");
+      const storedReaderFont = localStorage.getItem("folio-reader-font");
+      const storedEditorFont = localStorage.getItem("folio-editor-font");
+      setTheme(storedTheme ?? preferred);
+      if (isPaletteId(storedPalette)) setPalette(storedPalette);
+      if (isFontId(storedReaderFont)) setReaderFont(storedReaderFont);
+      if (isFontId(storedEditorFont)) setEditorFont(storedEditorFont);
+      setAppearancePreferencesLoaded(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!appearancePreferencesLoaded) return;
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("folio-theme", theme);
-  }, [theme]);
+  }, [appearancePreferencesLoaded, theme]);
 
   useEffect(() => {
-    const storedPalette = localStorage.getItem("folio-color-palette");
-    if (isPaletteId(storedPalette)) setPalette(storedPalette);
-  }, []);
-
-  useEffect(() => {
+    if (!appearancePreferencesLoaded) return;
     document.documentElement.dataset.palette = palette;
     localStorage.setItem("folio-color-palette", palette);
-  }, [palette]);
+  }, [appearancePreferencesLoaded, palette]);
 
   useEffect(() => {
-    const storedReaderFont = localStorage.getItem("folio-reader-font");
-    const storedEditorFont = localStorage.getItem("folio-editor-font");
-    if (isFontId(storedReaderFont)) setReaderFont(storedReaderFont);
-    if (isFontId(storedEditorFont)) setEditorFont(storedEditorFont);
-  }, []);
-
-  useEffect(() => {
+    if (!appearancePreferencesLoaded) return;
     document.documentElement.style.setProperty(
       "--font-reading",
       fontStack(readerFont),
@@ -960,7 +1727,69 @@ export default function Home() {
     );
     localStorage.setItem("folio-reader-font", readerFont);
     localStorage.setItem("folio-editor-font", editorFont);
-  }, [editorFont, readerFont]);
+  }, [appearancePreferencesLoaded, editorFont, readerFont]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const stored = parseStoredTextSnippets(
+        localStorage.getItem("folio-snippet-shortcuts"),
+      );
+      if (stored) setTextSnippets(stored);
+      setSnippetPreferencesLoaded(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!snippetPreferencesLoaded) return;
+    const stored: StoredSnippetSettings = { version: 1, snippets: textSnippets };
+    try {
+      localStorage.setItem("folio-snippet-shortcuts", JSON.stringify(stored));
+    } catch {
+      // The shortcuts remain active for this session when storage is unavailable.
+    }
+  }, [snippetPreferencesLoaded, textSnippets]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const stored = parseStoredAppShortcuts(
+        localStorage.getItem("folio-app-shortcuts"),
+      );
+      if (stored) setAppShortcuts(stored);
+      setAppShortcutsLoaded(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!appShortcutsLoaded) return;
+    const stored: StoredAppShortcutSettings = {
+      version: 1,
+      shortcuts: appShortcuts,
+    };
+    try {
+      localStorage.setItem("folio-app-shortcuts", JSON.stringify(stored));
+    } catch {
+      // The shortcuts remain active for this session when storage is unavailable.
+    }
+  }, [appShortcuts, appShortcutsLoaded]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setLibraryCollapsed(localStorage.getItem("folio-library-collapsed") === "true");
+      setOutlineCollapsed(localStorage.getItem("folio-outline-collapsed") === "true");
+      setSplitScrollLocked(localStorage.getItem("folio-split-scroll-locked") !== "false");
+      setLayoutPreferencesLoaded(true);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!layoutPreferencesLoaded) return;
+    localStorage.setItem("folio-library-collapsed", String(libraryCollapsed));
+    localStorage.setItem("folio-outline-collapsed", String(outlineCollapsed));
+    localStorage.setItem("folio-split-scroll-locked", String(splitScrollLocked));
+  }, [layoutPreferencesLoaded, libraryCollapsed, outlineCollapsed, splitScrollLocked]);
 
   useEffect(() => {
     if (!desktopMode) return;
@@ -1001,6 +1830,189 @@ export default function Home() {
       setNotice((current) => (current === message ? undefined : current));
     }, 3600);
   }, []);
+
+  const updateTextSnippet = useCallback(
+    (id: string, patch: Partial<Omit<TextSnippet, "id">>) => {
+      setTextSnippets((current) =>
+        current.map((textSnippet) =>
+          textSnippet.id === id ? { ...textSnippet, ...patch } : textSnippet,
+        ),
+      );
+    },
+    [],
+  );
+
+  const recordSnippetShortcut = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>, id: string) => {
+      if (event.key === "Tab") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.currentTarget.blur();
+        return;
+      }
+      if (
+        (event.key === "Backspace" || event.key === "Delete") &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey
+      ) {
+        updateTextSnippet(id, { shortcut: "" });
+        return;
+      }
+
+      const shortcut = shortcutFromEvent(event);
+      if (!shortcut) {
+        if (!/^(?:Alt|Control|Meta|Shift)$/.test(event.key)) {
+          showNotice("Include Ctrl, Command, or Alt in a snippet shortcut.");
+        }
+        return;
+      }
+      const appConflict = APP_SHORTCUT_COMMANDS.find(
+        ({ id: commandId }) =>
+          appShortcuts[commandId] &&
+          appShortcuts[commandId].toLowerCase() === shortcut.toLowerCase(),
+      );
+      if (appConflict) {
+        showNotice(`That shortcut is already assigned to ${appConflict.label}.`);
+        return;
+      }
+      if (
+        textSnippets.some(
+          (candidate) =>
+            candidate.id !== id &&
+            candidate.shortcut.toLowerCase() === shortcut.toLowerCase(),
+        )
+      ) {
+        showNotice("That shortcut is already assigned to another text snippet.");
+        return;
+      }
+      updateTextSnippet(id, { shortcut });
+    },
+    [appShortcuts, showNotice, textSnippets, updateTextSnippet],
+  );
+
+  const recordAppShortcut = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>, commandId: AppCommandId) => {
+      if (event.key === "Tab") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        event.currentTarget.blur();
+        return;
+      }
+      if (
+        (event.key === "Backspace" || event.key === "Delete") &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        !event.shiftKey
+      ) {
+        setAppShortcuts((current) => ({ ...current, [commandId]: "" }));
+        return;
+      }
+
+      const shortcut = shortcutFromEvent(event, { allowUnmodified: true });
+      if (!shortcut) {
+        if (!/^(?:Alt|Control|Meta|Shift)$/.test(event.key)) {
+          showNotice("Printable shortcut keys need Ctrl, Command, or Alt.");
+        }
+        return;
+      }
+
+      const commandConflict = APP_SHORTCUT_COMMANDS.find(
+        ({ id }) =>
+          id !== commandId &&
+          appShortcuts[id] &&
+          appShortcuts[id].toLowerCase() === shortcut.toLowerCase(),
+      );
+      if (commandConflict) {
+        showNotice(`That shortcut is already assigned to ${commandConflict.label}.`);
+        return;
+      }
+
+      const snippetConflict = textSnippets.find(
+        (textSnippet) =>
+          textSnippet.shortcut.toLowerCase() === shortcut.toLowerCase(),
+      );
+      if (snippetConflict) {
+        showNotice(
+          `That shortcut is already assigned to ${snippetConflict.name || "a text snippet"}.`,
+        );
+        return;
+      }
+
+      setAppShortcuts((current) => ({ ...current, [commandId]: shortcut }));
+    },
+    [appShortcuts, showNotice, textSnippets],
+  );
+
+  const addTextSnippet = useCallback(() => {
+    const id = globalThis.crypto?.randomUUID?.() ?? `snippet-${Date.now()}`;
+    setTextSnippets((current) => [
+      ...current,
+      { id, name: "New snippet", shortcut: "", template: "$0", enabled: true },
+    ]);
+  }, []);
+
+  const restoreDefaultAppShortcuts = useCallback(() => {
+    const defaults = freshDefaultAppShortcuts();
+    const conflict = APP_SHORTCUT_COMMANDS.find(({ id }) =>
+      textSnippets.some(
+        (textSnippet) =>
+          textSnippet.shortcut &&
+          textSnippet.shortcut.toLowerCase() === defaults[id].toLowerCase(),
+      ),
+    );
+    if (conflict) {
+      showNotice(
+        `Reassign the text snippet using ${formatShortcut(defaults[conflict.id])} before restoring app shortcuts.`,
+      );
+      return;
+    }
+    setAppShortcuts(defaults);
+  }, [showNotice, textSnippets]);
+
+  const restoreDefaultTextSnippets = useCallback(() => {
+    const defaults = freshDefaultTextSnippets();
+    const conflict = defaults.find((textSnippet) =>
+      APP_SHORTCUT_COMMANDS.some(
+        ({ id }) =>
+          appShortcuts[id] &&
+          appShortcuts[id].toLowerCase() === textSnippet.shortcut.toLowerCase(),
+      ),
+    );
+    if (conflict) {
+      showNotice(
+        `Reassign the app command using ${formatShortcut(conflict.shortcut)} before restoring snippets.`,
+      );
+      return;
+    }
+    setTextSnippets(defaults);
+  }, [appShortcuts, showNotice]);
+
+  const trapPreferencesFocus = useCallback(
+    (event: ReactKeyboardEvent<HTMLElement>) => {
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        event.currentTarget.querySelectorAll<HTMLElement>(
+          "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex='-1'])",
+        ),
+      ).filter((element) => !element.hasAttribute("hidden"));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    },
+    [],
+  );
 
   const flushNativeSave = useCallback(
     async (noteId: string) => {
@@ -1115,21 +2127,32 @@ export default function Home() {
     [active.id, desktopMode, flushNativeSave],
   );
 
-  const updateContent = (content: string) => {
-    if (active.id === EMPTY_NOTE.id) return;
-    setNotes((current) =>
-      current.map((note) => (note.id === active.id ? { ...note, content } : note)),
-    );
-    setDirty((current) => new Set(current).add(active.id));
-    if (nativeSavedTimer.current !== undefined) {
-      window.clearTimeout(nativeSavedTimer.current);
-      nativeSavedTimer.current = undefined;
-    }
-    setSaved(false);
-    if (desktopMode && nativeLibraryOpen) {
-      scheduleNativeSave(active.id, active.path, content);
-    }
-  };
+  const updateContent = useCallback(
+    (content: string) => {
+      if (active.id === EMPTY_NOTE.id) return;
+      setNotes((current) =>
+        current.map((note) =>
+          note.id === active.id ? { ...note, content } : note,
+        ),
+      );
+      setDirty((current) => new Set(current).add(active.id));
+      if (nativeSavedTimer.current !== undefined) {
+        window.clearTimeout(nativeSavedTimer.current);
+        nativeSavedTimer.current = undefined;
+      }
+      setSaved(false);
+      if (desktopMode && nativeLibraryOpen) {
+        scheduleNativeSave(active.id, active.path, content);
+      }
+    },
+    [
+      active.id,
+      active.path,
+      desktopMode,
+      nativeLibraryOpen,
+      scheduleNativeSave,
+    ],
+  );
 
   useEffect(() => {
     if (!desktopMode) return;
@@ -1173,7 +2196,7 @@ export default function Home() {
     };
   }, [desktopMode, flushAllNativeSaves]);
 
-  const beginCreate = (kind: CreateKind) => {
+  const beginCreate = useCallback((kind: CreateKind) => {
     if (desktopMode && !nativeLibraryOpen) {
       showNotice("Choose a library folder before creating files or sections.");
       return;
@@ -1183,7 +2206,7 @@ export default function Home() {
     setNewEntryParent(
       active.id === EMPTY_NOTE.id ? "" : parentPath(active.path),
     );
-  };
+  }, [active.id, active.path, desktopMode, nativeLibraryOpen, showNotice]);
 
   const createEntry = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -1456,37 +2479,7 @@ export default function Home() {
     showNotice,
   ]);
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement;
-      const isTyping = ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName);
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        setSearchOpen(true);
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-        event.preventDefault();
-        void saveActive();
-      }
-      if (event.key === "Escape") {
-        setSearchOpen(false);
-        setNavOpen(false);
-        setOutlineOpen(false);
-        setFontPanelOpen(false);
-        setCreateKind(undefined);
-      }
-      if (!isTyping && event.key === "ArrowRight" && activeIndex < notes.length - 1) {
-        selectNote(notes[activeIndex + 1].id);
-      }
-      if (!isTyping && event.key === "ArrowLeft" && activeIndex > 0) {
-        selectNote(notes[activeIndex - 1].id);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [activeIndex, notes, saveActive, selectNote]);
-
-  const openFolder = async () => {
+  const openFolder = useCallback(async () => {
     if (desktopMode) {
       try {
         await flushAllNativeSaves();
@@ -1525,7 +2518,113 @@ export default function Home() {
       if (error instanceof DOMException && error.name === "AbortError") return;
       folderInput.current?.click();
     }
-  };
+  }, [applyNativeLibrary, desktopMode, flushAllNativeSaves, showNotice]);
+
+  const executeAppCommand = useCallback(
+    (commandId: AppCommandId) => {
+      switch (commandId) {
+        case "find":
+          setSearchOpen(true);
+          return;
+        case "save":
+          void saveActive();
+          return;
+        case "previous-page":
+          if (activeIndex > 0) selectNote(notes[activeIndex - 1].id);
+          return;
+        case "next-page":
+          if (activeIndex < notes.length - 1) selectNote(notes[activeIndex + 1].id);
+          return;
+        case "new-file":
+          beginCreate("file");
+          return;
+        case "new-folder":
+          beginCreate("folder");
+          return;
+        case "open-folder":
+          void openFolder();
+          return;
+        case "toggle-read-write":
+          setView((current) => {
+            const singleView = current === "split" ? lastSingleViewRef.current : current;
+            const next = singleView === "preview" ? "editor" : "preview";
+            lastSingleViewRef.current = next;
+            return next;
+          });
+          return;
+        case "toggle-split":
+          setView((current) => {
+            if (current === "split") return lastSingleViewRef.current;
+            lastSingleViewRef.current = current;
+            return "split";
+          });
+          return;
+        case "toggle-library":
+          if (window.matchMedia("(max-width: 960px)").matches) {
+            setOutlineOpen(false);
+            setNavOpen((current) => !current);
+          } else {
+            setLibraryCollapsed((current) => !current);
+          }
+          return;
+        case "toggle-outline":
+          if (window.matchMedia("(max-width: 1120px)").matches) {
+            setNavOpen(false);
+            setOutlineOpen((current) => !current);
+          } else {
+            setOutlineCollapsed((current) => !current);
+          }
+      }
+    },
+    [activeIndex, beginCreate, notes, openFolder, saveActive, selectNote],
+  );
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest(".shortcut-recorder")) return;
+
+      if (event.key === "Escape") {
+        setSearchOpen(false);
+        setNavOpen(false);
+        setOutlineOpen(false);
+        setFontPanelOpen(false);
+        setCreateKind(undefined);
+        return;
+      }
+
+      const pressedShortcut = shortcutFromEvent(event, { allowUnmodified: true });
+      if (!pressedShortcut) return;
+      const command = APP_SHORTCUT_COMMANDS.find(
+        ({ id }) => shortcutMatches(appShortcuts[id], pressedShortcut),
+      );
+      if (!command) return;
+
+      const isTyping =
+        Boolean(
+          target?.closest(
+            "input, select, textarea, .cm-editor, [contenteditable='true'], [contenteditable='plaintext-only']",
+          ),
+        );
+      const hasPrimaryModifier = event.ctrlKey || event.metaKey || event.altKey;
+      if (isTyping && !hasPrimaryModifier) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (
+        event.repeat &&
+        command.id !== "previous-page" &&
+        command.id !== "next-page"
+      ) {
+        return;
+      }
+      executeAppCommand(command.id);
+    };
+
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [appShortcuts, executeAppCommand]);
 
   const importFolder = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []).filter((file) =>
@@ -1601,6 +2700,11 @@ export default function Home() {
     }
   };
 
+  const normalizedMarkdown = useMemo(
+    () => normalizeMathDelimiters(withWikiLinks(active.content)),
+    [active.content],
+  );
+
   const markdown = (
     <ReactMarkdown
       remarkPlugins={[
@@ -1609,6 +2713,7 @@ export default function Home() {
       ]}
       rehypePlugins={[
         [rehypeSanitize, markdownSanitizeSchema],
+        [rehypeSourceLines, { sourceLines: normalizedMarkdown.sourceLines }],
         [
           rehypeKatex,
           {
@@ -1622,17 +2727,13 @@ export default function Home() {
       ]}
       urlTransform={(url) => url}
       components={{
-        h1: ({ children }) => <h1 id={slugify(nodeText(children))}>{children}</h1>,
-        h2: ({ children }) => <h2 id={slugify(nodeText(children))}>{children}</h2>,
-        h3: ({ children }) => <h3 id={slugify(nodeText(children))}>{children}</h3>,
-        h4: ({ children }) => <h4 id={slugify(nodeText(children))}>{children}</h4>,
-        code: ({ className, children, node: _node, ...props }) => {
+        ...MARKDOWN_HEADING_COMPONENTS,
+        code: ({ className, children }) => {
           const language = className?.match(/language-([\w-]+)/)?.[1];
           return (
             <code
               className={className}
               data-language={language}
-              {...props}
             >
               {children}
             </code>
@@ -1646,7 +2747,7 @@ export default function Home() {
         ),
       }}
     >
-      {withWikiLinks(normalizeMathDelimiters(active?.content ?? ""))}
+      {normalizedMarkdown.content}
     </ReactMarkdown>
   );
 
@@ -1656,10 +2757,25 @@ export default function Home() {
         <div className="brand-zone">
           <button
             className="icon-button mobile-only"
-            onClick={() => setNavOpen(true)}
+            onClick={() => {
+              setOutlineOpen(false);
+              setNavOpen(true);
+            }}
             aria-label="Open library"
+            aria-controls="library-panel"
+            aria-expanded={navOpen}
           >
             <Menu size={19} />
+          </button>
+          <button
+            className="icon-button docked-panel-toggle docked-library-toggle"
+            onClick={() => setLibraryCollapsed((collapsed) => !collapsed)}
+            aria-label={`${libraryCollapsed ? "Show" : "Hide"} library panel`}
+            aria-controls="library-panel"
+            aria-expanded={!libraryCollapsed}
+            title={`${libraryCollapsed ? "Show" : "Hide"} library panel`}
+          >
+            {libraryCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
           </button>
           <div className="brand-mark" aria-hidden="true">
             <span />
@@ -1675,14 +2791,15 @@ export default function Home() {
           <button className="search-trigger" onClick={() => setSearchOpen(true)}>
             <Search size={15} />
             <span>Find a page</span>
-            <kbd>⌘ K</kbd>
+            {appShortcuts.find && <kbd>{formatShortcut(appShortcuts.find)}</kbd>}
           </button>
           <button
+            ref={preferencesTrigger}
             className={`icon-button ${fontPanelOpen ? "active" : ""}`}
             onClick={() => setFontPanelOpen((open) => !open)}
-            aria-label="Choose colors and fonts"
+            aria-label="Open preferences"
             aria-expanded={fontPanelOpen}
-            title="Appearance"
+            title="Preferences"
           >
             <Palette size={17} />
           </button>
@@ -1695,10 +2812,25 @@ export default function Home() {
           </button>
           <button
             className="icon-button mobile-only"
-            onClick={() => setOutlineOpen(true)}
+            onClick={() => {
+              setNavOpen(false);
+              setOutlineOpen(true);
+            }}
             aria-label="Open page outline"
+            aria-controls="outline-panel"
+            aria-expanded={outlineOpen}
           >
             <PanelRight size={18} />
+          </button>
+          <button
+            className="icon-button docked-panel-toggle docked-outline-toggle"
+            onClick={() => setOutlineCollapsed((collapsed) => !collapsed)}
+            aria-label={`${outlineCollapsed ? "Show" : "Hide"} page outline panel`}
+            aria-controls="outline-panel"
+            aria-expanded={!outlineCollapsed}
+            title={`${outlineCollapsed ? "Show" : "Hide"} page outline panel`}
+          >
+            {outlineCollapsed ? <PanelRightOpen size={16} /> : <PanelRightClose size={16} />}
           </button>
           <button className="open-button" onClick={openFolder}>
             <FolderOpen size={16} />
@@ -1723,118 +2855,322 @@ export default function Home() {
           <button
             className="font-popover-scrim"
             onClick={() => setFontPanelOpen(false)}
-            aria-label="Close font settings"
+            aria-label="Close preferences"
           />
-          <section
+          <dialog
+            ref={preferencesDialog}
             className="font-popover"
-            role="dialog"
+            open
             aria-modal="true"
-            aria-label="Font settings"
+            aria-label="Preferences"
+            tabIndex={-1}
+            onKeyDown={trapPreferencesFocus}
           >
             <div className="font-popover-head">
               <span>
-                <small>Preferences</small>
-                <strong>Colors &amp; type</strong>
+                <small>Folio</small>
+                <strong>Preferences</strong>
               </span>
               <button
                 className="subtle-icon"
                 onClick={() => setFontPanelOpen(false)}
-                aria-label="Close font settings"
+                aria-label="Close preferences"
               >
                 <X size={16} />
               </button>
             </div>
 
-            <fieldset className="palette-control">
-              <legend>Color scheme</legend>
-              <div className="palette-grid" role="radiogroup" aria-label="Color scheme">
-                {COLOR_PALETTES.map((colorPalette) => (
+            <div className="preference-tabs" role="tablist" aria-label="Preferences sections">
+              <button
+                type="button"
+                className={preferenceTab === "appearance" ? "selected" : ""}
+                onClick={() => setPreferenceTab("appearance")}
+                role="tab"
+                aria-selected={preferenceTab === "appearance"}
+              >
+                <Palette size={14} /> Appearance
+              </button>
+              <button
+                type="button"
+                className={preferenceTab === "shortcuts" ? "selected" : ""}
+                onClick={() => setPreferenceTab("shortcuts")}
+                role="tab"
+                aria-selected={preferenceTab === "shortcuts"}
+                aria-label="Keyboard shortcuts"
+              >
+                <Command size={14} /> Shortcuts
+              </button>
+              <button
+                type="button"
+                className={preferenceTab === "snippets" ? "selected" : ""}
+                onClick={() => setPreferenceTab("snippets")}
+                role="tab"
+                aria-selected={preferenceTab === "snippets"}
+              >
+                <Keyboard size={14} /> Text snippets
+              </button>
+            </div>
+
+            {preferenceTab === "appearance" && (
+              <div className="preference-pane" role="tabpanel">
+                <fieldset className="palette-control">
+                  <legend>Color scheme</legend>
+                  <div className="palette-grid" role="radiogroup" aria-label="Color scheme">
+                    {COLOR_PALETTES.map((colorPalette) => (
+                      <button
+                        type="button"
+                        key={colorPalette.id}
+                        className={palette === colorPalette.id ? "selected" : ""}
+                        onClick={() => setPalette(colorPalette.id)}
+                        role="radio"
+                        aria-checked={palette === colorPalette.id}
+                        title={colorPalette.description}
+                      >
+                        <span className="palette-swatches" aria-hidden="true">
+                          {colorPalette.swatches.map((color) => (
+                            <i key={color} style={{ background: color }} />
+                          ))}
+                        </span>
+                        <span>
+                          <strong>{colorPalette.label}</strong>
+                          <small>{colorPalette.description}</small>
+                        </span>
+                        {palette === colorPalette.id && <Check size={13} />}
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+
+                <label className="font-control">
+                  <span>Reader font</span>
+                  <select
+                    value={readerFont}
+                    onChange={(event) => setReaderFont(event.target.value as FontId)}
+                  >
+                    {FONT_CATEGORIES.map((category) => (
+                      <optgroup key={category} label={category}>
+                        {FONT_CHOICES.filter((font) => font.category === category).map(
+                          (font) => (
+                            <option key={font.id} value={font.id}>
+                              {font.label}
+                            </option>
+                          ),
+                        )}
+                      </optgroup>
+                    ))}
+                  </select>
+                </label>
+                <div
+                  className="font-sample reader-sample"
+                  style={{ fontFamily: fontStack(readerFont) }}
+                >
+                  <span>Aa</span>
+                  <p>The shape of a thoughtful page.</p>
+                </div>
+
+                <label className="font-control">
+                  <span>Editor font</span>
+                  <select
+                    value={editorFont}
+                    onChange={(event) => setEditorFont(event.target.value as FontId)}
+                  >
+                    {FONT_CATEGORIES.map((category) => (
+                      <optgroup key={category} label={category}>
+                        {FONT_CHOICES.filter((font) => font.category === category).map(
+                          (font) => (
+                            <option key={font.id} value={font.id}>
+                              {font.label}
+                            </option>
+                          ),
+                        )}
+                      </optgroup>
+                    ))}
+                  </select>
+                </label>
+                <div
+                  className="font-sample editor-sample"
+                  style={{ fontFamily: fontStack(editorFont) }}
+                >
+                  <span>01</span>
+                  <p>{'const note = "connected";'}</p>
+                </div>
+                <p className="font-footnote">Preferences stay on this device.</p>
+              </div>
+            )}
+
+            {preferenceTab === "shortcuts" && (
+              <div className="preference-pane shortcut-preferences" role="tabpanel">
+                <p className="shortcut-help">
+                  Focus a shortcut field and press the keys you want. Backspace clears a
+                  binding. Bare navigation and function keys are allowed; printable keys need
+                  Ctrl, Command, or Alt. Modified shortcuts also work while writing.
+                </p>
+                <div className="app-shortcut-groups">
+                  {(["General", "Navigation", "Files", "View"] as const).map((group) => (
+                    <fieldset className="app-shortcut-group" key={group}>
+                      <legend>{group}</legend>
+                      {APP_SHORTCUT_COMMANDS.filter(
+                        (command) => command.group === group,
+                      ).map((command) => {
+                        const issue = appShortcutIssue(
+                          command.id,
+                          appShortcuts,
+                          textSnippets,
+                        );
+                        return (
+                          <label className="app-shortcut-row" key={command.id}>
+                            <span>{command.label}</span>
+                            <input
+                              className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
+                              value={formatShortcut(appShortcuts[command.id])}
+                              onKeyDown={(event) =>
+                                recordAppShortcut(event, command.id)
+                              }
+                              onFocus={(event) => event.currentTarget.select()}
+                              readOnly
+                              aria-label={`Record shortcut for ${command.label}`}
+                              aria-invalid={Boolean(issue)}
+                              title="Focus, then press the shortcut. Backspace clears it."
+                            />
+                            {issue && <small className="shortcut-issue">{issue}</small>}
+                          </label>
+                        );
+                      })}
+                    </fieldset>
+                  ))}
+                </div>
+                <div className="snippet-actions shortcut-actions">
                   <button
                     type="button"
-                    key={colorPalette.id}
-                    className={palette === colorPalette.id ? "selected" : ""}
-                    onClick={() => setPalette(colorPalette.id)}
-                    role="radio"
-                    aria-checked={palette === colorPalette.id}
-                    title={colorPalette.description}
+                    onClick={restoreDefaultAppShortcuts}
                   >
-                    <span className="palette-swatches" aria-hidden="true">
-                      {colorPalette.swatches.map((color) => (
-                        <i key={color} style={{ background: color }} />
-                      ))}
-                    </span>
-                    <span>
-                      <strong>{colorPalette.label}</strong>
-                      <small>{colorPalette.description}</small>
-                    </span>
-                    {palette === colorPalette.id && <Check size={13} />}
+                    Restore defaults
                   </button>
-                ))}
+                </div>
               </div>
-            </fieldset>
+            )}
 
-            <label className="font-control">
-              <span>Reader font</span>
-              <select
-                value={readerFont}
-                onChange={(event) => setReaderFont(event.target.value as FontId)}
-              >
-                {FONT_CATEGORIES.map((category) => (
-                  <optgroup key={category} label={category}>
-                    {FONT_CHOICES.filter((font) => font.category === category).map(
-                      (font) => (
-                        <option key={font.id} value={font.id}>
-                          {font.label}
-                        </option>
-                      ),
-                    )}
-                  </optgroup>
-                ))}
-              </select>
-            </label>
-            <div
-              className="font-sample reader-sample"
-              style={{ fontFamily: fontStack(readerFont) }}
-            >
-              <span>Aa</span>
-              <p>The shape of a thoughtful page.</p>
-            </div>
-
-            <label className="font-control">
-              <span>Editor font</span>
-              <select
-                value={editorFont}
-                onChange={(event) => setEditorFont(event.target.value as FontId)}
-              >
-                {FONT_CATEGORIES.map((category) => (
-                  <optgroup key={category} label={category}>
-                    {FONT_CHOICES.filter((font) => font.category === category).map(
-                      (font) => (
-                        <option key={font.id} value={font.id}>
-                          {font.label}
-                        </option>
-                      ),
-                    )}
-                  </optgroup>
-                ))}
-              </select>
-            </label>
-            <div
-              className="font-sample editor-sample"
-              style={{ fontFamily: fontStack(editorFont) }}
-            >
-              <span>01</span>
-              <p>const note = "connected";</p>
-            </div>
-
-            <p className="font-footnote">Saved automatically on this device.</p>
-          </section>
+            {preferenceTab === "snippets" && (
+              <div className="preference-pane snippet-preferences" role="tabpanel">
+                <p className="snippet-help">
+                  Record a shortcut, then enter the text it should insert. Use <code>$1</code>,{" "}
+                  <code>$2</code>, and so on for Tab stops; <code>$0</code> is the final cursor.
+                  Write <code>\$1</code> for literal text.
+                </p>
+                <div className="snippet-list">
+                  {textSnippets.map((textSnippet, index) => {
+                    const issue = snippetShortcutIssue(
+                      textSnippet,
+                      textSnippets,
+                      appShortcuts,
+                    );
+                    return (
+                      <article
+                        className={`snippet-card ${textSnippet.enabled ? "" : "disabled"}`}
+                        key={textSnippet.id}
+                      >
+                        <div className="snippet-card-head">
+                          <strong>Snippet {index + 1}</strong>
+                          <label className="snippet-enabled">
+                            <input
+                              type="checkbox"
+                              checked={textSnippet.enabled}
+                              onChange={(event) =>
+                                updateTextSnippet(textSnippet.id, {
+                                  enabled: event.target.checked,
+                                })
+                              }
+                            />
+                            <span>Enabled</span>
+                          </label>
+                          <button
+                            type="button"
+                            className="subtle-icon"
+                            onClick={() =>
+                              setTextSnippets((current) =>
+                                current.filter((candidate) => candidate.id !== textSnippet.id),
+                              )
+                            }
+                            aria-label={`Delete ${textSnippet.name || "snippet"}`}
+                            title="Delete snippet"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                        <label className="snippet-field">
+                          <span>Name</span>
+                          <input
+                            value={textSnippet.name}
+                            onChange={(event) =>
+                              updateTextSnippet(textSnippet.id, { name: event.target.value })
+                            }
+                            placeholder="Snippet name"
+                          />
+                        </label>
+                        <label className="snippet-field">
+                          <span>Shortcut</span>
+                          <input
+                            className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
+                            value={formatShortcut(textSnippet.shortcut)}
+                            onKeyDown={(event) =>
+                              recordSnippetShortcut(event, textSnippet.id)
+                            }
+                            onFocus={(event) => event.currentTarget.select()}
+                            readOnly
+                            aria-label={`Record shortcut for ${textSnippet.name || "snippet"}`}
+                            aria-invalid={Boolean(issue)}
+                            title="Focus, then press the shortcut. Backspace clears it."
+                          />
+                        </label>
+                        {issue && <small className="snippet-issue">{issue}</small>}
+                        <label className="snippet-field snippet-template">
+                          <span>Text to insert</span>
+                          <textarea
+                            rows={5}
+                            value={textSnippet.template}
+                            onChange={(event) =>
+                              updateTextSnippet(textSnippet.id, { template: event.target.value })
+                            }
+                            spellCheck={false}
+                          />
+                        </label>
+                      </article>
+                    );
+                  })}
+                  {!textSnippets.length && (
+                    <p className="snippet-empty">No snippets yet. Add one to get started.</p>
+                  )}
+                </div>
+                <div className="snippet-actions">
+                  <button type="button" onClick={addTextSnippet}>
+                    <Plus size={14} /> Add snippet
+                  </button>
+                  <button
+                    type="button"
+                    onClick={restoreDefaultTextSnippets}
+                  >
+                    Restore defaults
+                  </button>
+                </div>
+              </div>
+            )}
+          </dialog>
         </>
       )}
 
-      <div className="workspace">
-        {navOpen && <button className="scrim" onClick={() => setNavOpen(false)} aria-label="Close library" />}
-        <aside className={`library-panel ${navOpen ? "is-open" : ""}`}>
+      <div
+        className={`workspace ${libraryCollapsed ? "library-collapsed" : ""} ${
+          outlineCollapsed ? "outline-collapsed" : ""
+        }`}
+      >
+        {navOpen && (
+          <button
+            className="scrim library-scrim"
+            onClick={() => setNavOpen(false)}
+            aria-label="Close library"
+          />
+        )}
+        <aside id="library-panel" className={`library-panel ${navOpen ? "is-open" : ""}`}>
           <div className="panel-mobile-head">
             <span>Library</span>
             <button className="icon-button" onClick={() => setNavOpen(false)} aria-label="Close library">
@@ -1949,7 +3285,7 @@ export default function Home() {
                           <span className="page-order">
                             {String(noteIndex + 1).padStart(2, "0")}
                           </span>
-                          <span>{note.title}</span>
+                          <span className="page-title">{note.title}</span>
                           {dirty.has(note.id) && <i aria-label="Unsaved changes" />}
                           <GripVertical className="drag-handle" size={13} aria-hidden="true" />
                         </button>
@@ -2033,37 +3369,44 @@ export default function Home() {
                   <span>Split</span>
                 </button>
               </div>
-              <button
-                className={`save-button ${saved ? "saved" : ""}`}
-                onClick={() => void saveActive()}
-                disabled={!dirty.has(active.id) && !saved}
-                title={
-                  desktopMode
-                    ? "Changes save automatically; click to save immediately"
-                    : active.handle
-                      ? "Save to Markdown file"
-                      : "Download Markdown file"
-                }
-              >
-                {saved ? (
-                  <Check size={15} />
-                ) : desktopMode || active.handle ? (
-                  <Save size={15} />
-                ) : (
-                  <Download size={15} />
-                )}
-                <span>
-                  {saved
-                    ? "Saved"
-                    : desktopMode
-                      ? dirty.has(active.id)
-                        ? "Saving…"
-                        : "Auto-save"
-                      : active.handle
-                        ? "Save"
-                        : "Export"}
-                </span>
-              </button>
+              {view === "split" && (
+                <button
+                  className={`icon-button split-lock-toggle ${
+                    splitScrollLocked ? "active" : ""
+                  }`}
+                  onClick={() => setSplitScrollLocked((locked) => !locked)}
+                  aria-pressed={splitScrollLocked}
+                  aria-label={
+                    splitScrollLocked
+                      ? "Unlock synchronized scrolling"
+                      : "Lock synchronized scrolling"
+                  }
+                  title={
+                    splitScrollLocked
+                      ? "Panes scroll together — click to scroll them independently"
+                      : "Panes scroll independently — click to scroll them together"
+                  }
+                >
+                  {splitScrollLocked ? <Lock size={14} /> : <LockOpen size={14} />}
+                </button>
+              )}
+              {!desktopMode && (
+                <button
+                  className={`save-button ${saved ? "saved" : ""}`}
+                  onClick={() => void saveActive()}
+                  disabled={!dirty.has(active.id) && !saved}
+                  title={active.handle ? "Save to Markdown file" : "Download Markdown file"}
+                >
+                  {saved ? (
+                    <Check size={15} />
+                  ) : active.handle ? (
+                    <Save size={15} />
+                  ) : (
+                    <Download size={15} />
+                  )}
+                  <span>{saved ? "Saved" : active.handle ? "Save" : "Export"}</span>
+                </button>
+              )}
             </div>
             <span className="document-progress" aria-hidden="true">
               <i style={{ width: `${pageProgress}%` }} />
@@ -2072,8 +3415,12 @@ export default function Home() {
 
           <div className={`reading-scroll mode-${view}`}>
             {(view === "preview" || view === "split") && (
-              <article className="markdown-page">
-                <div className="markdown-body">{markdown}</div>
+              <article
+                className="markdown-page"
+                ref={previewScrollRef}
+                onScroll={handlePreviewScroll}
+              >
+                <div className="markdown-body" ref={markdownBodyRef}>{markdown}</div>
 
                 <nav className="page-turner" aria-label="Page navigation">
                   {activeIndex > 0 ? (
@@ -2119,19 +3466,13 @@ export default function Home() {
                     height="100%"
                     theme="none"
                     extensions={editorExtensions}
-                    basicSetup={{
-                      lineNumbers: true,
-                      drawSelection: true,
-                      foldGutter: false,
-                      highlightActiveLine: false,
-                      highlightActiveLineGutter: false,
-                    }}
-                    onChange={(value) => updateContent(value)}
+                    basicSetup={EDITOR_BASIC_SETUP}
+                    onCreateEditor={handleEditorCreate}
+                    onChange={updateContent}
                     aria-label={`Edit ${active.title}`}
                   />
                 </div>
                 <div className="editor-status">
-                  <span>{desktopMode ? "Auto-save on" : "Markdown"}</span>
                   <span>{active.content.split(/\s+/).filter(Boolean).length} words</span>
                   <span>{active.content.length} characters</span>
                 </div>
@@ -2140,8 +3481,14 @@ export default function Home() {
           </div>
         </section>
 
-        {outlineOpen && <button className="scrim" onClick={() => setOutlineOpen(false)} aria-label="Close outline" />}
-        <aside className={`outline-panel ${outlineOpen ? "is-open" : ""}`}>
+        {outlineOpen && (
+          <button
+            className="scrim outline-scrim"
+            onClick={() => setOutlineOpen(false)}
+            aria-label="Close outline"
+          />
+        )}
+        <aside id="outline-panel" className={`outline-panel ${outlineOpen ? "is-open" : ""}`}>
           <div className="panel-mobile-head">
             <span>On this page</span>
             <button className="icon-button" onClick={() => setOutlineOpen(false)} aria-label="Close outline">
@@ -2194,8 +3541,23 @@ export default function Home() {
           </section>
 
           <div className="keyboard-hint">
-            <span><kbd>←</kbd><kbd>→</kbd> turn pages</span>
-            <span><kbd>⌘</kbd><kbd>S</kbd> {desktopMode ? "save now" : "save"}</span>
+            {(appShortcuts["previous-page"] || appShortcuts["next-page"]) && (
+              <span>
+                {appShortcuts["previous-page"] && (
+                  <kbd>{formatShortcut(appShortcuts["previous-page"])}</kbd>
+                )}
+                {appShortcuts["next-page"] && (
+                  <kbd>{formatShortcut(appShortcuts["next-page"])}</kbd>
+                )}
+                turn pages
+              </span>
+            )}
+            {appShortcuts.save && (
+              <span>
+                <kbd>{formatShortcut(appShortcuts.save)}</kbd>{" "}
+                {desktopMode ? "save now" : "save"}
+              </span>
+            )}
           </div>
         </aside>
       </div>
@@ -2240,7 +3602,7 @@ export default function Home() {
             <label className="create-field">
               <span>{createKind === "file" ? "File name" : "Folder name"}</span>
               <input
-                autoFocus
+                ref={createNameInput}
                 value={newEntryName}
                 onChange={(event) => setNewEntryName(event.target.value)}
                 placeholder={createKind === "file" ? "Untitled note" : "New section"}
@@ -2289,18 +3651,30 @@ export default function Home() {
             <div className="command-input">
               <Search size={18} />
               <input
-                autoFocus
+                ref={searchInput}
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" || !searchResults[0]) return;
+                  event.preventDefault();
+                  selectNote(searchResults[0].note.id);
+                  setSearchOpen(false);
+                  setSearchQuery("");
+                }}
                 placeholder="Search titles, sections, and contents…"
               />
               <kbd>esc</kbd>
             </div>
             <div className="command-results">
-              <span className="result-label">{searchQuery ? "Best matches" : "All pages"}</span>
-              {searchResults.slice(0, 8).map((note) => (
+              <span className="result-label">
+                {searchQuery.trim()
+                  ? `${searchResults.length} matching ${searchResults.length === 1 ? "page" : "pages"}`
+                  : "All pages"}
+              </span>
+              {searchResults.map(({ note, excerpts }) => (
                 <button
                   key={note.id}
+                  className="search-result"
                   onClick={() => {
                     selectNote(note.id);
                     setSearchOpen(false);
@@ -2308,11 +3682,21 @@ export default function Home() {
                   }}
                 >
                   <span className="result-icon"><FileText size={16} /></span>
-                  <span>
-                    <strong>{note.title}</strong>
-                    <small>{note.path}</small>
+                  <span className="result-copy">
+                    <strong>{highlightSearchText(note.title, searchQuery)}</strong>
+                    <small>{highlightSearchText(note.path, searchQuery)}</small>
+                    {excerpts.length > 0 && (
+                      <span className="result-excerpts" aria-label="Matching lines">
+                        {excerpts.map((excerpt) => (
+                          <span className="result-excerpt" key={`${note.id}:${excerpt.line}`}>
+                            <span className="result-line">L{excerpt.line}</span>
+                            <span>{highlightSearchText(excerpt.text, searchQuery)}</span>
+                          </span>
+                        ))}
+                      </span>
+                    )}
                   </span>
-                  <ArrowRight size={15} />
+                  <ArrowRight className="result-arrow" size={15} />
                 </button>
               ))}
               {!searchResults.length && (
