@@ -84,7 +84,8 @@ test("ships the requested reading, editing, and organization capabilities", asyn
   assert.match(css, /\.folio-code-editor/);
   assert.match(page, /theme="none"/);
   assert.match(css, /cursor:\s*text !important/);
-  assert.match(css, /\.cm-selectionLayer\s*\{[^}]*z-index:\s*3/);
+  assert.match(css, /\.cm-selectionLayer\s*\{[^}]*z-index:\s*3 !important/);
+  assert.match(css, /\.cm-selectionBackground\s*\{[^}]*var\(--editor-selection\) !important/);
   assert.match(css, /\.cm-lineWrapping\s*\{[^}]*overflow-wrap:\s*anywhere/);
   assert.match(css, /\.font-popover/);
   assert.match(css, /\.palette-grid/);
