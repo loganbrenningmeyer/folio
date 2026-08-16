@@ -146,9 +146,10 @@ The bundled **Interactive Python** sample page has working examples of all of th
 
 Open with the gear icon in the top bar. Three tabs:
 
-**Appearance** — five color schemes (Sage, Slate, Graphite, Sepia, Plum), and
-separate font choices for the reader and the editor (serif, sans, and monospace
-options).
+**Appearance** — twelve color schemes (Sage, Moss, Tide, Slate, Indigo, Plum,
+Rose, Clay, Sepia, Amber, Graphite, Contrast), each with a light and dark
+variant that follows the mode toggle in the top bar, and separate font choices
+for the reader and the editor (serif, sans, and monospace options).
 
 **Shortcuts** — rebind any of the commands below. Click a field, press the keys you
 want; Backspace clears a binding.

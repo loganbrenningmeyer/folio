@@ -259,6 +259,315 @@
   --syntax-frontmatter-bg: #282318;
 }
 
+:root[data-palette="moss"] {
+  --paper: #f8faf6;
+  --paper-deep: #eef3ea;
+  --panel: #f3f7f0;
+  --ink: #1f2620;
+  --ink-2: #435043;
+  --muted: #748574;
+  --faint: #a3b1a2;
+  --line: #dee7db;
+  --line-strong: #cbd8c7;
+  --accent: #3d6b45;
+  --accent-soft: #e0eddd;
+  --accent-ink: #2b5432;
+  --code-bg: #1b241c;
+  --syntax-heading: #2f6b57;
+  --syntax-quote: #4a7a4f;
+  --syntax-link: #2a7060;
+  --syntax-code-bg: #e7efe4;
+  --syntax-quote-bg: #e9f1e6;
+  --syntax-frontmatter-bg: #f0f0da;
+}
+
+:root[data-theme="dark"][data-palette="moss"] {
+  --paper: #141a15;
+  --paper-deep: #0f1410;
+  --panel: #1a211b;
+  --ink: #e4ebe2;
+  --ink-2: #bdc8bb;
+  --muted: #8b9c89;
+  --faint: #63735f;
+  --line: #273028;
+  --line-strong: #384339;
+  --accent: #7fb488;
+  --accent-soft: #1f3223;
+  --accent-ink: #a3d0a9;
+  --code-bg: #0c110d;
+  --syntax-heading: #7fc9a8;
+  --syntax-quote: #9ad0a0;
+  --syntax-link: #6fc7b1;
+  --syntax-code-bg: #16201a;
+  --syntax-quote-bg: #16241a;
+  --syntax-frontmatter-bg: #232517;
+}
+
+:root[data-palette="tide"] {
+  --paper: #f6fbfb;
+  --paper-deep: #e8f3f4;
+  --panel: #f0f8f8;
+  --ink: #1c2729;
+  --ink-2: #3f5254;
+  --muted: #6f868a;
+  --faint: #9fb3b6;
+  --line: #d8e8e9;
+  --line-strong: #c4dadc;
+  --accent: #2c6f75;
+  --accent-soft: #dbeded;
+  --accent-ink: #1e565c;
+  --code-bg: #17262a;
+  --syntax-heading: #1f6f86;
+  --syntax-quote: #3d7d74;
+  --syntax-link: #14748c;
+  --syntax-code-bg: #e2f0f1;
+  --syntax-quote-bg: #e4f1ee;
+  --syntax-frontmatter-bg: #edf1de;
+}
+
+:root[data-theme="dark"][data-palette="tide"] {
+  --paper: #101a1c;
+  --paper-deep: #0c1416;
+  --panel: #152123;
+  --ink: #dfebec;
+  --ink-2: #b6c8ca;
+  --muted: #849a9d;
+  --faint: #5c7073;
+  --line: #1f2f31;
+  --line-strong: #2e4245;
+  --accent: #63b7bd;
+  --accent-soft: #163134;
+  --accent-ink: #8fd4d9;
+  --code-bg: #090f11;
+  --syntax-heading: #6ec3dc;
+  --syntax-quote: #7fcabc;
+  --syntax-link: #5fc9d8;
+  --syntax-code-bg: #132022;
+  --syntax-quote-bg: #122421;
+  --syntax-frontmatter-bg: #22261a;
+}
+
+:root[data-palette="indigo"] {
+  --paper: #f9f9fd;
+  --paper-deep: #eeeef8;
+  --panel: #f4f4fb;
+  --ink: #212431;
+  --ink-2: #454a63;
+  --muted: #767b93;
+  --faint: #a5a9bd;
+  --line: #e0e1f0;
+  --line-strong: #cdcfe4;
+  --accent: #4c53a8;
+  --accent-soft: #e5e6f7;
+  --accent-ink: #383e8b;
+  --code-bg: #1c1d2b;
+  --syntax-heading: #4a5bb3;
+  --syntax-quote: #5a6a94;
+  --syntax-link: #3a6bb0;
+  --syntax-code-bg: #e8e9f5;
+  --syntax-quote-bg: #ebedf6;
+  --syntax-frontmatter-bg: #f1eee0;
+}
+
+:root[data-theme="dark"][data-palette="indigo"] {
+  --paper: #14151f;
+  --paper-deep: #0f1018;
+  --panel: #1a1b27;
+  --ink: #e5e6f2;
+  --ink-2: #bfc1d6;
+  --muted: #8f92ab;
+  --faint: #666a83;
+  --line: #262838;
+  --line-strong: #363a50;
+  --accent: #8f96e0;
+  --accent-soft: #24263f;
+  --accent-ink: #b0b5ee;
+  --code-bg: #0b0c12;
+  --syntax-heading: #99a4f0;
+  --syntax-quote: #9aa8d0;
+  --syntax-link: #86aef2;
+  --syntax-code-bg: #191b28;
+  --syntax-quote-bg: #1a1d2b;
+  --syntax-frontmatter-bg: #262418;
+}
+
+:root[data-palette="rose"] {
+  --paper: #fdf8f9;
+  --paper-deep: #f7ecee;
+  --panel: #fbf3f4;
+  --ink: #2c2225;
+  --ink-2: #56464a;
+  --muted: #8b757a;
+  --faint: #b8a1a5;
+  --line: #ecdde0;
+  --line-strong: #dcc8cc;
+  --accent: #97455c;
+  --accent-soft: #f4e2e6;
+  --accent-ink: #7b3349;
+  --code-bg: #261d20;
+  --syntax-heading: #a24a63;
+  --syntax-quote: #7a5a70;
+  --syntax-link: #8a5470;
+  --syntax-code-bg: #f2e5e8;
+  --syntax-quote-bg: #f3e8ea;
+  --syntax-frontmatter-bg: #f4ecdb;
+}
+
+:root[data-theme="dark"][data-palette="rose"] {
+  --paper: #1a1416;
+  --paper-deep: #140f11;
+  --panel: #211a1c;
+  --ink: #f0e2e5;
+  --ink-2: #cbb8bc;
+  --muted: #9d868b;
+  --faint: #715e62;
+  --line: #2f2427;
+  --line-strong: #443338;
+  --accent: #d98ba0;
+  --accent-soft: #351f27;
+  --accent-ink: #eaa9bb;
+  --code-bg: #0f0b0d;
+  --syntax-heading: #eb92a9;
+  --syntax-quote: #c9a4b4;
+  --syntax-link: #dfa0c0;
+  --syntax-code-bg: #211a1d;
+  --syntax-quote-bg: #241a1f;
+  --syntax-frontmatter-bg: #29231a;
+}
+
+:root[data-palette="clay"] {
+  --paper: #fdf8f4;
+  --paper-deep: #f5eae1;
+  --panel: #faf2ec;
+  --ink: #2d231c;
+  --ink-2: #574539;
+  --muted: #8d7767;
+  --faint: #b7a493;
+  --line: #ecdfd3;
+  --line-strong: #dbc9b9;
+  --accent: #a2542f;
+  --accent-soft: #f4e3d6;
+  --accent-ink: #843f20;
+  --code-bg: #271e18;
+  --syntax-heading: #a8562f;
+  --syntax-quote: #6f7a4c;
+  --syntax-link: #35707c;
+  --syntax-code-bg: #f2e6dc;
+  --syntax-quote-bg: #f0ecdc;
+  --syntax-frontmatter-bg: #f5ead2;
+}
+
+:root[data-theme="dark"][data-palette="clay"] {
+  --paper: #1a1512;
+  --paper-deep: #14100d;
+  --panel: #211b17;
+  --ink: #f0e3d8;
+  --ink-2: #cbbaac;
+  --muted: #9d8b7b;
+  --faint: #726355;
+  --line: #2f2721;
+  --line-strong: #45392f;
+  --accent: #dd8b58;
+  --accent-soft: #35251a;
+  --accent-ink: #f0a877;
+  --code-bg: #0f0c0a;
+  --syntax-heading: #ec9662;
+  --syntax-quote: #b3bd7f;
+  --syntax-link: #6fc0c9;
+  --syntax-code-bg: #211b16;
+  --syntax-quote-bg: #20211a;
+  --syntax-frontmatter-bg: #2a2317;
+}
+
+:root[data-palette="amber"] {
+  --paper: #fdfaf1;
+  --paper-deep: #f5efdd;
+  --panel: #faf6ea;
+  --ink: #2b2718;
+  --ink-2: #524b33;
+  --muted: #877f5f;
+  --faint: #b3ab8b;
+  --line: #ebe3cd;
+  --line-strong: #dbd1b5;
+  --accent: #8a6a1f;
+  --accent-soft: #f2e8cc;
+  --accent-ink: #6d5211;
+  --code-bg: #26221a;
+  --syntax-heading: #8f6a22;
+  --syntax-quote: #5f7a45;
+  --syntax-link: #3c6e86;
+  --syntax-code-bg: #f1ecd9;
+  --syntax-quote-bg: #eef0da;
+  --syntax-frontmatter-bg: #f5eccb;
+}
+
+:root[data-theme="dark"][data-palette="amber"] {
+  --paper: #191710;
+  --paper-deep: #13120c;
+  --panel: #201d14;
+  --ink: #efe8d2;
+  --ink-2: #c9c1a7;
+  --muted: #9a9276;
+  --faint: #6f6a52;
+  --line: #2d2a1d;
+  --line-strong: #423d2a;
+  --accent: #d7b45e;
+  --accent-soft: #332c17;
+  --accent-ink: #ebcd85;
+  --code-bg: #0e0d09;
+  --syntax-heading: #e3bd63;
+  --syntax-quote: #a9c47f;
+  --syntax-link: #7cbcd6;
+  --syntax-code-bg: #201d14;
+  --syntax-quote-bg: #1e2116;
+  --syntax-frontmatter-bg: #2a2415;
+}
+
+/* Maximum-legibility pair: pure paper/ink with a single saturated accent. */
+:root[data-palette="contrast"] {
+  --paper: #ffffff;
+  --paper-deep: #f2f2f2;
+  --panel: #fafafa;
+  --ink: #000000;
+  --ink-2: #2a2a2a;
+  --muted: #565656;
+  --faint: #767676;
+  --line: #d4d4d4;
+  --line-strong: #a8a8a8;
+  --accent: #0b4fbe;
+  --accent-soft: #e3ecfb;
+  --accent-ink: #093c92;
+  --code-bg: #16181c;
+  --syntax-heading: #0b4fbe;
+  --syntax-quote: #1c6b3a;
+  --syntax-link: #0a5f8f;
+  --syntax-code-bg: #eeeeee;
+  --syntax-quote-bg: #ebf3ed;
+  --syntax-frontmatter-bg: #f3f0e2;
+}
+
+:root[data-theme="dark"][data-palette="contrast"] {
+  --paper: #000000;
+  --paper-deep: #000000;
+  --panel: #0d0d0d;
+  --ink: #ffffff;
+  --ink-2: #e4e4e4;
+  --muted: #b4b4b4;
+  --faint: #8e8e8e;
+  --line: #333333;
+  --line-strong: #565656;
+  --accent: #79b0ff;
+  --accent-soft: #14243c;
+  --accent-ink: #a6cbff;
+  --code-bg: #0a0a0a;
+  --syntax-heading: #8cbcff;
+  --syntax-quote: #79d69b;
+  --syntax-link: #6fd0ee;
+  --syntax-code-bg: #141414;
+  --syntax-quote-bg: #101a13;
+  --syntax-frontmatter-bg: #1a180e;
+}
+
 * { box-sizing: border-box; }
 
 html {
@@ -458,33 +767,50 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-bottom: 1px solid var(--line);
 }
 
+/* The legend doubles as a readout: the hovered/selected scheme's description
+   sits on the right so the tiles themselves stay label-light. */
 .palette-control legend {
-  margin-bottom: 8px;
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
   color: var(--ink-2);
   font-size: 10px;
   font-weight: 650;
 }
 
+.palette-control legend em {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* auto-fill keeps the tiles readable when the popover narrows on small
+   windows: four across at full width, three when it is squeezed. */
 .palette-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
   gap: 7px;
 }
 
 .palette-grid button {
+  position: relative;
   min-width: 0;
-  min-height: 54px;
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 14px;
-  align-items: center;
-  gap: 8px;
-  padding: 8px;
+  gap: 5px;
+  padding: 5px 5px 6px;
   border: 1px solid var(--line);
   border-radius: 9px;
   background: var(--panel);
   color: var(--ink-2);
   cursor: pointer;
-  text-align: left;
+  text-align: center;
 }
 
 .palette-grid button:hover {
@@ -497,41 +823,41 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-.palette-grid button > span:nth-child(2) { min-width: 0; }
-
-.palette-grid strong,
-.palette-grid small {
+.palette-grid strong {
   display: block;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.palette-grid strong {
   color: var(--ink);
   font-size: 10px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
-
-.palette-grid small {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 8px;
-}
-
-.palette-grid button > svg { color: var(--accent); }
 
 .palette-swatches {
-  width: 34px;
-  height: 30px;
+  height: 34px;
   display: flex;
   overflow: hidden;
-  border: 1px solid rgb(0 0 0 / 10%);
+  border: 1px solid var(--line-strong);
   border-radius: 6px;
 }
 
 .palette-swatches i {
   flex: 1;
   height: 100%;
+}
+
+.palette-check {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--paper);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 28%);
 }
 
 .font-control {

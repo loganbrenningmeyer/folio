@@ -472,36 +472,93 @@ function readerWidthIndex(value: string | null) {
     : undefined;
 }
 
+/* Ordered around the hue wheel — greens, blues, violets, warms, then the two
+   neutrals — so the swatch grid reads as a spectrum rather than a list.
+   Swatches are [paper-deep, accent, ink] per mode, matching globals.css. */
 const COLOR_PALETTES = [
   {
     id: "sage",
     label: "Sage",
     description: "Greenish gray",
-    swatches: ["#f3f1ea", "#45664e", "#252621"],
+    light: ["#f3f1ea", "#45664e", "#252621"],
+    dark: ["#121310", "#8aac90", "#e8e7df"],
+  },
+  {
+    id: "moss",
+    label: "Moss",
+    description: "Deep forest green",
+    light: ["#eef3ea", "#3d6b45", "#1f2620"],
+    dark: ["#0f1410", "#7fb488", "#e4ebe2"],
+  },
+  {
+    id: "tide",
+    label: "Tide",
+    description: "Cool teal",
+    light: ["#e8f3f4", "#2c6f75", "#1c2729"],
+    dark: ["#0c1416", "#63b7bd", "#dfebec"],
   },
   {
     id: "slate",
     label: "Slate",
     description: "Bluish gray",
-    swatches: ["#edf1f4", "#476d8a", "#20262b"],
+    light: ["#edf2f5", "#476d8a", "#20262b"],
+    dark: ["#101418", "#7da6c7", "#e6ebee"],
   },
   {
-    id: "graphite",
-    label: "Graphite",
-    description: "Neutral gray",
-    swatches: ["#f1f1f1", "#61666b", "#222222"],
-  },
-  {
-    id: "sepia",
-    label: "Sepia",
-    description: "Warm paper",
-    swatches: ["#f3ecdf", "#876342", "#2b251e"],
+    id: "indigo",
+    label: "Indigo",
+    description: "Deep blue-violet",
+    light: ["#eeeef8", "#4c53a8", "#212431"],
+    dark: ["#0f1018", "#8f96e0", "#e5e6f2"],
   },
   {
     id: "plum",
     label: "Plum",
     description: "Muted violet",
-    swatches: ["#f1edf3", "#765d82", "#29232c"],
+    light: ["#f1edf3", "#765d82", "#29232c"],
+    dark: ["#121013", "#b293be", "#ebe5ed"],
+  },
+  {
+    id: "rose",
+    label: "Rose",
+    description: "Soft rosewood",
+    light: ["#f7ecee", "#97455c", "#2c2225"],
+    dark: ["#140f11", "#d98ba0", "#f0e2e5"],
+  },
+  {
+    id: "clay",
+    label: "Clay",
+    description: "Warm terracotta",
+    light: ["#f5eae1", "#a2542f", "#2d231c"],
+    dark: ["#14100d", "#dd8b58", "#f0e3d8"],
+  },
+  {
+    id: "sepia",
+    label: "Sepia",
+    description: "Warm paper",
+    light: ["#f3ecdf", "#876342", "#2b251e"],
+    dark: ["#13110e", "#c69a69", "#ece3d4"],
+  },
+  {
+    id: "amber",
+    label: "Amber",
+    description: "Golden honey",
+    light: ["#f5efdd", "#8a6a1f", "#2b2718"],
+    dark: ["#13120c", "#d7b45e", "#efe8d2"],
+  },
+  {
+    id: "graphite",
+    label: "Graphite",
+    description: "Neutral gray",
+    light: ["#f1f1f1", "#61666b", "#222222"],
+    dark: ["#111111", "#a9adb2", "#e8e8e8"],
+  },
+  {
+    id: "contrast",
+    label: "Contrast",
+    description: "Maximum legibility",
+    light: ["#f2f2f2", "#0b4fbe", "#000000"],
+    dark: ["#000000", "#79b0ff", "#ffffff"],
   },
 ] as const;
 
@@ -4121,7 +4178,15 @@ export default function Home() {
             {preferenceTab === "appearance" && (
               <div className="preference-pane" role="tabpanel">
                 <fieldset className="palette-control">
-                  <legend>Color scheme</legend>
+                  <legend>
+                    Color scheme
+                    <em>
+                      {
+                        COLOR_PALETTES.find((entry) => entry.id === palette)
+                          ?.description
+                      }
+                    </em>
+                  </legend>
                   <div
                     className="palette-grid"
                     role="radiogroup"
@@ -4137,18 +4202,20 @@ export default function Home() {
                         onClick={() => setPalette(colorPalette.id)}
                         role="radio"
                         aria-checked={palette === colorPalette.id}
+                        aria-label={`${colorPalette.label} — ${colorPalette.description}`}
                         title={colorPalette.description}
                       >
                         <span className="palette-swatches" aria-hidden="true">
-                          {colorPalette.swatches.map((color) => (
+                          {colorPalette[theme].map((color) => (
                             <i key={color} style={{ background: color }} />
                           ))}
                         </span>
-                        <span>
-                          <strong>{colorPalette.label}</strong>
-                          <small>{colorPalette.description}</small>
-                        </span>
-                        {palette === colorPalette.id && <Check size={13} />}
+                        <strong>{colorPalette.label}</strong>
+                        {palette === colorPalette.id && (
+                          <span className="palette-check" aria-hidden="true">
+                            <Check size={11} strokeWidth={3} />
+                          </span>
+                        )}
                       </button>
                     ))}
                   </div>
