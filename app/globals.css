@@ -843,7 +843,19 @@ kbd {
 }
 
 .folio-code-editor .cm-scroller {
+  overflow-x: hidden !important;
   scrollbar-color: var(--line-strong) transparent;
+}
+
+.folio-code-editor .cm-content {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.folio-code-editor .cm-lineWrapping {
+  white-space: break-spaces;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .folio-code-editor .cm-selectionLayer {

@@ -614,6 +614,7 @@ function createEditorExtensions(theme: Theme) {
     markdown({ codeLanguages: languages }),
     syntaxHighlighting(highlightStyle),
     editorDecorationPlugin,
+    EditorView.lineWrapping,
     EditorView.contentAttributes.of({
       spellcheck: "false",
       autocorrect: "off",
@@ -634,12 +635,15 @@ function createEditorExtensions(theme: Theme) {
         "&.cm-focused": { outline: "none" },
         ".cm-scroller": {
           overflow: "auto",
+          overflowX: "hidden",
           overscrollBehavior: "contain",
           fontFamily: "var(--font-code)",
           lineHeight: "22px",
           cursor: "text",
         },
         ".cm-content": {
+          width: "100%",
+          maxWidth: "100%",
           minHeight: "100%",
           padding: "24px 28px 50px",
           caretColor: "var(--accent)",
@@ -648,6 +652,8 @@ function createEditorExtensions(theme: Theme) {
         ".cm-line": {
           padding: "0",
           cursor: "text",
+          overflowWrap: "anywhere",
+          wordBreak: "break-word",
         },
         ".cm-selectionLayer": {
           zIndex: "3",

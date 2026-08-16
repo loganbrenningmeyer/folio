@@ -71,6 +71,7 @@ test("ships the requested reading, editing, and organization capabilities", asyn
   assert.match(page, /cm-folio-code-line/);
   assert.match(page, /spellcheck: "false"/);
   assert.match(page, /drawSelection: true/);
+  assert.match(page, /EditorView\.lineWrapping/);
   assert.match(page, /FONT_CHOICES/);
   assert.match(page, /folio-reader-font/);
   assert.match(page, /folio-editor-font/);
@@ -82,6 +83,7 @@ test("ships the requested reading, editing, and organization capabilities", asyn
   assert.match(page, /theme="none"/);
   assert.match(css, /cursor:\s*text !important/);
   assert.match(css, /\.cm-selectionLayer\s*\{[^}]*z-index:\s*3/);
+  assert.match(css, /\.cm-lineWrapping\s*\{[^}]*overflow-wrap:\s*anywhere/);
   assert.match(css, /\.font-popover/);
   assert.doesNotMatch(css, /user-select:\s*text !important/);
   assert.match(css, /--syntax-math:\s*#266fa9/);
