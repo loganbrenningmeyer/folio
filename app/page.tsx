@@ -335,6 +335,27 @@ function fontStack(id: FontId) {
   return FONT_CHOICES.find((font) => font.id === id)?.stack ?? FONT_CHOICES[0].stack;
 }
 
+// Notches for the reading-width slider: the widest the page column is allowed
+// to get. A pane narrower than the chosen width simply uses what it has, so
+// split view degrades to wrapping instead of overflowing.
+const READER_WIDTHS = [
+  { label: "Narrow", width: 620 },
+  { label: "Snug", width: 700 },
+  { label: "Default", width: 780 },
+  { label: "Roomy", width: 880 },
+  { label: "Wide", width: 1000 },
+  { label: "Full", width: 1180 },
+] as const;
+
+const DEFAULT_READER_WIDTH_INDEX = 2;
+
+function readerWidthIndex(value: string | null) {
+  const index = Number(value);
+  return Number.isInteger(index) && index >= 0 && index < READER_WIDTHS.length
+    ? index
+    : undefined;
+}
+
 const COLOR_PALETTES = [
   { id: "sage", label: "Sage", description: "Greenish gray", swatches: ["#f3f1ea", "#45664e", "#252621"] },
   { id: "slate", label: "Slate", description: "Bluish gray", swatches: ["#edf1f4", "#476d8a", "#20262b"] },
@@ -1640,6 +1661,7 @@ export default function Home() {
   const [palette, setPalette] = useState<PaletteId>("sage");
   const [readerFont, setReaderFont] = useState<FontId>("iowan");
   const [editorFont, setEditorFont] = useState<FontId>("sf-mono");
+  const [readerWidth, setReaderWidth] = useState(DEFAULT_READER_WIDTH_INDEX);
   const [appearancePreferencesLoaded, setAppearancePreferencesLoaded] = useState(false);
   const [preferenceTab, setPreferenceTab] = useState<PreferenceTab>("appearance");
   const [textSnippets, setTextSnippets] = useState<TextSnippet[]>(
@@ -2062,10 +2084,14 @@ export default function Home() {
       const storedPalette = localStorage.getItem("folio-color-palette");
       const storedReaderFont = localStorage.getItem("folio-reader-font");
       const storedEditorFont = localStorage.getItem("folio-editor-font");
+      const storedWidth = readerWidthIndex(
+        localStorage.getItem("folio-reader-width"),
+      );
       setTheme(storedTheme ?? preferred);
       if (isPaletteId(storedPalette)) setPalette(storedPalette);
       if (isFontId(storedReaderFont)) setReaderFont(storedReaderFont);
       if (isFontId(storedEditorFont)) setEditorFont(storedEditorFont);
+      if (storedWidth !== undefined) setReaderWidth(storedWidth);
       setAppearancePreferencesLoaded(true);
     }, 0);
     return () => window.clearTimeout(timer);
@@ -2096,6 +2122,15 @@ export default function Home() {
     localStorage.setItem("folio-reader-font", readerFont);
     localStorage.setItem("folio-editor-font", editorFont);
   }, [appearancePreferencesLoaded, editorFont, readerFont]);
+
+  useEffect(() => {
+    if (!appearancePreferencesLoaded) return;
+    document.documentElement.style.setProperty(
+      "--reader-width",
+      `${READER_WIDTHS[readerWidth].width}px`,
+    );
+    localStorage.setItem("folio-reader-width", String(readerWidth));
+  }, [appearancePreferencesLoaded, readerWidth]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -3476,6 +3511,36 @@ export default function Home() {
                   <span>01</span>
                   <p>{'const note = "connected";'}</p>
                 </div>
+                <fieldset className="width-control">
+                  <legend>Reading width</legend>
+                  <input
+                    type="range"
+                    min={0}
+                    max={READER_WIDTHS.length - 1}
+                    step={1}
+                    value={readerWidth}
+                    list="reader-width-notches"
+                    onChange={(event) =>
+                      setReaderWidth(Number(event.target.value))
+                    }
+                    aria-label="Reading width"
+                    aria-valuetext={READER_WIDTHS[readerWidth].label}
+                  />
+                  <datalist id="reader-width-notches">
+                    {READER_WIDTHS.map((option) => (
+                      <option key={option.width} value={READER_WIDTHS.indexOf(option)} />
+                    ))}
+                  </datalist>
+                  <div className="width-readout">
+                    <strong>{READER_WIDTHS[readerWidth].label}</strong>
+                    <span>{READER_WIDTHS[readerWidth].width}px</span>
+                  </div>
+                  <p className="width-note">
+                    Applies to Read and Split views alike. A narrower pane just uses
+                    the room it has.
+                  </p>
+                </fieldset>
+
                 <p className="font-footnote">Preferences stay on this device.</p>
               </div>
             )}
@@ -3504,7 +3569,15 @@ export default function Home() {
                             <span>{command.label}</span>
                             <input
                               className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
-                              value={formatShortcut(appShortcuts[command.id])}
+                              // Symbols are set large, so the unbound state
+                              // uses a short placeholder rather than a label
+                              // that would not fit.
+                              value={
+                                appShortcuts[command.id]
+                                  ? formatShortcut(appShortcuts[command.id])
+                                  : ""
+                              }
+                              placeholder="Not set"
                               onKeyDown={(event) =>
                                 recordAppShortcut(event, command.id)
                               }
@@ -3540,31 +3613,59 @@ export default function Home() {
                   Write <code>\$1</code> for literal text.
                 </p>
                 <div className="snippet-list">
-                  {textSnippets.map((textSnippet, index) => {
+                  {textSnippets.map((textSnippet) => {
                     const issue = snippetShortcutIssue(
                       textSnippet,
                       textSnippets,
                       appShortcuts,
                     );
+                    const label = textSnippet.name || "snippet";
                     return (
                       <article
                         className={`snippet-card ${textSnippet.enabled ? "" : "disabled"}`}
                         key={textSnippet.id}
                       >
                         <div className="snippet-card-head">
-                          <strong>Snippet {index + 1}</strong>
-                          <label className="snippet-enabled">
-                            <input
-                              type="checkbox"
-                              checked={textSnippet.enabled}
-                              onChange={(event) =>
-                                updateTextSnippet(textSnippet.id, {
-                                  enabled: event.target.checked,
-                                })
-                              }
-                            />
-                            <span>Enabled</span>
-                          </label>
+                          <input
+                            type="checkbox"
+                            className="snippet-enabled"
+                            checked={textSnippet.enabled}
+                            onChange={(event) =>
+                              updateTextSnippet(textSnippet.id, {
+                                enabled: event.target.checked,
+                              })
+                            }
+                            aria-label={`Enable ${label}`}
+                            title={textSnippet.enabled ? "Enabled" : "Disabled"}
+                          />
+                          <input
+                            className="snippet-name"
+                            value={textSnippet.name}
+                            onChange={(event) =>
+                              updateTextSnippet(textSnippet.id, { name: event.target.value })
+                            }
+                            placeholder="Snippet name"
+                            aria-label="Snippet name"
+                          />
+                          <input
+                            className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
+                            // The compact box has no room for the long empty
+                            // label the Shortcuts tab uses.
+                            value={
+                              textSnippet.shortcut
+                                ? formatShortcut(textSnippet.shortcut)
+                                : ""
+                            }
+                            placeholder="Set"
+                            onKeyDown={(event) =>
+                              recordSnippetShortcut(event, textSnippet.id)
+                            }
+                            onFocus={(event) => event.currentTarget.select()}
+                            readOnly
+                            aria-label={`Record shortcut for ${label}`}
+                            aria-invalid={Boolean(issue)}
+                            title="Focus, then press the shortcut. Backspace clears it."
+                          />
                           <button
                             type="button"
                             className="subtle-icon"
@@ -3573,49 +3674,23 @@ export default function Home() {
                                 current.filter((candidate) => candidate.id !== textSnippet.id),
                               )
                             }
-                            aria-label={`Delete ${textSnippet.name || "snippet"}`}
+                            aria-label={`Delete ${label}`}
                             title="Delete snippet"
                           >
-                            <Trash2 size={14} />
+                            <Trash2 size={13} />
                           </button>
                         </div>
-                        <label className="snippet-field">
-                          <span>Name</span>
-                          <input
-                            value={textSnippet.name}
-                            onChange={(event) =>
-                              updateTextSnippet(textSnippet.id, { name: event.target.value })
-                            }
-                            placeholder="Snippet name"
-                          />
-                        </label>
-                        <label className="snippet-field">
-                          <span>Shortcut</span>
-                          <input
-                            className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
-                            value={formatShortcut(textSnippet.shortcut)}
-                            onKeyDown={(event) =>
-                              recordSnippetShortcut(event, textSnippet.id)
-                            }
-                            onFocus={(event) => event.currentTarget.select()}
-                            readOnly
-                            aria-label={`Record shortcut for ${textSnippet.name || "snippet"}`}
-                            aria-invalid={Boolean(issue)}
-                            title="Focus, then press the shortcut. Backspace clears it."
-                          />
-                        </label>
                         {issue && <small className="snippet-issue">{issue}</small>}
-                        <label className="snippet-field snippet-template">
-                          <span>Text to insert</span>
-                          <textarea
-                            rows={5}
-                            value={textSnippet.template}
-                            onChange={(event) =>
-                              updateTextSnippet(textSnippet.id, { template: event.target.value })
-                            }
-                            spellCheck={false}
-                          />
-                        </label>
+                        <textarea
+                          className="snippet-template"
+                          value={textSnippet.template}
+                          onChange={(event) =>
+                            updateTextSnippet(textSnippet.id, { template: event.target.value })
+                          }
+                          placeholder="Text to insert…"
+                          spellCheck={false}
+                          aria-label={`Text inserted by ${label}`}
+                        />
                       </article>
                     );
                   })}

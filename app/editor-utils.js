@@ -486,11 +486,49 @@ export function markdownBlockCompletion(documentText, from, to, text) {
 }
 
 /** @param {string} shortcut */
+const SHORTCUT_MODIFIER_SYMBOLS = {
+  Ctrl: "⌃",
+  Alt: "⌥",
+  Shift: "⇧",
+  Meta: "⌘",
+};
+
+const SHORTCUT_KEY_SYMBOLS = {
+  ArrowDown: "↓",
+  ArrowLeft: "←",
+  ArrowRight: "→",
+  ArrowUp: "↑",
+  Backspace: "⌫",
+  Delete: "⌦",
+  End: "↘",
+  Enter: "↩",
+  Escape: "⎋",
+  Home: "↖",
+  PageDown: "⇟",
+  PageUp: "⇞",
+  Space: "␣",
+  Tab: "⇥",
+};
+
+/**
+ * Renders a shortcut the way macOS does: symbols, no separators, and
+ * modifiers in the conventional ⌃⌥⇧⌘ order regardless of how they were typed.
+ *
+ * @param {string} shortcut
+ */
 export function formatShortcut(shortcut) {
   if (!shortcut) return "Press shortcut";
   const { modifiers, key } = shortcutParts(shortcut);
-  return [...modifiers.map((modifier) => (modifier === "Meta" ? "⌘" : modifier)), key]
-    .join(" + ");
+  const ordered = Object.keys(SHORTCUT_MODIFIER_SYMBOLS).filter((modifier) =>
+    modifiers.includes(modifier),
+  );
+  const symbols = ordered.map(
+    (modifier) => SHORTCUT_MODIFIER_SYMBOLS[modifier],
+  );
+  return [
+    ...symbols,
+    SHORTCUT_KEY_SYMBOLS[key] ?? (key.length === 1 ? key.toUpperCase() : key),
+  ].join("");
 }
 
 /**

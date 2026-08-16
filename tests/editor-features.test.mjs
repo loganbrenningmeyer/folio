@@ -53,7 +53,7 @@ test("records the unshifted physical key for snippet shortcuts", () => {
   });
 
   assert.equal(shortcut, "Ctrl-Shift-\\");
-  assert.equal(formatShortcut(shortcut), "Ctrl + Shift + \\");
+  assert.equal(formatShortcut(shortcut), "⌃⇧\\");
   assert.equal(isRecordedShortcut(shortcut), true);
   assert.equal(
     shortcutFromEvent({
@@ -104,7 +104,7 @@ test("records Meta plus Arrow exactly and formats the canonical shortcut", () =>
   );
 
   assert.equal(metaArrow, "Meta-ArrowLeft");
-  assert.equal(formatShortcut(metaArrow), "⌘ + ArrowLeft");
+  assert.equal(formatShortcut(metaArrow), "⌘←");
   assert.equal(isCommandShortcut(metaArrow), true);
   assert.notEqual(metaArrow, bareArrow);
   assert.equal(shortcutMatches("Meta-ArrowLeft", metaArrow), true);
@@ -529,4 +529,15 @@ test("captions round-trip through a whole image line", () => {
     width: 480,
     align: "center",
   });
+});
+
+test("shortcuts render as macOS symbols in canonical modifier order", () => {
+  // Recorded in a different order than macOS displays them.
+  assert.equal(formatShortcut("Meta-Shift-Ctrl-Alt-k"), "⌃⌥⇧⌘K");
+  assert.equal(formatShortcut("Ctrl-Shift-e"), "⌃⇧E");
+  assert.equal(formatShortcut("Meta-ArrowRight"), "⌘→");
+  assert.equal(formatShortcut("Meta-Backspace"), "⌘⌫");
+  assert.equal(formatShortcut("Shift-F2"), "⇧F2");
+  assert.equal(formatShortcut("Meta-Space"), "⌘␣");
+  assert.equal(formatShortcut(""), "Press shortcut");
 });
