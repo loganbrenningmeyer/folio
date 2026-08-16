@@ -124,6 +124,207 @@ async fn scan_library(state: State<'_, LibraryState>) -> Result<Option<LibrarySn
     Ok(Some(scan_library_root(&root)?))
 }
 
+/// Entry budget for a folder Folio decides to open by itself. Following a link
+/// out of the library reopens it at the folder holding both pages, and that
+/// shared folder is only a library if it is small enough to read — a home
+/// folder is not. Counting stops as soon as the budget is spent, so a huge tree
+/// costs no more than a glance.
+const LINKED_LIBRARY_ENTRY_LIMIT: usize = 20_000;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedNote {
+    snapshot: LibrarySnapshot,
+    path: String,
+    rerooted: bool,
+}
+
+/// Follows a Markdown link to a page that may sit outside the open library.
+///
+/// `href` is resolved against the folder of the page that holds it, `..`
+/// included, so a link may point above the library root. When it does, Folio
+/// reopens the library at the nearest folder containing both pages — or at the
+/// linked page's own folder when the two only meet somewhere unreadably large —
+/// and the returned snapshot replaces the open one. `Ok(None)` means the link
+/// names no existing Markdown file, which the reading view reports as "not
+/// found" rather than as a failure.
+#[tauri::command]
+async fn open_linked_note(
+    app: AppHandle,
+    note_path: String,
+    href: String,
+    state: State<'_, LibraryState>,
+) -> Result<Option<LinkedNote>, String> {
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    let Some((new_root, linked)) = follow_link_in_library(&root, &note_path, &href)? else {
+        return Ok(None);
+    };
+
+    if linked.rerooted {
+        // Persist only after the scan succeeds, matching choose_library: a
+        // folder Folio could not read must not replace the working library.
+        save_preferences(&app, Some(&new_root))?;
+        state.set(Some(new_root))?;
+    }
+    Ok(Some(linked))
+}
+
+/// The filesystem half of `open_linked_note`, split out so it can be tested
+/// against a real directory without a Tauri state handle. Returns the folder
+/// the library should now be rooted at along with the snapshot of it.
+fn follow_link_in_library(
+    root: &Path,
+    note_path: &str,
+    href: &str,
+) -> Result<Option<(PathBuf, LinkedNote)>, String> {
+    let note_relative = validate_relative_path(note_path, PathKind::MarkdownFile)?;
+    let note_directory = resolve_existing_directory(
+        root,
+        note_relative.parent().unwrap_or_else(|| Path::new("")),
+    )?;
+
+    let Some(target) = resolve_link_target(root, &note_directory, href) else {
+        return Ok(None);
+    };
+    let target_directory = target.parent().unwrap_or(root).to_path_buf();
+
+    // A link that stays inside the open library only needs a fresh scan: the
+    // file may have appeared since the last one. Re-rooting on it would shrink
+    // the library to a subfolder, which is never what a link click asked for.
+    let new_root = if target.starts_with(root) {
+        root.to_path_buf()
+    } else {
+        linked_library_root(&note_directory, &target_directory)
+    };
+
+    let snapshot = scan_library_root(&new_root)?;
+    let relative = target
+        .strip_prefix(&new_root)
+        .map_err(|_| "The linked page is outside the folder Folio opened.".to_string())?;
+    let relative = relative_path_to_string(relative)?;
+    // A case-insensitive volume opens a differently spelled link happily, but
+    // the reading view can only select the page under its scanned name.
+    let path = snapshot
+        .notes
+        .iter()
+        .find(|note| note.path == relative)
+        .or_else(|| {
+            snapshot
+                .notes
+                .iter()
+                .find(|note| note.path.eq_ignore_ascii_case(&relative))
+        })
+        .map(|note| note.path.clone())
+        .unwrap_or(relative);
+
+    let rerooted = new_root != root;
+    Ok(Some((
+        new_root,
+        LinkedNote {
+            snapshot,
+            path,
+            rerooted,
+        },
+    )))
+}
+
+/// Resolves a Markdown link to an existing `.md` file. The href is joined onto
+/// the linking page's folder lexically — `..` may leave the library — and the
+/// result must be a real file reached without crossing a symbolic link.
+fn resolve_link_target(root: &Path, note_directory: &Path, href: &str) -> Option<PathBuf> {
+    let href = href.trim();
+    if href.is_empty() || href.contains('\0') || href.chars().any(char::is_control) {
+        return None;
+    }
+
+    let href = href.replace('\\', "/");
+    let destination = href.split(['#', '?']).next()?;
+    let (base, destination) = match destination.strip_prefix('/') {
+        // A leading slash reads as "from the library root", the same way the
+        // reading view resolves it.
+        Some(rest) => (root, rest),
+        None => (note_directory, destination),
+    };
+
+    let mut resolved = base.to_path_buf();
+    for segment in destination.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                if !resolved.pop() {
+                    return None;
+                }
+            }
+            segment => resolved.push(segment),
+        }
+    }
+    if !has_markdown_extension(&resolved) {
+        return None;
+    }
+
+    // The library root, and so every folder above and inside it that Folio
+    // resolved, is canonical. An unchanged path therefore proves the link
+    // crossed no symbolic link on its way here.
+    let canonical = fs::canonicalize(&resolved).ok()?;
+    if canonical != resolved || !fs::metadata(&canonical).ok()?.is_file() {
+        return None;
+    }
+    Some(canonical)
+}
+
+/// The folder Folio opens to show both ends of a link: the deepest folder that
+/// holds them both, or the linked page's own folder when the two share nothing
+/// but the filesystem root, or share a folder too large to read as a library.
+fn linked_library_root(note_directory: &Path, target_directory: &Path) -> PathBuf {
+    shared_parent(note_directory, target_directory)
+        .filter(|shared| within_entry_budget(shared, LINKED_LIBRARY_ENTRY_LIMIT))
+        .unwrap_or_else(|| target_directory.to_path_buf())
+}
+
+/// The deepest folder containing both paths, or None when they meet only at the
+/// filesystem root (or, on Windows, not at all).
+fn shared_parent(left: &Path, right: &Path) -> Option<PathBuf> {
+    let mut shared = PathBuf::new();
+    let mut named_segments = 0;
+    for (left_component, right_component) in left.components().zip(right.components()) {
+        if left_component != right_component {
+            break;
+        }
+        if matches!(left_component, Component::Normal(_)) {
+            named_segments += 1;
+        }
+        shared.push(left_component);
+    }
+    (named_segments > 0).then_some(shared)
+}
+
+/// Whether `directory` holds at most `budget` entries. Symbolic links are not
+/// followed, matching the library scan, and an unreadable folder counts as over
+/// budget because scanning it would fail anyway.
+fn within_entry_budget(directory: &Path, budget: usize) -> bool {
+    let mut remaining = budget;
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            return false;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return false;
+            };
+            if remaining == 0 {
+                return false;
+            }
+            remaining -= 1;
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                pending.push(entry.path());
+            }
+        }
+    }
+    true
+}
+
 #[tauri::command]
 async fn create_folder(
     path: String,
@@ -1034,6 +1235,7 @@ pub fn run() {
             restore_library,
             choose_library,
             scan_library,
+            open_linked_note,
             create_folder,
             create_note,
             write_note,
@@ -1227,6 +1429,124 @@ mod tests {
         assert!(
             rename_in_library(&root, "Field notes", "../escape", PathKind::Folder).is_err()
         );
+
+        fs::remove_dir_all(&root).expect("remove test root");
+    }
+
+    #[test]
+    fn follows_links_out_of_the_library_to_the_folder_holding_both_pages() {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+        let base = std::env::temp_dir().join(format!(
+            "folio-linked-note-test-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&base).expect("create test base");
+        let base = fs::canonicalize(&base).expect("canonicalize base");
+        let notes = base.join("notes");
+        fs::create_dir_all(notes.join("rust")).expect("create rust folder");
+        fs::create_dir_all(notes.join("math")).expect("create math folder");
+        fs::create_dir_all(base.join("elsewhere")).expect("create elsewhere folder");
+        fs::write(notes.join("rust/Ownership.md"), "body").expect("write linking page");
+        fs::write(notes.join("math/Topology.md"), "body").expect("write linked page");
+        fs::write(base.join("elsewhere/Far.md"), "body").expect("write far page");
+        fs::write(notes.join("rust/notes.txt"), "body").expect("write text file");
+
+        // The library is open at notes/rust, so a link into notes/math points
+        // above its root.
+        let root = notes.join("rust");
+        let target = resolve_link_target(&root, &root, "../math/Topology.md")
+            .expect("resolve the linked page");
+        assert_eq!(target, notes.join("math/Topology.md"));
+        assert_eq!(
+            linked_library_root(&root, target.parent().expect("target folder")),
+            notes,
+            "both pages live under notes, so that is the folder to open"
+        );
+
+        // A page that shares nothing but the temporary base still opens, just
+        // at its own folder — here the base is small enough to be shared, so
+        // the shared-parent rule applies to it too.
+        let far = resolve_link_target(&root, &root, "../../elsewhere/Far.md")
+            .expect("resolve the far page");
+        assert_eq!(
+            linked_library_root(&root, far.parent().expect("far folder")),
+            base
+        );
+
+        // Only real Markdown files are followed.
+        assert!(resolve_link_target(&root, &root, "notes.txt").is_none());
+        assert!(resolve_link_target(&root, &root, "../math/Missing.md").is_none());
+        assert!(resolve_link_target(&root, &root, "").is_none());
+        // A leading slash reads from the library root, not the filesystem's.
+        assert_eq!(
+            resolve_link_target(&notes, &notes.join("rust"), "/math/Topology.md"),
+            Some(notes.join("math/Topology.md"))
+        );
+
+        // End to end: the library opens at notes with the linked page selected
+        // under the path the scan gave it.
+        let (new_root, linked) =
+            follow_link_in_library(&root, "Ownership.md", "../math/Topology.md#axioms")
+                .expect("follow the link")
+                .expect("the linked page exists");
+        assert_eq!(new_root, notes);
+        assert_eq!(linked.path, "math/Topology.md");
+        assert!(linked.rerooted);
+        assert!(linked
+            .snapshot
+            .notes
+            .iter()
+            .any(|note| note.id == linked.path));
+        assert_eq!(linked.snapshot.name, "notes");
+        assert_eq!(linked.snapshot.notes.len(), 2, "both pages are in view");
+
+        // A link that stays inside the open library keeps that library open,
+        // even when the page appeared after the last scan.
+        fs::write(notes.join("rust/Traits.md"), "body").expect("write new page");
+        let (unchanged_root, linked) =
+            follow_link_in_library(&notes, "rust/Ownership.md", "Traits.md")
+                .expect("follow the link")
+                .expect("the linked page exists");
+        assert_eq!(unchanged_root, notes);
+        assert_eq!(linked.path, "rust/Traits.md");
+        assert!(!linked.rerooted);
+
+        assert!(follow_link_in_library(&root, "Ownership.md", "Missing.md")
+            .expect("follow the link")
+            .is_none());
+
+        fs::remove_dir_all(&base).expect("remove test base");
+    }
+
+    #[test]
+    fn shared_parent_stops_at_the_filesystem_root() {
+        assert_eq!(
+            shared_parent(Path::new("/a/notes/rust"), Path::new("/a/notes/math")),
+            Some(PathBuf::from("/a/notes"))
+        );
+        assert_eq!(
+            shared_parent(Path::new("/a/notes/rust"), Path::new("/a")),
+            Some(PathBuf::from("/a"))
+        );
+        assert_eq!(shared_parent(Path::new("/a"), Path::new("/b")), None);
+    }
+
+    #[test]
+    fn entry_budget_rejects_folders_too_large_to_read_as_a_library() {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "folio-entry-budget-test-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create test root");
+        fs::create_dir(root.join("inner")).expect("create inner folder");
+        for index in 0..4 {
+            fs::write(root.join(format!("inner/page-{index}.md")), "body").expect("write page");
+        }
+
+        assert!(within_entry_budget(&root, 5));
+        assert!(!within_entry_budget(&root, 4));
+        assert!(!within_entry_budget(&root.join("missing"), 100));
 
         fs::remove_dir_all(&root).expect("remove test root");
     }

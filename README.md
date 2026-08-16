@@ -59,7 +59,15 @@ you are.
 
 ## Linking pages
 
-Write `[[Page title]]` to link to another page. Click it to jump there.
+Write `[[Page title]]` to link to another page. Click it to jump there. Ordinary
+Markdown links to `.md` files work the same way, including relative ones like
+`[Topology](../math/Topology.md)`.
+
+A link can point outside the folder you have open. When you follow one, Folio
+reopens your library at the nearest folder holding both pages — click a link to
+`notes/math/Topology.md` while reading `notes/rust/Ownership.md` and the library
+becomes `notes`, with both sections in the sidebar. If the two pages share no
+sensible parent, Folio opens the linked page's own folder instead.
 
 The outline panel on the right lists the current page's headings, and below that,
 **backlinks** — every other page that links to this one. It's the main way to find

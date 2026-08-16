@@ -15,6 +15,14 @@ export type LibrarySnapshot = {
   folders: RelativePath[];
 };
 
+export type LinkedNote = {
+  snapshot: LibrarySnapshot;
+  /** The linked page's path inside `snapshot`. */
+  path: RelativePath;
+  /** True when the library was reopened at a different folder to reach it. */
+  rerooted: boolean;
+};
+
 export class NativeRuntimeUnavailableError extends Error {
   constructor() {
     super("Folio's native library bridge is unavailable in this runtime.");
@@ -54,6 +62,19 @@ export function chooseLibrary(): Promise<LibrarySnapshot | null> {
 
 export function scanLibrary(): Promise<LibrarySnapshot | null> {
   return invokeNative("scan_library");
+}
+
+/**
+ * Follows a Markdown link from `notePath` to another Markdown file on disk.
+ * `href` is resolved against the linking page's folder, so it may point above
+ * the library root; when it does, the library reopens at a folder holding both
+ * pages. Resolves to null when the link does not name an existing page.
+ */
+export function openLinkedNote(
+  notePath: RelativePath,
+  href: string,
+): Promise<LinkedNote | null> {
+  return invokeNative("open_linked_note", { notePath, href });
 }
 
 export function createFolder(path: RelativePath): Promise<LibrarySnapshot> {
@@ -125,6 +146,7 @@ export const nativeLibrary = Object.freeze({
   restore: restoreLibrary,
   choose: chooseLibrary,
   scan: scanLibrary,
+  openLinked: openLinkedNote,
   createFolder,
   createNote,
   write: writeNote,

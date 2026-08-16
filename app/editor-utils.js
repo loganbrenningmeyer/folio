@@ -586,6 +586,78 @@ export function extractSearchExcerpts(content, query, limit = 3) {
   return excerpts;
 }
 
+// Any URI scheme — `https:`, `mailto:` — as opposed to a path. Folio's own
+// `wiki:` links look the same, so they are recognized before this runs.
+const URI_SCHEME_PATTERN = /^[a-z][a-z0-9+.-]*:/i;
+
+/**
+ * @typedef {{ kind: "external" }
+ *   | { kind: "fragment"; hash: string }
+ *   | { kind: "wiki"; target: string; hash: string }
+ *   | { kind: "page"; target: string; path: string; hash: string; escapes: boolean }
+ * } NoteLink
+ */
+
+/** A stray `%` in a link must not throw where a click is being handled. */
+function decodeLinkText(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Reads a Markdown link the way the reading view needs it: what kind of target
+ * it names, where that target lands relative to the library root, and whether
+ * it points above the root.
+ *
+ * `escapes` is the interesting part. A link written in one library can point
+ * outside the folder that is open now, and folding its `..` segments away would
+ * silently retarget it at a same-named page inside the library. Keeping the
+ * flag lets the caller go to the filesystem instead, which is where the linked
+ * page actually is.
+ *
+ * @param {string} notePath library-relative path of the page holding the link
+ * @param {string | undefined} href
+ * @returns {NoteLink}
+ */
+export function resolveNoteLink(notePath, href) {
+  const raw = (href ?? "").trim();
+  if (!raw) return { kind: "external" };
+  if (raw.startsWith("#")) {
+    return { kind: "fragment", hash: decodeLinkText(raw.slice(1)) };
+  }
+
+  const hashIndex = raw.indexOf("#");
+  const hash = hashIndex < 0 ? "" : decodeLinkText(raw.slice(hashIndex + 1));
+  const destination = hashIndex < 0 ? raw : raw.slice(0, hashIndex);
+
+  if (/^wiki:/i.test(destination)) {
+    return { kind: "wiki", target: decodeLinkText(destination.slice(5)), hash };
+  }
+  if (!destination || URI_SCHEME_PATTERN.test(destination)) {
+    return { kind: "external" };
+  }
+
+  const target = decodeLinkText(destination).replace(/\\/g, "/");
+  const fromRoot = target.startsWith("/");
+  const segments = fromRoot ? [] : notePath.split("/").slice(0, -1).filter(Boolean);
+  let escapes = false;
+  for (const segment of target.split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      // Popping an empty base means the link walked above the library root.
+      if (segments.length) segments.pop();
+      else escapes = true;
+      continue;
+    }
+    segments.push(segment);
+  }
+
+  return { kind: "page", target, path: segments.join("/"), hash, escapes };
+}
+
 /**
  * Adds or removes the `run` flag on the python fence that opens at
  * `sourceLine`, leaving any other info-string words in place. Returns the

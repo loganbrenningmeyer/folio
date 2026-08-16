@@ -14,6 +14,7 @@ import {
   mapScrollOffset,
   parseImageLine,
   parseImageTitle,
+  resolveNoteLink,
   setPythonFenceRunnable,
   shortcutFromEvent,
   shortcutMatches,
@@ -529,6 +530,75 @@ test("captions round-trip through a whole image line", () => {
     width: 480,
     align: "center",
   });
+});
+
+test("page links resolve against the page that holds them", () => {
+  assert.deepEqual(resolveNoteLink("rust/Ownership.md", "Borrowing.md"), {
+    kind: "page",
+    target: "Borrowing.md",
+    path: "rust/Borrowing.md",
+    hash: "",
+    escapes: false,
+  });
+  // A `..` that stays inside the library is an ordinary sibling link.
+  assert.deepEqual(resolveNoteLink("rust/Ownership.md", "../math/Sets.md"), {
+    kind: "page",
+    target: "../math/Sets.md",
+    path: "math/Sets.md",
+    hash: "",
+    escapes: false,
+  });
+  // The same link from a library rooted at rust/ leaves the library.
+  assert.deepEqual(resolveNoteLink("Ownership.md", "../math/Sets.md"), {
+    kind: "page",
+    target: "../math/Sets.md",
+    path: "math/Sets.md",
+    hash: "",
+    escapes: true,
+  });
+  // A leading slash reads from the library root and cannot escape it.
+  assert.deepEqual(resolveNoteLink("rust/Ownership.md", "/math/Sets.md"), {
+    kind: "page",
+    target: "/math/Sets.md",
+    path: "math/Sets.md",
+    hash: "",
+    escapes: false,
+  });
+});
+
+test("link kinds separate pages from anchors and the outside world", () => {
+  assert.deepEqual(resolveNoteLink("Ownership.md", "#borrowing"), {
+    kind: "fragment",
+    hash: "borrowing",
+  });
+  assert.deepEqual(resolveNoteLink("Ownership.md", "wiki:A%20small%20note"), {
+    kind: "wiki",
+    target: "A small note",
+    hash: "",
+  });
+  assert.equal(
+    resolveNoteLink("Ownership.md", "https://example.com/page.md").kind,
+    "external",
+  );
+  assert.equal(resolveNoteLink("Ownership.md", "mailto:me@example.com").kind, "external");
+  assert.equal(resolveNoteLink("Ownership.md", undefined).kind, "external");
+
+  // Percent escapes are undone, fragments split off, and a malformed escape
+  // is carried through rather than thrown on.
+  assert.deepEqual(
+    resolveNoteLink("rust/Ownership.md", "../math/Set%20theory.md#axioms"),
+    {
+      kind: "page",
+      target: "../math/Set theory.md",
+      path: "math/Set theory.md",
+      hash: "axioms",
+      escapes: false,
+    },
+  );
+  assert.equal(
+    resolveNoteLink("rust/Ownership.md", "100%.md").path,
+    "rust/100%.md",
+  );
 });
 
 test("shortcuts render as macOS symbols in canonical modifier order", () => {

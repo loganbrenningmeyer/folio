@@ -43,7 +43,9 @@ import {
   mapScrollOffset,
   imageLineText,
   markdownBlockCompletion,
+  type NoteLink,
   parseImageTitle,
+  resolveNoteLink,
   setPythonFenceRunnable,
   shortcutFromEvent,
   shortcutMatches,
@@ -178,6 +180,9 @@ type Note = {
   content: string;
   handle?: FileHandleLike;
 };
+
+/** The link kinds that name a page, rather than a place the browser handles. */
+type LibraryLink = Exclude<NoteLink, { kind: "external" | "fragment" }>;
 
 type ViewMode = "preview" | "editor" | "split";
 type Theme = "light" | "dark";
@@ -581,6 +586,9 @@ const markdownSanitizeSchema = {
     ...defaultSchema.protocols,
     // Images pasted in non-native runtimes are embedded as data URIs.
     src: [...(defaultSchema.protocols?.src ?? []), "data"],
+    // Wiki links carry their target in a scheme the reading view resolves
+    // itself; without this the sanitizer drops the href and the link is dead.
+    href: [...(defaultSchema.protocols?.href ?? []), "wiki"],
   },
 };
 
@@ -3843,52 +3851,135 @@ export default function Home() {
     notesRef.current = notes;
   }, [notes]);
 
-  const findLinkedNote = useCallback((href: string) => {
+  const activeNotePath = useCallback(
+    () =>
+      notesRef.current.find((note) => note.id === activeIdRef.current)?.path ??
+      "",
+    [],
+  );
+
+  const findLinkedNote = useCallback((link: NoteLink) => {
     const currentNotes = notesRef.current;
-    if (href.startsWith("wiki:")) {
-      const target = decodeURIComponent(href.slice(5)).toLowerCase();
+    if (link.kind === "wiki") {
+      const target = link.target.toLowerCase();
       return currentNotes.find(
         (note) =>
           note.title.toLowerCase() === target ||
-          note.path.split("/").pop()?.replace(/\.md$/i, "").toLowerCase() ===
+          fileNameFromPath(note.path).replace(/\.md$/i, "").toLowerCase() ===
             target,
       );
     }
-    const activePath =
-      currentNotes.find((note) => note.id === activeIdRef.current)?.path ?? "";
-    const withoutHash = decodeURIComponent(href.split("#")[0]);
-    const base = activePath.includes("/")
-      ? activePath.slice(0, activePath.lastIndexOf("/") + 1)
-      : "";
-    const resolved = normalizePath(
-      withoutHash.startsWith("/")
-        ? withoutHash.slice(1)
-        : `${base}${withoutHash}`,
-    ).toLowerCase();
+    // A link that walks above the library root names a file the open library
+    // does not hold, whatever the folded-down path happens to match.
+    if (link.kind !== "page" || link.escapes) return undefined;
+    const resolved = link.path.toLowerCase();
     return currentNotes.find(
-      (note) =>
-        normalizePath(note.path).toLowerCase() === resolved ||
-        note.path.split("/").pop()?.toLowerCase() ===
-          withoutHash.split("/").pop()?.toLowerCase(),
+      (note) => normalizePath(note.path).toLowerCase() === resolved,
     );
   }, []);
 
+  // Last resort for a link written against a different folder layout: the same
+  // file name anywhere in the library.
+  const findNoteByFileName = useCallback((link: NoteLink) => {
+    if (link.kind !== "page") return undefined;
+    const fileName = fileNameFromPath(link.target).toLowerCase();
+    if (!fileName) return undefined;
+    return notesRef.current.find(
+      (note) => fileNameFromPath(note.path).toLowerCase() === fileName,
+    );
+  }, []);
+
+  const openLinkedNote = useCallback(
+    (id: string, hash: string) => {
+      selectNote(id);
+      if (!hash) return;
+      window.setTimeout(
+        () => document.getElementById(hash)?.scrollIntoView(),
+        50,
+      );
+    },
+    [selectNote],
+  );
+
+  // A link can name a page outside the open folder — the two libraries a reader
+  // keeps side by side, or a folder opened one level too deep. Folio follows it
+  // by reopening the library at the folder that holds both pages, so the linked
+  // page arrives with its neighbours rather than on its own.
+  const followMarkdownLink = useCallback(
+    async (link: LibraryLink) => {
+      const linked = findLinkedNote(link);
+      if (linked) {
+        openLinkedNote(linked.id, link.hash);
+        return;
+      }
+
+      const notePath = activeNotePath();
+      if (link.kind === "page" && desktopMode && nativeLibraryOpen && notePath) {
+        try {
+          // The relative paths a save is queued under belong to the current
+          // root, so nothing may still be in flight when the root changes.
+          await flushAllNativeSaves();
+          const opened = await nativeLibrary.openLinked(notePath, link.target);
+          if (opened) {
+            applyNativeLibrary(opened.snapshot, opened.path);
+            setNavOpen(false);
+            setOutlineOpen(false);
+            requestAnimationFrame(() =>
+              document.querySelector(".reading-scroll")?.scrollTo({ top: 0 }),
+            );
+            if (link.hash) {
+              window.setTimeout(
+                () => document.getElementById(link.hash)?.scrollIntoView(),
+                50,
+              );
+            }
+            // The sidebar just changed underneath the reader; say why.
+            if (opened.rerooted) {
+              showNotice(`Opened ${opened.snapshot.name} to follow that link.`);
+            }
+            return;
+          }
+        } catch (error) {
+          showNotice(error instanceof Error ? error.message : String(error));
+          return;
+        }
+      }
+
+      const named = findNoteByFileName(link);
+      if (named) {
+        openLinkedNote(named.id, link.hash);
+        return;
+      }
+      showNotice(
+        `Folio could not find ${
+          link.kind === "wiki" ? `[[${link.target}]]` : link.target
+        }.`,
+      );
+    },
+    [
+      activeNotePath,
+      applyNativeLibrary,
+      desktopMode,
+      findLinkedNote,
+      findNoteByFileName,
+      flushAllNativeSaves,
+      nativeLibraryOpen,
+      openLinkedNote,
+      showNotice,
+    ],
+  );
+
   const handleMarkdownLink = useCallback(
     (event: MouseEvent<HTMLAnchorElement>, href?: string) => {
-      if (!href || href.startsWith("#")) return;
-      const linked = findLinkedNote(href);
-      if (!linked) return;
+      const link = resolveNoteLink(activeNotePath(), href);
+      // Headings scroll on their own, and an external link is the browser's.
+      if (link.kind === "fragment" || link.kind === "external") return;
+      // Everything else is a page: never let the click navigate the window,
+      // which in the desktop app would unload Folio itself.
       event.preventDefault();
-      selectNote(linked.id);
-      const hash = href.split("#")[1];
-      if (hash) {
-        window.setTimeout(
-          () => document.getElementById(hash)?.scrollIntoView(),
-          50,
-        );
-      }
+      void followMarkdownLink(link);
     },
-    [findLinkedNote, selectNote],
+    [activeNotePath, followMarkdownLink],
   );
 
   const normalizedMarkdown = useMemo(
