@@ -47,6 +47,12 @@ export default defineConfig(async () => {
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,
+    worker: {
+      // The Python worker dynamically imports the Pyodide runtime, which only
+      // module workers allow — Vite's default classic (iife) worker output
+      // breaks it in production builds.
+      format: "es",
+    },
     plugins: [
       vinext(),
       sites(),

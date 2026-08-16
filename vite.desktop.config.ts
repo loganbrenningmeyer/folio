@@ -32,4 +32,11 @@ export default defineConfig({
     emptyOutDir: true,
     target: "es2021",
   },
+  worker: {
+    // The Python worker dynamically imports the Pyodide runtime, which only
+    // module workers allow — Vite's default classic (iife) worker output
+    // breaks it in production, most visibly under WKWebView in the desktop
+    // app.
+    format: "es",
+  },
 });
