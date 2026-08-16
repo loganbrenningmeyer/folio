@@ -1422,6 +1422,360 @@ kbd {
   text-transform: uppercase;
 }
 
+/* Runnable Python blocks */
+
+.markdown-body .python-block {
+  /* The app-level --font-ui token resolves through a next/font variable that
+     is not always defined, which silently invalidates font shorthands; the
+     block UI uses its own guaranteed-valid stack. */
+  --python-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  overflow: hidden;
+  margin: 2em 0;
+  border-radius: 10px;
+  background: var(--code-bg);
+  color: var(--code-ink);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 4%);
+}
+
+.markdown-body .python-block-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px 7px 8px;
+}
+
+.markdown-body .python-block-run,
+.markdown-body .python-block-stop,
+.markdown-body .python-block-restart,
+.markdown-body .python-block-animbar button {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+
+.markdown-body .python-block-run {
+  background: rgb(168 197 140 / 14%);
+  color: #a8c58c;
+}
+
+.markdown-body .python-block-run:hover:not(:disabled) {
+  background: rgb(168 197 140 / 26%);
+}
+
+.markdown-body .python-block-run:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.markdown-body .python-block-stop {
+  background: rgb(230 130 120 / 16%);
+  color: #e59a92;
+}
+
+.markdown-body .python-block-stop:hover {
+  background: rgb(230 130 120 / 28%);
+}
+
+.markdown-body .python-block-restart {
+  background: transparent;
+  color: #899184;
+}
+
+.markdown-body .python-block-restart:hover {
+  background: rgb(255 255 255 / 10%);
+  color: var(--code-ink);
+}
+
+.markdown-body .python-block-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 9px 5px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #899184;
+  font-family: var(--python-ui-font);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .02em;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+
+.markdown-body .python-block-toggle:hover {
+  background: rgb(255 255 255 / 8%);
+  color: var(--code-ink);
+}
+
+.markdown-body .python-block-status,
+.markdown-body .python-block-stale {
+  overflow: hidden;
+  color: #899184;
+  font-family: var(--python-ui-font);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: .02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.markdown-body .python-block-bar-end {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* Matches the language chip other code blocks render in their top-right. */
+.markdown-body .python-block-lang {
+  color: #899184;
+  font-family: var(--font-code, "SFMono-Regular", Menlo, monospace);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+
+.markdown-body .python-block-spinner {
+  animation: python-block-spin .9s linear infinite;
+}
+
+@keyframes python-block-spin {
+  to { transform: rotate(360deg); }
+}
+
+.markdown-body .python-block pre.python-block-code {
+  margin: 0;
+  padding: 16px 22px 18px;
+  border-radius: 0;
+  border-top: 1px solid rgb(255 255 255 / 7%);
+  background: transparent;
+  box-shadow: none;
+}
+
+.markdown-body .python-block pre code[data-language]::before {
+  content: none;
+}
+
+.markdown-body .python-block-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 26px;
+  padding: 13px 22px;
+  border-top: 1px solid rgb(255 255 255 / 7%);
+}
+
+.markdown-body .python-control {
+  display: flex;
+  flex: 0 1 200px;
+  flex-direction: column;
+  gap: 6px;
+  color: #b6bdb0;
+  font-family: var(--python-ui-font);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.markdown-body .python-control-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  letter-spacing: .02em;
+}
+
+.markdown-body .python-control-head strong {
+  color: var(--code-ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.markdown-body .python-control input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.markdown-body .python-control select {
+  padding: 4px 8px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 6%);
+  color: var(--code-ink);
+  font-family: var(--python-ui-font);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.markdown-body .python-control-toggle {
+  flex: 0 0 auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 3px;
+}
+
+.markdown-body .python-control-toggle input {
+  accent-color: var(--accent);
+}
+
+.markdown-body .python-block-output {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 22px 18px;
+  border-top: 1px solid rgb(255 255 255 / 7%);
+}
+
+/* Live matplotlib widget controls sit inside the output, under their figure. */
+.markdown-body .python-block-output .python-block-controls {
+  padding: 2px 0 0;
+  border-top: 0;
+}
+
+.markdown-body .python-widgets-stale {
+  flex-basis: 100%;
+  color: #899184;
+  font-family: var(--python-ui-font);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: .02em;
+}
+
+.markdown-body .python-block-animbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.markdown-body .python-block-animbar button {
+  background: rgb(255 255 255 / 9%);
+  color: var(--code-ink);
+}
+
+.markdown-body .python-block-animbar button:hover {
+  background: rgb(255 255 255 / 16%);
+}
+
+.markdown-body .python-widget-button {
+  padding: 5px 16px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 8%);
+  color: var(--code-ink);
+  font-family: var(--python-ui-font);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s ease;
+}
+
+.markdown-body .python-widget-button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 16%);
+}
+
+.markdown-body .python-widget-button:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.markdown-body .python-control-button {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
+
+.markdown-body .python-control-choices {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 5px;
+  color: #b6bdb0;
+  font-family: var(--python-ui-font);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.markdown-body .python-control-choices label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.markdown-body .python-control-choices input {
+  accent-color: var(--accent);
+}
+
+.markdown-body .python-control-range input[type="range"] + input[type="range"] {
+  margin-top: 2px;
+}
+
+.markdown-body .python-control-textbox {
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 6px;
+  background: rgb(255 255 255 / 6%);
+  color: var(--code-ink);
+  font-family: var(--font-code, "SFMono-Regular", Menlo, monospace);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.markdown-body .python-control-textbox:focus {
+  outline: none;
+  border-color: rgb(255 255 255 / 30%);
+}
+
+.markdown-body .python-block-output pre {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--code-ink);
+  box-shadow: none;
+  font-family: var(--font-code, "SFMono-Regular", Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.markdown-body .python-block-result::before {
+  content: "\2192";
+  margin-right: 9px;
+  color: #899184;
+}
+
+.markdown-body .python-block-output .python-block-error {
+  color: #e59a92;
+}
+
+.markdown-body .python-block-figure {
+  margin: 2px 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.markdown-body .python-block-figure img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-inline: auto;
+}
+
 .markdown-body .katex {
   color: var(--ink);
   font-size: 1.05em;

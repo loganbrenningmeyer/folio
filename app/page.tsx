@@ -51,6 +51,7 @@ import {
   nativeLibrary,
   type LibrarySnapshot,
 } from "@/desktop/native";
+import { PythonCodeBlock, pythonCodeFromPre } from "@/app/python-block";
 import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
@@ -214,6 +215,13 @@ $$`,
     name: "Code block",
     shortcut: "Ctrl-Shift-\\",
     template: ["```$1", "$0", "```"].join("\n"),
+    enabled: true,
+  },
+  {
+    id: "python-block",
+    name: "Python block",
+    shortcut: "Ctrl-Shift-p",
+    template: ["```python", "$0", "```"].join("\n"),
     enabled: true,
   },
 ];
@@ -516,9 +524,152 @@ A good knowledge practice keeps a few questions open.
 
 That is the whole loop: read, connect, write, and return.`,
   },
+  {
+    id: "sample-python",
+    path: "04 Playground/Interactive Python.md",
+    title: "Interactive Python",
+    content: `# Interactive Python
+
+Folio can run Python inside a page. Any \`python\` code block gains a **Run** button in Read view, powered by [Pyodide](https://pyodide.org) — Python compiled to WebAssembly. Everything executes on your device, and the output stays inside the block.
+
+## Terminal output
+
+The first run downloads the Python runtime, so give it a moment. Printed text appears beneath the code, and the value of the last expression is shown like a notebook.
+
+\`\`\`python
+message = "Hello from Folio"
+print(message)
+sum(range(10))
+\`\`\`
+
+## Plots that live in the page
+
+Scientific packages such as NumPy and Matplotlib are fetched automatically the first time a block imports them. Figures render inside the block and scroll with the document.
+
+\`\`\`python
+import numpy as np
+import matplotlib.pyplot as plt
+
+x = np.linspace(0, 4 * np.pi, 400)
+plt.figure(figsize=(7, 3.2))
+plt.plot(x, np.sin(x), label="sin x")
+plt.plot(x, np.cos(x), label="cos x", linestyle="--")
+plt.legend(loc="upper right")
+plt.title("Two waves")
+plt.tight_layout()
+plt.show()
+\`\`\`
+
+## Adjustable knobs
+
+Import \`folio\` to add controls. Move a knob and the block re-runs with the new values.
+
+\`\`\`python
+import numpy as np
+import matplotlib.pyplot as plt
+from folio import slider, toggle
+
+frequency = slider("frequency", 1, 12, value=3)
+amplitude = slider("amplitude", 0.1, 2.0, value=1.0)
+grid = toggle("grid", value=True, label="show grid")
+
+x = np.linspace(0, 2 * np.pi, 600)
+plt.figure(figsize=(7, 3.2))
+plt.plot(x, amplitude * np.sin(frequency * x))
+plt.ylim(-2.2, 2.2)
+plt.grid(grid, alpha=0.3)
+plt.title(f"amplitude {amplitude:g} · frequency {frequency:g}")
+plt.tight_layout()
+plt.show()
+\`\`\`
+
+## Matplotlib widgets
+
+Matplotlib's own \`matplotlib.widgets.Slider\` works too. Its sliders appear as live controls beneath the figure and drive their Python callbacks directly — the block does not re-run, the open figure just updates.
+
+\`\`\`python
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Slider
+
+t = np.linspace(0, 20 * np.pi, 2000)
+fig, ax = plt.subplots(figsize=(7, 5))
+plt.subplots_adjust(bottom=.2)
+points = ax.scatter(np.cos(t) * t, np.sin(t) * t, c=t, s=3, cmap="plasma")
+ax.axis("equal")
+ax.axis("off")
+
+twist = Slider(plt.axes([.2, .07, .6, .04]), "Twist", .1, 3, valinit=1)
+
+def update(value):
+    points.set_offsets(np.c_[np.cos(t * value) * t, np.sin(t * value) * t])
+    fig.canvas.draw_idle()
+
+twist.on_changed(update)
+plt.show()
+\`\`\`
+
+Buttons, check boxes, radio buttons, range sliders, and text boxes bridge the same way — their callbacks run on the live figure.
+
+\`\`\`python
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Button, CheckButtons, RadioButtons, TextBox
+
+fig, ax = plt.subplots(figsize=(6, 2.4))
+ax.axis("off")
+message = ax.text(.5, .5, "ready", ha="center", va="center", fontsize=22)
+
+button = Button(plt.axes([.04, .04, .2, .16]), "Bump")
+checks = CheckButtons(plt.axes([.3, .02, .2, .2]), ["grid", "trace"], [True, False])
+radios = RadioButtons(plt.axes([.55, .02, .18, .2]), ["low", "high"])
+box = TextBox(plt.axes([.82, .04, .14, .16]), "say ", initial="hi")
+
+button.on_clicked(lambda event: message.set_text("bumped!"))
+checks.on_clicked(lambda label: message.set_text(f"toggled {label}"))
+radios.on_clicked(lambda label: message.set_text(f"chose {label}"))
+box.on_submit(lambda value: message.set_text(value))
+plt.show()
+\`\`\`
+
+## Animations
+
+\`matplotlib.animation.FuncAnimation\` runs live: the page pulls frames from the interpreter at the animation's own interval, and the pause control sits right under the figure.
+
+\`\`\`python
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+
+x = np.linspace(0, 4 * np.pi, 500)
+fig, ax = plt.subplots(figsize=(7, 3.4))
+line, = ax.plot(x, np.sin(x), lw=3)
+ax.set_ylim(-1.5, 1.5)
+
+def animate(i):
+    line.set_ydata(np.sin(x + i / 10) * np.cos(x / 3 - i / 20))
+    line.set_color(plt.cm.plasma((i % 100) / 100))
+    return line,
+
+ani = FuncAnimation(fig, animate, interval=30)
+plt.show()
+\`\`\`
+
+## One session per page
+
+Blocks on the same page share a Python session, so earlier definitions stay available below — run the first block, then this one. The restart button in a block's header clears the session, and the stop button halts a running block if a loop gets away from you.
+
+\`\`\`python
+print(f"The message above was: {message!r}")
+\`\`\``,
+  },
 ];
 
-const SAMPLE_FOLDERS = ["01 Foundations", "02 Research", "03 Synthesis"];
+const SAMPLE_FOLDERS = [
+  "01 Foundations",
+  "02 Research",
+  "03 Synthesis",
+  "04 Playground",
+];
 
 const EMPTY_NOTE: Note = {
   id: "__folio-empty__",
@@ -2665,44 +2816,107 @@ export default function Home() {
     event.target.value = "";
   };
 
-  const findLinkedNote = (href: string) => {
+  // Link resolution reads the library through refs so the markdown component
+  // map below can stay referentially stable while notes are edited. A new map
+  // identity makes React remount every rendered element, which would discard
+  // Python block outputs on each keystroke or preference change.
+  const notesRef = useRef(notes);
+  useEffect(() => {
+    notesRef.current = notes;
+  }, [notes]);
+
+  const findLinkedNote = useCallback((href: string) => {
+    const currentNotes = notesRef.current;
     if (href.startsWith("wiki:")) {
       const target = decodeURIComponent(href.slice(5)).toLowerCase();
-      return notes.find(
+      return currentNotes.find(
         (note) =>
           note.title.toLowerCase() === target ||
           note.path.split("/").pop()?.replace(/\.md$/i, "").toLowerCase() === target,
       );
     }
+    const activePath =
+      currentNotes.find((note) => note.id === activeIdRef.current)?.path ?? "";
     const withoutHash = decodeURIComponent(href.split("#")[0]);
-    const base = active.path.includes("/")
-      ? active.path.slice(0, active.path.lastIndexOf("/") + 1)
+    const base = activePath.includes("/")
+      ? activePath.slice(0, activePath.lastIndexOf("/") + 1)
       : "";
     const resolved = normalizePath(
       withoutHash.startsWith("/") ? withoutHash.slice(1) : `${base}${withoutHash}`,
     ).toLowerCase();
-    return notes.find(
+    return currentNotes.find(
       (note) =>
         normalizePath(note.path).toLowerCase() === resolved ||
         note.path.split("/").pop()?.toLowerCase() === withoutHash.split("/").pop()?.toLowerCase(),
     );
-  };
+  }, []);
 
-  const handleMarkdownLink = (event: MouseEvent<HTMLAnchorElement>, href?: string) => {
-    if (!href || href.startsWith("#")) return;
-    const linked = findLinkedNote(href);
-    if (!linked) return;
-    event.preventDefault();
-    selectNote(linked.id);
-    const hash = href.split("#")[1];
-    if (hash) {
-      window.setTimeout(() => document.getElementById(hash)?.scrollIntoView(), 50);
-    }
-  };
+  const handleMarkdownLink = useCallback(
+    (event: MouseEvent<HTMLAnchorElement>, href?: string) => {
+      if (!href || href.startsWith("#")) return;
+      const linked = findLinkedNote(href);
+      if (!linked) return;
+      event.preventDefault();
+      selectNote(linked.id);
+      const hash = href.split("#")[1];
+      if (hash) {
+        window.setTimeout(() => document.getElementById(hash)?.scrollIntoView(), 50);
+      }
+    },
+    [findLinkedNote, selectNote],
+  );
 
   const normalizedMarkdown = useMemo(
     () => normalizeMathDelimiters(withWikiLinks(active.content)),
     [active.content],
+  );
+
+  const markdownComponents = useMemo(
+    () => ({
+      ...MARKDOWN_HEADING_COMPONENTS,
+      // Python fences become runnable blocks. The pre's props — notably the
+      // data-source-line scroll-sync anchor — move onto the block wrapper.
+      pre: ({
+        node,
+        children,
+        ...props
+      }: React.ComponentPropsWithoutRef<"pre"> & { node?: unknown }) => {
+        const pythonCode = pythonCodeFromPre(node);
+        if (pythonCode !== undefined) {
+          return (
+            <PythonCodeBlock
+              code={pythonCode}
+              sessionId={activeId}
+              {...(props as React.HTMLAttributes<HTMLDivElement>)}
+            >
+              {children}
+            </PythonCodeBlock>
+          );
+        }
+        return <pre {...props}>{children}</pre>;
+      },
+      code: ({
+        className,
+        children,
+      }: React.ComponentPropsWithoutRef<"code">) => {
+        const language = className?.match(/language-([\w-]+)/)?.[1];
+        return (
+          <code
+            className={className}
+            data-language={language}
+          >
+            {children}
+          </code>
+        );
+      },
+      a: ({ href, children }: React.ComponentPropsWithoutRef<"a">) => (
+        <a href={href} onClick={(event) => handleMarkdownLink(event, href)}>
+          {href?.startsWith("wiki:") && <Link2 size={13} aria-hidden="true" />}
+          {children}
+        </a>
+      ),
+    }),
+    [activeId, handleMarkdownLink],
   );
 
   const markdown = (
@@ -2726,26 +2940,7 @@ export default function Home() {
         rehypeHighlight,
       ]}
       urlTransform={(url) => url}
-      components={{
-        ...MARKDOWN_HEADING_COMPONENTS,
-        code: ({ className, children }) => {
-          const language = className?.match(/language-([\w-]+)/)?.[1];
-          return (
-            <code
-              className={className}
-              data-language={language}
-            >
-              {children}
-            </code>
-          );
-        },
-        a: ({ href, children }) => (
-          <a href={href} onClick={(event) => handleMarkdownLink(event, href)}>
-            {href?.startsWith("wiki:") && <Link2 size={13} aria-hidden="true" />}
-            {children}
-          </a>
-        ),
-      }}
+      components={markdownComponents}
     >
       {normalizedMarkdown.content}
     </ReactMarkdown>
