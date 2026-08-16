@@ -75,8 +75,16 @@ test("ships the requested reading, editing, and organization capabilities", asyn
   assert.match(page, /FONT_CHOICES/);
   assert.match(page, /COLOR_PALETTES/);
   assert.match(page, /document-position/);
-  assert.match(page, /page-location-meter/);
-  assert.match(page, /Progress through this section/);
+  assert.match(page, /nativeLibrary\.write/);
+  assert.match(page, /FOLIO_NOTE_DRAG_TYPE/);
+  assert.match(page, /draggedNoteIdRef/);
+  assert.match(page, /Auto-save on/);
+  assert.match(page, /restoreLibrary|nativeLibrary\.restore/);
+  assert.equal(
+    page.match(/nativeLibrary\.choose\(\)/g)?.length,
+    1,
+    "the native folder picker should only open from the Open folder action",
+  );
   assert.match(page, /folio-reader-font/);
   assert.match(page, /folio-editor-font/);
   assert.match(page, /folio-color-palette/);
@@ -89,11 +97,12 @@ test("ships the requested reading, editing, and organization capabilities", asyn
   assert.match(css, /cursor:\s*text !important/);
   assert.match(css, /\.cm-selectionLayer\s*\{[^}]*z-index:\s*3 !important/);
   assert.match(css, /\.cm-selectionBackground\s*\{[^}]*var\(--editor-selection\) !important/);
+  assert.match(css, /\.cm-selectionBackground\s*\{[^}]*box-shadow:\s*none !important/);
+  assert.match(css, /\.editor-pane\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/);
   assert.match(css, /\.cm-lineWrapping\s*\{[^}]*overflow-wrap:\s*anywhere/);
   assert.match(css, /\.font-popover/);
   assert.match(css, /\.palette-grid/);
   assert.match(css, /\.document-progress/);
-  assert.match(css, /\.page-location-number/);
   assert.match(css, /data-palette="slate"/);
   assert.match(css, /data-palette="graphite"/);
   assert.doesNotMatch(css, /user-select:\s*text !important/);
@@ -107,4 +116,44 @@ test("ships the requested reading, editing, and organization capabilities", asyn
 
   await access(new URL("../public/og.png", import.meta.url));
   await assert.rejects(access(new URL("../app/_sites-preview/SkeletonPreview.tsx", import.meta.url)));
+});
+
+test("ships a native macOS target with direct and persistent file access", async () => {
+  const [packageJson, nativeBridge, rustBackend, tauriConfig, desktopGuide] =
+    await Promise.all([
+      readFile(new URL("../package.json", import.meta.url), "utf8"),
+      readFile(new URL("../desktop/native.ts", import.meta.url), "utf8"),
+      readFile(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8"),
+      readFile(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+      readFile(new URL("../DESKTOP.md", import.meta.url), "utf8"),
+    ]);
+
+  assert.match(packageJson, /"desktop:install"/);
+  assert.match(packageJson, /"desktop:update"/);
+  assert.match(nativeBridge, /restore_library/);
+  assert.match(nativeBridge, /choose_library/);
+  assert.match(nativeBridge, /write_note/);
+  assert.match(nativeBridge, /move_note/);
+  assert.match(rustBackend, /validate_relative_path/);
+  assert.match(rustBackend, /atomic_write/);
+  assert.match(rustBackend, /blocking_pick_folder/);
+  assert.match(rustBackend, /async fn choose_library/);
+  assert.match(tauriConfig, /"frontendDist": "\.\.\/dist-desktop"/);
+  assert.match(tauriConfig, /com\.loganbrenningmeyer\.folio/);
+  assert.match(
+    tauriConfig,
+    /"dragDropEnabled": false/,
+    "Tauri's native file-drop interceptor must not consume internal note moves",
+  );
+  assert.match(
+    await readFile(
+      new URL("../src-tauri/capabilities/default.json", import.meta.url),
+      "utf8",
+    ),
+    /core:window:allow-destroy/,
+  );
+  assert.match(desktopGuide, /npm run desktop:update/);
+
+  await access(new URL("../desktop/index.html", import.meta.url));
+  await access(new URL("../src-tauri/icons/icon.icns", import.meta.url));
 });

@@ -25,6 +25,11 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
+import {
+  isNativeRuntime,
+  nativeLibrary,
+  type LibrarySnapshot,
+} from "@/desktop/native";
 import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
@@ -117,6 +122,7 @@ type Note = {
 type ViewMode = "preview" | "editor" | "split";
 type Theme = "light" | "dark";
 type CreateKind = "file" | "folder";
+const FOLIO_NOTE_DRAG_TYPE = "application/x-folio-note";
 type LibraryScan = { notes: Note[]; folders: string[] };
 
 const FONT_CHOICES = [
@@ -698,7 +704,7 @@ function createEditorExtensions(theme: Theme) {
         },
         ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
           backgroundColor: "var(--editor-selection) !important",
-          boxShadow: "inset 0 0 0 1px var(--editor-selection-edge)",
+          boxShadow: "none",
         },
         ".cm-folio-code-line": {
           backgroundColor: "var(--syntax-code-bg)",
@@ -789,6 +795,8 @@ export default function Home() {
   const [palette, setPalette] = useState<PaletteId>("sage");
   const [readerFont, setReaderFont] = useState<FontId>("iowan");
   const [editorFont, setEditorFont] = useState<FontId>("sf-mono");
+  const [desktopMode] = useState(() => isNativeRuntime());
+  const [nativeLibraryOpen, setNativeLibraryOpen] = useState(false);
   const [fontPanelOpen, setFontPanelOpen] = useState(false);
   const [dirty, setDirty] = useState<Set<string>>(new Set());
   const [saved, setSaved] = useState(false);
@@ -804,6 +812,15 @@ export default function Home() {
   const [dropTarget, setDropTarget] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const folderInput = useRef<HTMLInputElement>(null);
+  const draggedNoteIdRef = useRef<string>();
+  const nativeSaveTimers = useRef<Map<string, number>>(new Map());
+  const nativePendingSaves = useRef<
+    Map<string, { path: string; content: string }>
+  >(new Map());
+  const nativeSavesInFlight = useRef<Map<string, Promise<void>>>(new Map());
+  const nativeSavedTimer = useRef<number | undefined>(undefined);
+  const nativeWindowClosing = useRef(false);
+  const activeIdRef = useRef(activeId);
 
   const activeIndex = Math.max(
     0,
@@ -844,9 +861,6 @@ export default function Home() {
     activeSectionNotes.findIndex((note) => note.id === active.id),
   );
   const pageProgress = notes.length ? ((activeIndex + 1) / notes.length) * 100 : 0;
-  const sectionProgress = activeSectionNotes.length
-    ? ((activeFileIndex + 1) / activeSectionNotes.length) * 100
-    : 0;
 
   const pageHeadings = useMemo(
     () => headingsFrom(active?.content ?? ""),
@@ -883,6 +897,27 @@ export default function Home() {
       .sort((a, b) => b.score - a.score)
       .map((result) => result.note);
   }, [notes, searchQuery]);
+
+  const applyNativeLibrary = useCallback(
+    (snapshot: LibrarySnapshot, preferredPath?: string) => {
+      setNotes(snapshot.notes);
+      setFolders(snapshot.folders);
+      setRootDirectory(undefined);
+      const preferred = preferredPath
+        ? snapshot.notes.find((note) => note.path === preferredPath)
+        : undefined;
+      setActiveId(preferred?.id ?? snapshot.notes[0]?.id ?? "");
+      setLibraryName(snapshot.name);
+      setNativeLibraryOpen(true);
+      setDirty(new Set());
+      setCollapsedGroups(new Set());
+    },
+    [],
+  );
+
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
 
   useEffect(() => {
     const stored = localStorage.getItem("folio-theme") as Theme | null;
@@ -927,14 +962,38 @@ export default function Home() {
     localStorage.setItem("folio-editor-font", editorFont);
   }, [editorFont, readerFont]);
 
-  const selectNote = useCallback((id: string) => {
-    setActiveId(id);
-    setNavOpen(false);
-    setOutlineOpen(false);
-    requestAnimationFrame(() =>
-      document.querySelector(".reading-scroll")?.scrollTo({ top: 0 }),
-    );
-  }, []);
+  useEffect(() => {
+    if (!desktopMode) return;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const restored = await nativeLibrary.restore();
+        if (!cancelled && restored) {
+          applyNativeLibrary(restored);
+        } else if (!cancelled) {
+          const message = "Choose a Markdown folder when you're ready to open your library.";
+          setNotice(message);
+          window.setTimeout(
+            () => setNotice((current) => (current === message ? undefined : current)),
+            4800,
+          );
+        }
+      } catch {
+        if (cancelled) return;
+        const message = "Folio could not reopen that folder. Choose it again to reconnect.";
+        setNotice(message);
+        window.setTimeout(
+          () => setNotice((current) => (current === message ? undefined : current)),
+          4800,
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applyNativeLibrary, desktopMode]);
 
   const showNotice = useCallback((message: string) => {
     setNotice(message);
@@ -943,16 +1002,182 @@ export default function Home() {
     }, 3600);
   }, []);
 
+  const flushNativeSave = useCallback(
+    async (noteId: string) => {
+      const timer = nativeSaveTimers.current.get(noteId);
+      if (timer !== undefined) window.clearTimeout(timer);
+      nativeSaveTimers.current.delete(noteId);
+
+      const existingSave = nativeSavesInFlight.current.get(noteId);
+      if (existingSave) {
+        await existingSave;
+        return;
+      }
+
+      if (!nativePendingSaves.current.has(noteId)) return;
+
+      const save = (async () => {
+        while (true) {
+          const pending = nativePendingSaves.current.get(noteId);
+          if (!pending) break;
+          nativePendingSaves.current.delete(noteId);
+
+          try {
+            await nativeLibrary.write(pending.path, pending.content);
+          } catch (error) {
+            // An edit made during this write is newer than `pending` and must
+            // win. Requeue the failed write only when nothing newer is waiting.
+            if (!nativePendingSaves.current.has(noteId)) {
+              nativePendingSaves.current.set(noteId, pending);
+            }
+            setDirty((current) => new Set(current).add(noteId));
+            showNotice(
+              error instanceof Error
+                ? `Could not save ${fileNameFromPath(pending.path)}: ${error.message}`
+                : `Could not save ${fileNameFromPath(pending.path)}.`,
+            );
+            throw error;
+          }
+        }
+
+        setDirty((current) => {
+          const next = new Set(current);
+          next.delete(noteId);
+          return next;
+        });
+        if (activeIdRef.current === noteId) {
+          if (nativeSavedTimer.current !== undefined) {
+            window.clearTimeout(nativeSavedTimer.current);
+          }
+          setSaved(true);
+          nativeSavedTimer.current = window.setTimeout(() => {
+            nativeSavedTimer.current = undefined;
+            setSaved(false);
+          }, 1200);
+        }
+      })();
+
+      nativeSavesInFlight.current.set(noteId, save);
+      try {
+        await save;
+      } finally {
+        if (nativeSavesInFlight.current.get(noteId) === save) {
+          nativeSavesInFlight.current.delete(noteId);
+        }
+      }
+    },
+    [showNotice],
+  );
+
+  const scheduleNativeSave = useCallback(
+    (noteId: string, path: string, content: string) => {
+      nativePendingSaves.current.set(noteId, { path, content });
+      const existing = nativeSaveTimers.current.get(noteId);
+      if (existing !== undefined) window.clearTimeout(existing);
+      const timer = window.setTimeout(() => {
+        void flushNativeSave(noteId).catch(() => undefined);
+      }, 420);
+      nativeSaveTimers.current.set(noteId, timer);
+    },
+    [flushNativeSave],
+  );
+
+  const flushAllNativeSaves = useCallback(async () => {
+    while (true) {
+      const noteIds = new Set([
+        ...nativePendingSaves.current.keys(),
+        ...nativeSavesInFlight.current.keys(),
+      ]);
+      if (noteIds.size === 0) return;
+
+      const results = await Promise.allSettled(
+        Array.from(noteIds, (noteId) => flushNativeSave(noteId)),
+      );
+      const failed = results.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failed) throw failed.reason;
+    }
+  }, [flushNativeSave]);
+
+  const selectNote = useCallback(
+    (id: string) => {
+      if (desktopMode && active.id !== id) {
+        void flushNativeSave(active.id).catch(() => undefined);
+      }
+      setActiveId(id);
+      setNavOpen(false);
+      setOutlineOpen(false);
+      requestAnimationFrame(() =>
+        document.querySelector(".reading-scroll")?.scrollTo({ top: 0 }),
+      );
+    },
+    [active.id, desktopMode, flushNativeSave],
+  );
+
   const updateContent = (content: string) => {
     if (active.id === EMPTY_NOTE.id) return;
     setNotes((current) =>
       current.map((note) => (note.id === active.id ? { ...note, content } : note)),
     );
     setDirty((current) => new Set(current).add(active.id));
+    if (nativeSavedTimer.current !== undefined) {
+      window.clearTimeout(nativeSavedTimer.current);
+      nativeSavedTimer.current = undefined;
+    }
     setSaved(false);
+    if (desktopMode && nativeLibraryOpen) {
+      scheduleNativeSave(active.id, active.path, content);
+    }
   };
 
+  useEffect(() => {
+    if (!desktopMode) return;
+    let unlistenClose: (() => void) | undefined;
+
+    const flushOnBlur = () => {
+      void flushAllNativeSaves().catch(() => undefined);
+    };
+    window.addEventListener("blur", flushOnBlur);
+
+    void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+      const currentWindow = getCurrentWindow();
+      unlistenClose = await currentWindow.onCloseRequested(async (event) => {
+        if (nativeWindowClosing.current) return;
+        event.preventDefault();
+        nativeWindowClosing.current = true;
+
+        // Give the latest debounced edit a brief chance to reach disk, but a
+        // failed or slow save must never trap the user in the window.
+        let closeSaveTimer: number | undefined;
+        try {
+          await Promise.race([
+            flushAllNativeSaves().catch(() => undefined),
+            new Promise<void>((resolve) => {
+              closeSaveTimer = window.setTimeout(resolve, 1200);
+            }),
+          ]);
+          await currentWindow.destroy();
+        } catch (error) {
+          nativeWindowClosing.current = false;
+          console.error("Folio could not close its window.", error);
+        } finally {
+          if (closeSaveTimer !== undefined) window.clearTimeout(closeSaveTimer);
+        }
+      });
+    });
+
+    return () => {
+      window.removeEventListener("blur", flushOnBlur);
+      unlistenClose?.();
+    };
+  }, [desktopMode, flushAllNativeSaves]);
+
   const beginCreate = (kind: CreateKind) => {
+    if (desktopMode && !nativeLibraryOpen) {
+      showNotice("Choose a library folder before creating files or sections.");
+      return;
+    }
     setCreateKind(kind);
     setNewEntryName("");
     setNewEntryParent(
@@ -981,7 +1206,10 @@ export default function Home() {
         return;
       }
       try {
-        if (rootDirectory) {
+        if (desktopMode) {
+          const snapshot = await nativeLibrary.createFolder(folderPath);
+          setFolders(snapshot.folders);
+        } else if (rootDirectory) {
           if (!(await hasWritePermission(rootDirectory))) {
             showNotice("Write access is needed to create a folder.");
             return;
@@ -989,11 +1217,13 @@ export default function Home() {
           const parent = await getDirectoryAtPath(rootDirectory, newEntryParent);
           await parent.getDirectoryHandle(rawName, { create: true });
         }
-        setFolders((current) =>
-          [...current, folderPath].sort((a, b) =>
-            a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
-          ),
-        );
+        if (!desktopMode) {
+          setFolders((current) =>
+            [...current, folderPath].sort((a, b) =>
+              a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+            ),
+          );
+        }
         setCollapsedGroups((current) => {
           const next = new Set(current);
           next.delete(folderPath);
@@ -1018,7 +1248,11 @@ export default function Home() {
     const content = `# ${title}\n\n`;
     try {
       let handle: FileHandleLike | undefined;
-      if (rootDirectory) {
+      if (desktopMode) {
+        await flushAllNativeSaves();
+        const snapshot = await nativeLibrary.createNote(path, content);
+        applyNativeLibrary(snapshot, path);
+      } else if (rootDirectory) {
         if (!(await hasWritePermission(rootDirectory))) {
           showNotice("Write access is needed to create a file.");
           return;
@@ -1031,22 +1265,24 @@ export default function Home() {
         await writable.close();
       }
 
-      const note: Note = {
-        id: globalThis.crypto?.randomUUID?.() ?? `note-${Date.now()}`,
-        path,
-        title,
-        content,
-        handle,
-      };
-      setNotes((current) =>
-        [...current, note].sort((a, b) =>
-          a.path.localeCompare(b.path, undefined, {
-            numeric: true,
-            sensitivity: "base",
-          }),
-        ),
-      );
-      setActiveId(note.id);
+      if (!desktopMode) {
+        const note: Note = {
+          id: globalThis.crypto?.randomUUID?.() ?? `note-${Date.now()}`,
+          path,
+          title,
+          content,
+          handle,
+        };
+        setNotes((current) =>
+          [...current, note].sort((a, b) =>
+            a.path.localeCompare(b.path, undefined, {
+              numeric: true,
+              sensitivity: "base",
+            }),
+          ),
+        );
+        setActiveId(note.id);
+      }
       setView("editor");
       setCreateKind(undefined);
       showNotice(`Created ${fileName}.`);
@@ -1056,6 +1292,7 @@ export default function Home() {
   };
 
   const moveNote = async (noteId: string, targetFolder: string) => {
+    draggedNoteIdRef.current = undefined;
     setDropTarget(undefined);
     setDraggedNoteId(undefined);
     const note = notes.find((item) => item.id === noteId);
@@ -1080,6 +1317,15 @@ export default function Home() {
     const destinationPath = joinPath(targetFolder, destinationName);
 
     try {
+      if (desktopMode) {
+        await flushAllNativeSaves();
+        const snapshot = await nativeLibrary.move(note.path, destinationPath);
+        const preferredPath = active.id === note.id ? destinationPath : active.path;
+        applyNativeLibrary(snapshot, preferredPath);
+        showNotice(`Moved ${note.title} to ${displayGroup(targetFolder)}.`);
+        return;
+      }
+
       let destinationHandle = note.handle;
       if (rootDirectory) {
         if (!(await hasWritePermission(rootDirectory))) {
@@ -1143,8 +1389,10 @@ export default function Home() {
     event: DragEvent<HTMLButtonElement>,
     noteId: string,
   ) => {
+    draggedNoteIdRef.current = noteId;
     setDraggedNoteId(noteId);
     event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(FOLIO_NOTE_DRAG_TYPE, noteId);
     event.dataTransfer.setData("text/plain", noteId);
   };
 
@@ -1160,6 +1408,18 @@ export default function Home() {
 
   const saveActive = useCallback(async () => {
     if (active.id === EMPTY_NOTE.id) return;
+    if (desktopMode) {
+      if (!nativeLibraryOpen) {
+        showNotice("Choose a library folder before saving notes.");
+        return;
+      }
+      try {
+        await flushNativeSave(active.id);
+      } catch {
+        // flushNativeSave already reports the filesystem error in the UI.
+      }
+      return;
+    }
     if (active.handle?.createWritable) {
       const permissionOptions = { mode: "readwrite" as const };
       const existingPermission = active.handle.queryPermission
@@ -1187,7 +1447,14 @@ export default function Home() {
     });
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1800);
-  }, [active, downloadNote]);
+  }, [
+    active,
+    desktopMode,
+    downloadNote,
+    flushNativeSave,
+    nativeLibraryOpen,
+    showNotice,
+  ]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1220,6 +1487,22 @@ export default function Home() {
   }, [activeIndex, notes, saveActive, selectNote]);
 
   const openFolder = async () => {
+    if (desktopMode) {
+      try {
+        await flushAllNativeSaves();
+        const snapshot = await nativeLibrary.choose();
+        if (!snapshot) return;
+        applyNativeLibrary(snapshot);
+        setView("preview");
+      } catch (error) {
+        showNotice(
+          error instanceof Error
+            ? `Folio could not open that folder: ${error.message}`
+            : "Folio could not open that folder.",
+        );
+      }
+      return;
+    }
     if (!window.showDirectoryPicker) {
       folderInput.current?.click();
       return;
@@ -1419,17 +1702,19 @@ export default function Home() {
           </button>
           <button className="open-button" onClick={openFolder}>
             <FolderOpen size={16} />
-            <span>Open folder</span>
+            <span>{desktopMode && nativeLibraryOpen ? "Change folder" : "Open folder"}</span>
           </button>
-          <input
-            ref={folderInput}
-            className="visually-hidden"
-            type="file"
-            multiple
-            accept=".md,text/markdown"
-            onChange={importFolder}
-            {...({ webkitdirectory: "", directory: "" } as React.InputHTMLAttributes<HTMLInputElement>)}
-          />
+          {!desktopMode && (
+            <input
+              ref={folderInput}
+              className="visually-hidden"
+              type="file"
+              multiple
+              accept=".md,text/markdown"
+              onChange={importFolder}
+              {...({ webkitdirectory: "", directory: "" } as React.InputHTMLAttributes<HTMLInputElement>)}
+            />
+          )}
         </div>
       </header>
 
@@ -1590,8 +1875,24 @@ export default function Home() {
                     group === activeGroupPath ? "active-section" : ""
                   } ${dropTarget === group ? "drop-target" : ""}`}
                   key={group || "__root__"}
+                  data-folder-path={group}
+                  onDragEnter={(event) => {
+                    const hasFolioNote =
+                      Boolean(draggedNoteIdRef.current) ||
+                      Array.from(event.dataTransfer.types).includes(
+                        FOLIO_NOTE_DRAG_TYPE,
+                      );
+                    if (!hasFolioNote) return;
+                    event.preventDefault();
+                    setDropTarget(group);
+                  }}
                   onDragOver={(event) => {
-                    if (!draggedNoteId) return;
+                    const hasFolioNote =
+                      Boolean(draggedNoteIdRef.current) ||
+                      Array.from(event.dataTransfer.types).includes(
+                        FOLIO_NOTE_DRAG_TYPE,
+                      );
+                    if (!hasFolioNote) return;
                     event.preventDefault();
                     event.dataTransfer.dropEffect = "move";
                     setDropTarget(group);
@@ -1604,7 +1905,9 @@ export default function Home() {
                   onDrop={(event) => {
                     event.preventDefault();
                     const noteId =
-                      draggedNoteId || event.dataTransfer.getData("text/plain");
+                      draggedNoteIdRef.current ||
+                      event.dataTransfer.getData(FOLIO_NOTE_DRAG_TYPE) ||
+                      event.dataTransfer.getData("text/plain");
                     if (noteId) void moveNote(noteId, group);
                   }}
                 >
@@ -1636,6 +1939,7 @@ export default function Home() {
                           draggable
                           onDragStart={(event) => startNoteDrag(event, note.id)}
                           onDragEnd={() => {
+                            draggedNoteIdRef.current = undefined;
                             setDraggedNoteId(undefined);
                             setDropTarget(undefined);
                           }}
@@ -1733,10 +2037,32 @@ export default function Home() {
                 className={`save-button ${saved ? "saved" : ""}`}
                 onClick={() => void saveActive()}
                 disabled={!dirty.has(active.id) && !saved}
-                title={active.handle ? "Save to Markdown file" : "Download Markdown file"}
+                title={
+                  desktopMode
+                    ? "Changes save automatically; click to save immediately"
+                    : active.handle
+                      ? "Save to Markdown file"
+                      : "Download Markdown file"
+                }
               >
-                {saved ? <Check size={15} /> : active.handle ? <Save size={15} /> : <Download size={15} />}
-                <span>{saved ? "Saved" : active.handle ? "Save" : "Export"}</span>
+                {saved ? (
+                  <Check size={15} />
+                ) : desktopMode || active.handle ? (
+                  <Save size={15} />
+                ) : (
+                  <Download size={15} />
+                )}
+                <span>
+                  {saved
+                    ? "Saved"
+                    : desktopMode
+                      ? dirty.has(active.id)
+                        ? "Saving…"
+                        : "Auto-save"
+                      : active.handle
+                        ? "Save"
+                        : "Export"}
+                </span>
               </button>
             </div>
             <span className="document-progress" aria-hidden="true">
@@ -1747,39 +2073,6 @@ export default function Home() {
           <div className={`reading-scroll mode-${view}`}>
             {(view === "preview" || view === "split") && (
               <article className="markdown-page">
-                <header
-                  className="page-location"
-                  aria-label={`Section ${activeSectionIndex + 1}, file ${
-                    activeFileIndex + 1
-                  }, page ${activeIndex + 1}`}
-                >
-                  <div className="page-location-number">
-                    <span>Page</span>
-                    <strong>{String(activeIndex + 1).padStart(2, "0")}</strong>
-                    <small>of {String(notes.length).padStart(2, "0")}</small>
-                  </div>
-                  <div className="page-location-copy">
-                    <span>
-                      Section {String(activeSectionIndex + 1).padStart(2, "0")} of{" "}
-                      {String(grouped.length).padStart(2, "0")}
-                    </span>
-                    <strong>{displayGroup(activeGroupPath)}</strong>
-                    <small>
-                      File {String(activeFileIndex + 1).padStart(2, "0")} of{" "}
-                      {String(activeSectionNotes.length).padStart(2, "0")} · {active.path.split("/").pop()}
-                    </small>
-                  </div>
-                  <div
-                    className="page-location-meter"
-                    role="progressbar"
-                    aria-label="Progress through this section"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={Math.round(sectionProgress)}
-                  >
-                    <span style={{ width: `${sectionProgress}%` }} />
-                  </div>
-                </header>
                 <div className="markdown-body">{markdown}</div>
 
                 <nav className="page-turner" aria-label="Page navigation">
@@ -1838,7 +2131,7 @@ export default function Home() {
                   />
                 </div>
                 <div className="editor-status">
-                  <span>Markdown</span>
+                  <span>{desktopMode ? "Auto-save on" : "Markdown"}</span>
                   <span>{active.content.split(/\s+/).filter(Boolean).length} words</span>
                   <span>{active.content.length} characters</span>
                 </div>
@@ -1902,7 +2195,7 @@ export default function Home() {
 
           <div className="keyboard-hint">
             <span><kbd>←</kbd><kbd>→</kbd> turn pages</span>
-            <span><kbd>⌘</kbd><kbd>S</kbd> save</span>
+            <span><kbd>⌘</kbd><kbd>S</kbd> {desktopMode ? "save now" : "save"}</span>
           </div>
         </aside>
       </div>
@@ -1970,9 +2263,11 @@ export default function Home() {
             </label>
 
             <p className="create-note">
-              {rootDirectory
-                ? "This will be created directly in your open folder."
-                : "This browser opened a read-only copy; new items remain in this session until exported."}
+              {desktopMode
+                ? "This will be created on disk immediately and future edits will save automatically."
+                : rootDirectory
+                  ? "This will be created directly in your open folder."
+                  : "This browser opened a read-only copy; new items remain in this session until exported."}
             </p>
 
             <div className="create-actions">

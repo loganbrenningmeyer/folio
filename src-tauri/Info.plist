@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Folio reads and saves Markdown files in libraries you choose.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Folio reads and saves Markdown files in libraries you choose.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Folio reads and saves Markdown files in libraries you choose.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Folio reads and saves Markdown libraries you choose on network volumes.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Folio reads and saves Markdown libraries you choose on removable volumes.</string>
+</dict>
+</plist>
+
