@@ -2,6 +2,7 @@
 
 import React, {
   type ChangeEvent,
+  type DragEvent,
   type MouseEvent,
   type ReactNode,
   useCallback,
@@ -27,13 +28,15 @@ import {
   Columns2,
   Download,
   FileCode2,
+  FilePlus2,
   FileText,
+  FolderPlus,
   FolderOpen,
+  GripVertical,
   Link2,
   ListTree,
   Menu,
   Moon,
-  MoreHorizontal,
   PanelRight,
   Save,
   Search,
@@ -63,6 +66,21 @@ type DirectoryHandleLike = {
   kind: "directory";
   name: string;
   values: () => AsyncIterableIterator<FileHandleLike | DirectoryHandleLike>;
+  getDirectoryHandle: (
+    name: string,
+    options?: { create?: boolean },
+  ) => Promise<DirectoryHandleLike>;
+  getFileHandle: (
+    name: string,
+    options?: { create?: boolean },
+  ) => Promise<FileHandleLike>;
+  removeEntry: (name: string, options?: { recursive?: boolean }) => Promise<void>;
+  queryPermission?: (options: {
+    mode: "read" | "readwrite";
+  }) => Promise<PermissionState>;
+  requestPermission?: (options: {
+    mode: "read" | "readwrite";
+  }) => Promise<PermissionState>;
 };
 
 declare global {
@@ -84,6 +102,8 @@ type Note = {
 
 type ViewMode = "preview" | "editor" | "split";
 type Theme = "light" | "dark";
+type CreateKind = "file" | "folder";
+type LibraryScan = { notes: Note[]; folders: string[] };
 
 const markdownSanitizeSchema = {
   ...defaultSchema,
@@ -278,6 +298,17 @@ That is the whole loop: read, connect, write, and return.`,
   },
 ];
 
+const SAMPLE_FOLDERS = ["01 Foundations", "02 Research", "03 Synthesis"];
+
+const EMPTY_NOTE: Note = {
+  id: "__folio-empty__",
+  path: "",
+  title: "Your library is ready",
+  content: `# Your library is ready
+
+Create a Markdown file from the library panel to start writing. You can also create folders, then drag pages between them to organize your work.`,
+};
+
 function cleanTitle(path: string) {
   return (
     path
@@ -292,6 +323,14 @@ function cleanGroup(group: string) {
   return group.replace(/^\d+[._ -]*/, "");
 }
 
+function displayGroup(group: string) {
+  if (!group) return "Notes";
+  return group
+    .split("/")
+    .map((segment) => cleanGroup(segment))
+    .join(" / ");
+}
+
 function normalizePath(path: string) {
   const parts: string[] = [];
   for (const part of path.replace(/\\/g, "/").split("/")) {
@@ -300,6 +339,44 @@ function normalizePath(path: string) {
     else parts.push(part);
   }
   return parts.join("/");
+}
+
+function parentPath(path: string) {
+  const normalized = normalizePath(path);
+  return normalized.includes("/")
+    ? normalized.slice(0, normalized.lastIndexOf("/"))
+    : "";
+}
+
+function fileNameFromPath(path: string) {
+  return normalizePath(path).split("/").pop() ?? path;
+}
+
+function joinPath(parent: string, name: string) {
+  return normalizePath(parent ? `${parent}/${name}` : name);
+}
+
+async function getDirectoryAtPath(
+  root: DirectoryHandleLike,
+  path: string,
+  create = false,
+) {
+  let directory = root;
+  for (const segment of normalizePath(path).split("/").filter(Boolean)) {
+    directory = await directory.getDirectoryHandle(segment, { create });
+  }
+  return directory;
+}
+
+async function hasWritePermission(
+  handle: Pick<DirectoryHandleLike, "queryPermission" | "requestPermission">,
+) {
+  const options = { mode: "readwrite" as const };
+  if (handle.queryPermission && (await handle.queryPermission(options)) === "granted") {
+    return true;
+  }
+  if (!handle.requestPermission) return true;
+  return (await handle.requestPermission(options)) === "granted";
 }
 
 function slugify(value: string) {
@@ -359,12 +436,16 @@ function nodeText(children: ReactNode): string {
 async function readDirectory(
   directory: DirectoryHandleLike,
   prefix = "",
-): Promise<Note[]> {
+): Promise<LibraryScan> {
   const notes: Note[] = [];
+  const folders: string[] = [];
   for await (const entry of directory.values()) {
     const path = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.kind === "directory") {
-      notes.push(...(await readDirectory(entry, path)));
+      folders.push(path);
+      const nested = await readDirectory(entry, path);
+      notes.push(...nested.notes);
+      folders.push(...nested.folders);
     } else if (/\.md$/i.test(entry.name)) {
       const file = await entry.getFile();
       notes.push({
@@ -376,13 +457,19 @@ async function readDirectory(
       });
     }
   }
-  return notes.sort((a, b) =>
+  notes.sort((a, b) =>
     a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: "base" }),
   );
+  folders.sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+  );
+  return { notes, folders };
 }
 
 export default function Home() {
   const [notes, setNotes] = useState<Note[]>(SAMPLE_NOTES);
+  const [folders, setFolders] = useState<string[]>(SAMPLE_FOLDERS);
+  const [rootDirectory, setRootDirectory] = useState<DirectoryHandleLike>();
   const [activeId, setActiveId] = useState(SAMPLE_NOTES[0].id);
   const [libraryName, setLibraryName] = useState("The Folio Field Guide");
   const [view, setView] = useState<ViewMode>("preview");
@@ -394,23 +481,34 @@ export default function Home() {
   const [navOpen, setNavOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [createKind, setCreateKind] = useState<CreateKind>();
+  const [newEntryName, setNewEntryName] = useState("");
+  const [newEntryParent, setNewEntryParent] = useState("");
+  const [draggedNoteId, setDraggedNoteId] = useState<string>();
+  const [dropTarget, setDropTarget] = useState<string>();
+  const [notice, setNotice] = useState<string>();
   const folderInput = useRef<HTMLInputElement>(null);
 
   const activeIndex = Math.max(
     0,
     notes.findIndex((note) => note.id === activeId),
   );
-  const active = notes[activeIndex] ?? notes[0];
+  const active = notes[activeIndex] ?? EMPTY_NOTE;
 
   const grouped = useMemo(() => {
-    const groups = new Map<string, Note[]>();
+    const groups = new Map<string, Note[]>([
+      ["", []],
+      ...folders.map((folder): [string, Note[]] => [folder, []]),
+    ]);
     notes.forEach((note) => {
       const segments = note.path.split("/");
-      const group = segments.length > 1 ? segments.slice(0, -1).join(" / ") : "Notes";
+      const group = segments.length > 1 ? segments.slice(0, -1).join("/") : "";
       groups.set(group, [...(groups.get(group) ?? []), note]);
     });
-    return Array.from(groups.entries());
-  }, [notes]);
+    return Array.from(groups.entries()).sort(([a], [b]) =>
+      a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+    );
+  }, [folders, notes]);
 
   const pageHeadings = useMemo(
     () => headingsFrom(active?.content ?? ""),
@@ -470,13 +568,216 @@ export default function Home() {
     );
   }, []);
 
+  const showNotice = useCallback((message: string) => {
+    setNotice(message);
+    window.setTimeout(() => {
+      setNotice((current) => (current === message ? undefined : current));
+    }, 3600);
+  }, []);
+
   const updateContent = (content: string) => {
-    if (!active) return;
+    if (active.id === EMPTY_NOTE.id) return;
     setNotes((current) =>
       current.map((note) => (note.id === active.id ? { ...note, content } : note)),
     );
     setDirty((current) => new Set(current).add(active.id));
     setSaved(false);
+  };
+
+  const beginCreate = (kind: CreateKind) => {
+    setCreateKind(kind);
+    setNewEntryName("");
+    setNewEntryParent(
+      active.id === EMPTY_NOTE.id ? "" : parentPath(active.path),
+    );
+  };
+
+  const createEntry = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!createKind) return;
+
+    const rawName = newEntryName.trim();
+    if (!rawName) {
+      showNotice(`Enter a ${createKind} name.`);
+      return;
+    }
+    if (/[\\/:*?"<>|]/.test(rawName)) {
+      showNotice("Names cannot contain \\ / : * ? \" < > or |.");
+      return;
+    }
+
+    if (createKind === "folder") {
+      const folderPath = joinPath(newEntryParent, rawName);
+      if (folders.some((folder) => folder.toLowerCase() === folderPath.toLowerCase())) {
+        showNotice("A folder with that name already exists here.");
+        return;
+      }
+      try {
+        if (rootDirectory) {
+          if (!(await hasWritePermission(rootDirectory))) {
+            showNotice("Write access is needed to create a folder.");
+            return;
+          }
+          const parent = await getDirectoryAtPath(rootDirectory, newEntryParent);
+          await parent.getDirectoryHandle(rawName, { create: true });
+        }
+        setFolders((current) =>
+          [...current, folderPath].sort((a, b) =>
+            a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+          ),
+        );
+        setCollapsedGroups((current) => {
+          const next = new Set(current);
+          next.delete(folderPath);
+          return next;
+        });
+        setCreateKind(undefined);
+        showNotice(`Created ${displayGroup(folderPath)}.`);
+      } catch {
+        showNotice("Folio could not create that folder.");
+      }
+      return;
+    }
+
+    const fileName = /\.md$/i.test(rawName) ? rawName : `${rawName}.md`;
+    const path = joinPath(newEntryParent, fileName);
+    if (notes.some((note) => note.path.toLowerCase() === path.toLowerCase())) {
+      showNotice("A Markdown file with that name already exists here.");
+      return;
+    }
+
+    const title = cleanTitle(fileName);
+    const content = `# ${title}\n\n`;
+    try {
+      let handle: FileHandleLike | undefined;
+      if (rootDirectory) {
+        if (!(await hasWritePermission(rootDirectory))) {
+          showNotice("Write access is needed to create a file.");
+          return;
+        }
+        const parent = await getDirectoryAtPath(rootDirectory, newEntryParent);
+        handle = await parent.getFileHandle(fileName, { create: true });
+        const writable = await handle.createWritable?.();
+        if (!writable) throw new Error("File is not writable");
+        await writable.write(content);
+        await writable.close();
+      }
+
+      const note: Note = {
+        id: globalThis.crypto?.randomUUID?.() ?? `note-${Date.now()}`,
+        path,
+        title,
+        content,
+        handle,
+      };
+      setNotes((current) =>
+        [...current, note].sort((a, b) =>
+          a.path.localeCompare(b.path, undefined, {
+            numeric: true,
+            sensitivity: "base",
+          }),
+        ),
+      );
+      setActiveId(note.id);
+      setView("editor");
+      setCreateKind(undefined);
+      showNotice(`Created ${fileName}.`);
+    } catch {
+      showNotice("Folio could not create that file.");
+    }
+  };
+
+  const moveNote = async (noteId: string, targetFolder: string) => {
+    setDropTarget(undefined);
+    setDraggedNoteId(undefined);
+    const note = notes.find((item) => item.id === noteId);
+    if (!note || parentPath(note.path) === targetFolder) return;
+
+    const originalName = fileNameFromPath(note.path);
+    const extensionIndex = originalName.toLowerCase().lastIndexOf(".md");
+    const baseName = extensionIndex >= 0 ? originalName.slice(0, extensionIndex) : originalName;
+    const extension = extensionIndex >= 0 ? originalName.slice(extensionIndex) : ".md";
+    let destinationName = originalName;
+    let counter = 2;
+    while (
+      notes.some(
+        (item) =>
+          item.id !== note.id &&
+          item.path.toLowerCase() === joinPath(targetFolder, destinationName).toLowerCase(),
+      )
+    ) {
+      destinationName = `${baseName} ${counter}${extension}`;
+      counter += 1;
+    }
+    const destinationPath = joinPath(targetFolder, destinationName);
+
+    try {
+      let destinationHandle = note.handle;
+      if (rootDirectory) {
+        if (!(await hasWritePermission(rootDirectory))) {
+          showNotice("Write access is needed to move a file.");
+          return;
+        }
+        const destinationDirectory = await getDirectoryAtPath(
+          rootDirectory,
+          targetFolder,
+        );
+        const createdHandle = await destinationDirectory.getFileHandle(
+          destinationName,
+          { create: true },
+        );
+        const writable = await createdHandle.createWritable?.();
+        if (!writable) throw new Error("Destination is not writable");
+        await writable.write(note.content);
+        await writable.close();
+
+        try {
+          const sourceDirectory = await getDirectoryAtPath(
+            rootDirectory,
+            parentPath(note.path),
+          );
+          await sourceDirectory.removeEntry(fileNameFromPath(note.path));
+        } catch (error) {
+          await destinationDirectory.removeEntry(destinationName);
+          throw error;
+        }
+        destinationHandle = createdHandle;
+      }
+
+      setNotes((current) =>
+        current
+          .map((item) =>
+            item.id === note.id
+              ? { ...item, path: destinationPath, handle: destinationHandle }
+              : item,
+          )
+          .sort((a, b) =>
+            a.path.localeCompare(b.path, undefined, {
+              numeric: true,
+              sensitivity: "base",
+            }),
+          ),
+      );
+      if (rootDirectory) {
+        setDirty((current) => {
+          const next = new Set(current);
+          next.delete(note.id);
+          return next;
+        });
+      }
+      showNotice(`Moved ${note.title} to ${displayGroup(targetFolder)}.`);
+    } catch {
+      showNotice("Folio could not move that file. The original was kept in place.");
+    }
+  };
+
+  const startNoteDrag = (
+    event: DragEvent<HTMLButtonElement>,
+    noteId: string,
+  ) => {
+    setDraggedNoteId(noteId);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", noteId);
   };
 
   const downloadNote = useCallback((note: Note) => {
@@ -490,7 +791,7 @@ export default function Home() {
   }, []);
 
   const saveActive = useCallback(async () => {
-    if (!active) return;
+    if (active.id === EMPTY_NOTE.id) return;
     if (active.handle?.createWritable) {
       const permissionOptions = { mode: "readwrite" as const };
       const existingPermission = active.handle.queryPermission
@@ -523,7 +824,7 @@ export default function Home() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
-      const isTyping = ["INPUT", "TEXTAREA"].includes(target.tagName);
+      const isTyping = ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName);
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setSearchOpen(true);
@@ -536,6 +837,7 @@ export default function Home() {
         setSearchOpen(false);
         setNavOpen(false);
         setOutlineOpen(false);
+        setCreateKind(undefined);
       }
       if (!isTyping && event.key === "ArrowRight" && activeIndex < notes.length - 1) {
         selectNote(notes[activeIndex + 1].id);
@@ -559,14 +861,14 @@ export default function Home() {
         id: "folio-markdown-library",
       });
       const loaded = await readDirectory(directory);
-      if (!loaded.length) {
-        window.alert("This folder does not contain any Markdown files.");
-        return;
-      }
-      setNotes(loaded);
-      setActiveId(loaded[0].id);
+      setNotes(loaded.notes);
+      setFolders(loaded.folders);
+      setRootDirectory(directory);
+      setActiveId(loaded.notes[0]?.id ?? "");
       setLibraryName(directory.name);
       setDirty(new Set());
+      setCollapsedGroups(new Set());
+      setView("preview");
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       folderInput.current?.click();
@@ -592,7 +894,21 @@ export default function Home() {
       }),
     );
     loaded.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));
+    const importedFolders = new Set<string>();
+    loaded.forEach((note) => {
+      let folder = parentPath(note.path);
+      while (folder) {
+        importedFolders.add(folder);
+        folder = parentPath(folder);
+      }
+    });
     setNotes(loaded);
+    setFolders(
+      Array.from(importedFolders).sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+      ),
+    );
+    setRootDirectory(undefined);
     setActiveId(loaded[0].id);
     setLibraryName(files[0].webkitRelativePath.split("/")[0] || "My notes");
     event.target.value = "";
@@ -657,6 +973,7 @@ export default function Home() {
         h1: ({ children }) => <h1 id={slugify(nodeText(children))}>{children}</h1>,
         h2: ({ children }) => <h2 id={slugify(nodeText(children))}>{children}</h2>,
         h3: ({ children }) => <h3 id={slugify(nodeText(children))}>{children}</h3>,
+        h4: ({ children }) => <h4 id={slugify(nodeText(children))}>{children}</h4>,
         code: ({ className, children, node: _node, ...props }) => {
           const language = className?.match(/language-([\w-]+)/)?.[1];
           return (
@@ -680,8 +997,6 @@ export default function Home() {
       {withWikiLinks(normalizeMathDelimiters(active?.content ?? ""))}
     </ReactMarkdown>
   );
-
-  if (!active) return null;
 
   return (
     <main className="app-shell">
@@ -754,16 +1069,53 @@ export default function Home() {
               <span className="eyebrow">Your library</span>
               <h2>{libraryName}</h2>
             </div>
-            <button className="subtle-icon" aria-label="Library options">
-              <MoreHorizontal size={17} />
-            </button>
+            <div className="library-create-actions">
+              <button
+                className="subtle-icon"
+                onClick={() => beginCreate("file")}
+                aria-label="New Markdown file"
+                title="New Markdown file"
+              >
+                <FilePlus2 size={16} />
+              </button>
+              <button
+                className="subtle-icon"
+                onClick={() => beginCreate("folder")}
+                aria-label="New folder"
+                title="New folder"
+              >
+                <FolderPlus size={16} />
+              </button>
+            </div>
           </div>
 
           <nav className="section-list" aria-label="Library pages">
             {grouped.map(([group, groupNotes], groupIndex) => {
               const collapsed = collapsedGroups.has(group);
               return (
-                <section className="section-group" key={group}>
+                <section
+                  className={`section-group ${
+                    dropTarget === group ? "drop-target" : ""
+                  }`}
+                  key={group || "__root__"}
+                  onDragOver={(event) => {
+                    if (!draggedNoteId) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    setDropTarget(group);
+                  }}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+                      setDropTarget(undefined);
+                    }
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const noteId =
+                      draggedNoteId || event.dataTransfer.getData("text/plain");
+                    if (noteId) void moveNote(noteId, group);
+                  }}
+                >
                   <button
                     className="section-label"
                     onClick={() =>
@@ -776,7 +1128,7 @@ export default function Home() {
                     }
                   >
                     <span>{String(groupIndex + 1).padStart(2, "0")}</span>
-                    <strong>{cleanGroup(group)}</strong>
+                    <strong>{displayGroup(group)}</strong>
                     <ChevronDown size={14} className={collapsed ? "rotated" : ""} />
                   </button>
                   {!collapsed && (
@@ -784,13 +1136,23 @@ export default function Home() {
                       {groupNotes.map((note) => (
                         <button
                           key={note.id}
-                          className={`page-row ${note.id === active.id ? "active" : ""}`}
+                          className={`page-row ${note.id === active.id ? "active" : ""} ${
+                            draggedNoteId === note.id ? "dragging" : ""
+                          }`}
                           onClick={() => selectNote(note.id)}
+                          draggable
+                          onDragStart={(event) => startNoteDrag(event, note.id)}
+                          onDragEnd={() => {
+                            setDraggedNoteId(undefined);
+                            setDropTarget(undefined);
+                          }}
+                          title="Open this page, or drag it into another folder"
                         >
                           <span className="page-spine" />
                           <FileText size={15} />
                           <span>{note.title}</span>
                           {dirty.has(note.id) && <i aria-label="Unsaved changes" />}
+                          <GripVertical className="drag-handle" size={13} aria-hidden="true" />
                         </button>
                       ))}
                     </div>
@@ -990,6 +1352,86 @@ export default function Home() {
         </aside>
       </div>
 
+      {createKind && (
+        <div
+          className="create-layer"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Create a new ${createKind}`}
+        >
+          <button
+            className="command-backdrop"
+            onClick={() => setCreateKind(undefined)}
+            aria-label="Cancel"
+          />
+          <form className="create-dialog" onSubmit={createEntry}>
+            <div className="create-dialog-head">
+              <span className="create-dialog-icon">
+                {createKind === "file" ? (
+                  <FilePlus2 size={19} />
+                ) : (
+                  <FolderPlus size={19} />
+                )}
+              </span>
+              <span>
+                <small>New {createKind}</small>
+                <strong>
+                  {createKind === "file" ? "Start a new page" : "Organize your library"}
+                </strong>
+              </span>
+              <button
+                type="button"
+                className="subtle-icon"
+                onClick={() => setCreateKind(undefined)}
+                aria-label="Close"
+              >
+                <X size={17} />
+              </button>
+            </div>
+
+            <label className="create-field">
+              <span>{createKind === "file" ? "File name" : "Folder name"}</span>
+              <input
+                autoFocus
+                value={newEntryName}
+                onChange={(event) => setNewEntryName(event.target.value)}
+                placeholder={createKind === "file" ? "Untitled note" : "New section"}
+              />
+            </label>
+
+            <label className="create-field">
+              <span>Location</span>
+              <select
+                value={newEntryParent}
+                onChange={(event) => setNewEntryParent(event.target.value)}
+              >
+                <option value="">Library root</option>
+                {folders.map((folder) => (
+                  <option key={folder} value={folder}>
+                    {displayGroup(folder)}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <p className="create-note">
+              {rootDirectory
+                ? "This will be created directly in your open folder."
+                : "This browser opened a read-only copy; new items remain in this session until exported."}
+            </p>
+
+            <div className="create-actions">
+              <button type="button" onClick={() => setCreateKind(undefined)}>
+                Cancel
+              </button>
+              <button type="submit" className="create-primary">
+                Create {createKind}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {searchOpen && (
         <div className="command-layer" role="dialog" aria-modal="true" aria-label="Find a page">
           <button className="command-backdrop" onClick={() => setSearchOpen(false)} aria-label="Close search" />
@@ -1035,6 +1477,16 @@ export default function Home() {
         </div>
       )}
 
+      {notice && (
+        <div className="notice-toast" role="status">
+          <Check size={15} />
+          <span>{notice}</span>
+          <button onClick={() => setNotice(undefined)} aria-label="Dismiss message">
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       <div className="mobile-page-nav">
         <button
           onClick={() => activeIndex > 0 && selectNote(notes[activeIndex - 1].id)}
@@ -1043,7 +1495,7 @@ export default function Home() {
         >
           <ArrowLeft size={17} />
         </button>
-        <span>{activeIndex + 1} / {notes.length}</span>
+        <span>{notes.length ? activeIndex + 1 : 0} / {notes.length}</span>
         <button
           onClick={() => activeIndex < notes.length - 1 && selectNote(notes[activeIndex + 1].id)}
           disabled={activeIndex === notes.length - 1}

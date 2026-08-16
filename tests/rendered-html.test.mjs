@@ -32,6 +32,8 @@ test("server-renders the Folio reader", async () => {
   assert.match(html, /<title>Folio — Your Markdown library, beautifully connected<\/title>/i);
   assert.match(html, /Welcome to Folio/);
   assert.match(html, /Open folder/);
+  assert.match(html, /New Markdown file/);
+  assert.match(html, /New folder/);
   assert.match(html, /Find a page/);
   assert.match(html, /class="katex"/);
   assert.match(html, /<math/);
@@ -39,11 +41,12 @@ test("server-renders the Folio reader", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
 
-test("ships the requested reading and editing capabilities", async () => {
-  const [page, layout, packageJson] = await Promise.all([
+test("ships the requested reading, editing, and organization capabilities", async () => {
+  const [page, layout, packageJson, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /showDirectoryPicker/);
@@ -57,6 +60,13 @@ test("ships the requested reading and editing capabilities", async () => {
   assert.match(page, /withWikiLinks/);
   assert.match(page, /"preview" \| "editor" \| "split"/);
   assert.match(page, /prefers-color-scheme: dark/);
+  assert.match(page, /getDirectoryHandle/);
+  assert.match(page, /getFileHandle/);
+  assert.match(page, /removeEntry/);
+  assert.match(page, /createEntry/);
+  assert.match(page, /draggable/);
+  assert.match(css, /\.markdown-body h3\s*\{[^}]*font-size:\s*20px/);
+  assert.match(css, /\.markdown-body h4\s*\{[^}]*font-size:\s*17px[^}]*font-weight:\s*700/);
   assert.match(layout, /\/og\.png/);
   assert.match(packageJson, /"name": "folio-markdown-reader"/);
   assert.match(packageJson, /"rehype-highlight": "\^7\.0\.2"/);
