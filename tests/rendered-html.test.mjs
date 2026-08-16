@@ -74,6 +74,9 @@ test("ships the requested reading, editing, and organization capabilities", asyn
   assert.match(page, /EditorView\.lineWrapping/);
   assert.match(page, /FONT_CHOICES/);
   assert.match(page, /COLOR_PALETTES/);
+  assert.match(page, /document-position/);
+  assert.match(page, /page-location-meter/);
+  assert.match(page, /Progress through this section/);
   assert.match(page, /folio-reader-font/);
   assert.match(page, /folio-editor-font/);
   assert.match(page, /folio-color-palette/);
@@ -89,6 +92,8 @@ test("ships the requested reading, editing, and organization capabilities", asyn
   assert.match(css, /\.cm-lineWrapping\s*\{[^}]*overflow-wrap:\s*anywhere/);
   assert.match(css, /\.font-popover/);
   assert.match(css, /\.palette-grid/);
+  assert.match(css, /\.document-progress/);
+  assert.match(css, /\.page-location-number/);
   assert.match(css, /data-palette="slate"/);
   assert.match(css, /data-palette="graphite"/);
   assert.doesNotMatch(css, /user-select:\s*text !important/);

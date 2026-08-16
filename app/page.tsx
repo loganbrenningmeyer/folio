@@ -830,6 +830,24 @@ export default function Home() {
     );
   }, [folders, notes]);
 
+  const activeGroupPath = useMemo(() => {
+    const segments = active.path.split("/");
+    return segments.length > 1 ? segments.slice(0, -1).join("/") : "";
+  }, [active.path]);
+  const activeSectionIndex = Math.max(
+    0,
+    grouped.findIndex(([group]) => group === activeGroupPath),
+  );
+  const activeSectionNotes = grouped[activeSectionIndex]?.[1] ?? [];
+  const activeFileIndex = Math.max(
+    0,
+    activeSectionNotes.findIndex((note) => note.id === active.id),
+  );
+  const pageProgress = notes.length ? ((activeIndex + 1) / notes.length) * 100 : 0;
+  const sectionProgress = activeSectionNotes.length
+    ? ((activeFileIndex + 1) / activeSectionNotes.length) * 100
+    : 0;
+
   const pageHeadings = useMemo(
     () => headingsFrom(active?.content ?? ""),
     [active?.content],
@@ -1569,8 +1587,8 @@ export default function Home() {
               return (
                 <section
                   className={`section-group ${
-                    dropTarget === group ? "drop-target" : ""
-                  }`}
+                    group === activeGroupPath ? "active-section" : ""
+                  } ${dropTarget === group ? "drop-target" : ""}`}
                   key={group || "__root__"}
                   onDragOver={(event) => {
                     if (!draggedNoteId) return;
@@ -1603,11 +1621,12 @@ export default function Home() {
                   >
                     <span>{String(groupIndex + 1).padStart(2, "0")}</span>
                     <strong>{displayGroup(group)}</strong>
+                    <small>{groupNotes.length}</small>
                     <ChevronDown size={14} className={collapsed ? "rotated" : ""} />
                   </button>
                   {!collapsed && (
                     <div className="page-list">
-                      {groupNotes.map((note) => (
+                      {groupNotes.map((note, noteIndex) => (
                         <button
                           key={note.id}
                           className={`page-row ${note.id === active.id ? "active" : ""} ${
@@ -1623,7 +1642,9 @@ export default function Home() {
                           title="Open this page, or drag it into another folder"
                         >
                           <span className="page-spine" />
-                          <FileText size={15} />
+                          <span className="page-order">
+                            {String(noteIndex + 1).padStart(2, "0")}
+                          </span>
                           <span>{note.title}</span>
                           {dirty.has(note.id) && <i aria-label="Unsaved changes" />}
                           <GripVertical className="drag-handle" size={13} aria-hidden="true" />
@@ -1649,10 +1670,33 @@ export default function Home() {
 
         <section className="document-area">
           <div className="document-toolbar">
-            <div className="breadcrumb">
-              <span>{cleanGroup(active.path.split("/")[0] || "Notes")}</span>
-              <ChevronRight size={13} />
-              <strong>{active.title}</strong>
+            <div
+              className="document-position"
+              aria-label={`Page ${activeIndex + 1} of ${notes.length}, section ${
+                activeSectionIndex + 1
+              } of ${grouped.length}, file ${activeFileIndex + 1} of ${
+                activeSectionNotes.length
+              }`}
+            >
+              <span className="position-page">
+                <span>Page</span>
+                <strong>{String(activeIndex + 1).padStart(2, "0")}</strong>
+                <small>/ {String(notes.length).padStart(2, "0")}</small>
+              </span>
+              <span className="position-copy">
+                <span className="position-overline">
+                  Section {String(activeSectionIndex + 1).padStart(2, "0")} of{" "}
+                  {String(grouped.length).padStart(2, "0")}
+                  <i aria-hidden="true">•</i>
+                  File {String(activeFileIndex + 1).padStart(2, "0")} of{" "}
+                  {String(activeSectionNotes.length).padStart(2, "0")}
+                </span>
+                <span className="position-path">
+                  <strong>{displayGroup(activeGroupPath)}</strong>
+                  <ChevronRight size={12} aria-hidden="true" />
+                  <span>{active.title}</span>
+                </span>
+              </span>
             </div>
 
             <div className="document-actions">
@@ -1695,16 +1739,47 @@ export default function Home() {
                 <span>{saved ? "Saved" : active.handle ? "Save" : "Export"}</span>
               </button>
             </div>
+            <span className="document-progress" aria-hidden="true">
+              <i style={{ width: `${pageProgress}%` }} />
+            </span>
           </div>
 
           <div className={`reading-scroll mode-${view}`}>
             {(view === "preview" || view === "split") && (
               <article className="markdown-page">
-                <div className="page-kicker">
-                  <span>{String(activeIndex + 1).padStart(2, "0")}</span>
-                  <span>—</span>
-                  <span>{cleanGroup(active.path.split("/")[0] || "Notes")}</span>
-                </div>
+                <header
+                  className="page-location"
+                  aria-label={`Section ${activeSectionIndex + 1}, file ${
+                    activeFileIndex + 1
+                  }, page ${activeIndex + 1}`}
+                >
+                  <div className="page-location-number">
+                    <span>Page</span>
+                    <strong>{String(activeIndex + 1).padStart(2, "0")}</strong>
+                    <small>of {String(notes.length).padStart(2, "0")}</small>
+                  </div>
+                  <div className="page-location-copy">
+                    <span>
+                      Section {String(activeSectionIndex + 1).padStart(2, "0")} of{" "}
+                      {String(grouped.length).padStart(2, "0")}
+                    </span>
+                    <strong>{displayGroup(activeGroupPath)}</strong>
+                    <small>
+                      File {String(activeFileIndex + 1).padStart(2, "0")} of{" "}
+                      {String(activeSectionNotes.length).padStart(2, "0")} · {active.path.split("/").pop()}
+                    </small>
+                  </div>
+                  <div
+                    className="page-location-meter"
+                    role="progressbar"
+                    aria-label="Progress through this section"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(sectionProgress)}
+                  >
+                    <span style={{ width: `${sectionProgress}%` }} />
+                  </div>
+                </header>
                 <div className="markdown-body">{markdown}</div>
 
                 <nav className="page-turner" aria-label="Page navigation">
