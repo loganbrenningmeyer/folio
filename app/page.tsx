@@ -12,6 +12,19 @@ import React, {
   useState,
 } from "react";
 import ReactMarkdown from "react-markdown";
+import CodeMirror from "@uiw/react-codemirror";
+import { markdown } from "@codemirror/lang-markdown";
+import { languages } from "@codemirror/language-data";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { RangeSetBuilder } from "@codemirror/state";
+import {
+  Decoration,
+  type DecorationSet,
+  EditorView,
+  ViewPlugin,
+  type ViewUpdate,
+} from "@codemirror/view";
+import { tags } from "@lezer/highlight";
 import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
@@ -409,235 +422,238 @@ function normalizeMathDelimiters(content: string) {
     .join("");
 }
 
-const INLINE_MARKDOWN_PATTERN =
-  /(\x60[^\x60\n]+\x60|\\\((?:\\.|[^\\\n])*?\\\)|\\\[(?:\\.|[^\\\n])*?\\\]|\$\$[^$\n]+?\$\$|\$[^$\n]+?\$|!\[[^\]\n]*\]\([^)]+\)|\[[^\]\n]+\]\([^)]+\)|\[\[[^\]\n]+\]\]|~~[^~\n]+~~|\*\*[^*\n]+\*\*|__[^_\n]+__|(?<!\*)\*[^*\n]+\*(?!\*)|(?<!_)_[^_\n]+_(?!_)|https?:\/\/[^\s<]+|<\/?[A-Za-z][^>\n]*>)/g;
+const INLINE_MATH_PATTERN =
+  /(\\\((?:\\.|[^\\\n])*?\\\)|(?<!\\)\$[^$\n]+?(?<!\\)\$)/g;
 
-const CODE_TOKEN_PATTERN =
-  /(\/\/.*$|\/\*.*?\*\/|#(?!\[).*?$|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\x60(?:\\.|[^\x60\\])*\x60|\b(?:as|async|await|break|case|catch|class|const|continue|crate|def|default|else|enum|export|extends|false|fn|for|from|function|if|impl|import|in|interface|let|loop|match|mod|move|mut|new|null|of|pub|ref|return|self|Self|Some|static|struct|super|switch|throw|trait|true|try|type|use|var|where|while|yield|None|Ok|Err)\b|\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b|\b[A-Z][A-Za-z0-9_]*\b|\b[a-zA-Z_][A-Za-z0-9_]*(?=\s*\())/g;
+const codeLineDecoration = Decoration.line({
+  attributes: { class: "cm-folio-code-line" },
+});
+const mathLineDecoration = Decoration.line({
+  attributes: { class: "cm-folio-math-line" },
+});
+const quoteLineDecoration = Decoration.line({
+  attributes: { class: "cm-folio-quote-line" },
+});
+const frontmatterLineDecoration = Decoration.line({
+  attributes: { class: "cm-folio-frontmatter-line" },
+});
+const inlineMathDecoration = Decoration.mark({
+  class: "cm-folio-math-inline",
+});
 
-function inlineTokenClass(token: string) {
-  if (
-    token.startsWith("$") ||
-    token.startsWith("\\(") ||
-    token.startsWith("\\[")
-  ) {
-    return "syntax-math";
-  }
-  if (token.startsWith("\x60")) return "syntax-inline-code";
-  if (
-    token.startsWith("[") ||
-    token.startsWith("![") ||
-    token.startsWith("http")
-  ) {
-    return "syntax-link";
-  }
-  if (token.startsWith("<")) return "syntax-html";
-  return "syntax-emphasis";
-}
-
-function renderPatternTokens(
-  value: string,
-  pattern: RegExp,
-  classForToken: (token: string) => string,
-  keyPrefix: string,
-) {
-  const output: ReactNode[] = [];
-  let cursor = 0;
-  pattern.lastIndex = 0;
-  for (const match of value.matchAll(pattern)) {
-    const index = match.index ?? 0;
-    if (index > cursor) output.push(value.slice(cursor, index));
-    output.push(
-      <span className={classForToken(match[0])} key={keyPrefix + "-" + index}>
-        {match[0]}
-      </span>,
-    );
-    cursor = index + match[0].length;
-  }
-  if (cursor < value.length) output.push(value.slice(cursor));
-  return output;
-}
-
-function renderInlineMarkdown(value: string, keyPrefix: string) {
-  return renderPatternTokens(
-    value,
-    INLINE_MARKDOWN_PATTERN,
-    inlineTokenClass,
-    keyPrefix,
-  );
-}
-
-function codeTokenClass(token: string) {
-  if (/^(?:\/\/|\/\*|#)/.test(token)) return "syntax-code-comment";
-  if (/^["'\x60]/.test(token)) return "syntax-code-string";
-  if (/^\d/.test(token)) return "syntax-code-number";
-  if (/^(?:as|async|await|break|case|catch|class|const|continue|crate|def|default|else|enum|export|extends|false|fn|for|from|function|if|impl|import|in|interface|let|loop|match|mod|move|mut|new|null|of|pub|ref|return|self|Self|Some|static|struct|super|switch|throw|trait|true|try|type|use|var|where|while|yield|None|Ok|Err)$/.test(token)) {
-    return "syntax-code-keyword";
-  }
-  if (/^[A-Z]/.test(token)) return "syntax-code-type";
-  return "syntax-code-function";
-}
-
-function renderCodeLine(value: string, keyPrefix: string) {
-  return renderPatternTokens(value, CODE_TOKEN_PATTERN, codeTokenClass, keyPrefix);
-}
-
-function renderEditorSyntax(source: string) {
+function editorDecorations(view: EditorView) {
+  const builder = new RangeSetBuilder<Decoration>();
   let fenceCharacter: string | undefined;
-  let inFrontmatter = false;
   let mathCloser: "$$" | "\\]" | undefined;
+  let inFrontmatter = false;
 
-  return source.split("\n").map((line, index) => {
-    const trimmed = line.trim();
-    const key = "editor-line-" + index;
+  for (let lineNumber = 1; lineNumber <= view.state.doc.lines; lineNumber += 1) {
+    const line = view.state.doc.line(lineNumber);
+    const trimmed = line.text.trim();
 
-    if (index === 0 && trimmed === "---") {
+    if (lineNumber === 1 && trimmed === "---") {
       inFrontmatter = true;
-      return (
-        <span className="syntax-line syntax-frontmatter syntax-frontmatter-line" key={key}>
-          {line}
-        </span>
-      );
+      builder.add(line.from, line.from, frontmatterLineDecoration);
+      continue;
     }
 
     if (inFrontmatter) {
-      if (trimmed === "---" || trimmed === "...") {
-        inFrontmatter = false;
-        return (
-          <span className="syntax-line syntax-frontmatter syntax-frontmatter-line" key={key}>
-            {line}
-          </span>
-        );
-      }
-      const yaml = line.match(/^(\s*)([A-Za-z0-9_.-]+)(\s*:)(.*)$/);
-      return (
-        <span className="syntax-line syntax-frontmatter-line" key={key}>
-          {yaml ? (
-            <>
-              {yaml[1]}
-              <span className="syntax-frontmatter-key">{yaml[2]}</span>
-              <span className="syntax-punctuation">{yaml[3]}</span>
-              <span className="syntax-frontmatter-value">{yaml[4]}</span>
-            </>
-          ) : (
-            <span className="syntax-frontmatter-value">{line}</span>
-          )}
-        </span>
-      );
+      builder.add(line.from, line.from, frontmatterLineDecoration);
+      if (trimmed === "---" || trimmed === "...") inFrontmatter = false;
+      continue;
     }
 
     if (fenceCharacter) {
+      builder.add(line.from, line.from, codeLineDecoration);
       const closesFence =
         fenceCharacter === "\x60"
-          ? /^\s*\x60{3,}\s*$/.test(line)
-          : /^\s*~{3,}\s*$/.test(line);
-      if (closesFence) {
-        fenceCharacter = undefined;
-        return (
-          <span className="syntax-line syntax-code-fence" key={key}>
-            {line}
-          </span>
-        );
-      }
-      return (
-        <span className="syntax-line syntax-code-line" key={key}>
-          {renderCodeLine(line, key)}
-        </span>
-      );
+          ? /^\s*\x60{3,}\s*$/.test(line.text)
+          : /^\s*~{3,}\s*$/.test(line.text);
+      if (closesFence) fenceCharacter = undefined;
+      continue;
     }
 
-    const fence = line.match(/^(\s*)((?:\x60{3,})|(?:~{3,}))(\s*)(.*)$/);
+    const fence = line.text.match(/^\s*((?:\x60{3,})|(?:~{3,}))/);
     if (fence) {
-      fenceCharacter = fence[2][0];
-      return (
-        <span className="syntax-line syntax-code-fence" key={key}>
-          {fence[1]}
-          <span className="syntax-punctuation">{fence[2]}</span>
-          {fence[3]}
-          <span className="syntax-code-language">{fence[4]}</span>
-        </span>
-      );
+      fenceCharacter = fence[1][0];
+      builder.add(line.from, line.from, codeLineDecoration);
+      continue;
     }
 
     if (mathCloser) {
-      const closesMath = line.includes(mathCloser);
-      if (closesMath) mathCloser = undefined;
-      return (
-        <span className="syntax-line syntax-math-block" key={key}>
-          {line}
-        </span>
-      );
+      builder.add(line.from, line.from, mathLineDecoration);
+      if (line.text.includes(mathCloser)) mathCloser = undefined;
+      continue;
     }
 
     if (trimmed.startsWith("$$") || trimmed.startsWith("\\[")) {
       const opener = trimmed.startsWith("$$") ? "$$" : "\\[";
       const closer = opener === "$$" ? "$$" : "\\]";
-      if (trimmed.slice(opener.length).includes(closer)) {
-        mathCloser = undefined;
-      } else {
-        mathCloser = closer;
-      }
-      return (
-        <span className="syntax-line syntax-math-block" key={key}>
-          {line}
-        </span>
-      );
+      builder.add(line.from, line.from, mathLineDecoration);
+      if (!trimmed.slice(opener.length).includes(closer)) mathCloser = closer;
+      continue;
     }
 
-    const heading = line.match(/^(\s*)(#{1,6})(\s+)(.*)$/);
-    if (heading) {
-      return (
-        <span className="syntax-line syntax-heading" key={key}>
-          {heading[1]}
-          <span className="syntax-punctuation">{heading[2]}</span>
-          {heading[3]}
-          {renderInlineMarkdown(heading[4], key)}
-        </span>
-      );
+    if (/^\s*>/.test(line.text)) {
+      builder.add(line.from, line.from, quoteLineDecoration);
+      continue;
     }
 
-    const quote = line.match(/^(\s*)(>+)(\s?)(.*)$/);
-    if (quote) {
-      return (
-        <span className="syntax-line syntax-quote-line" key={key}>
-          {quote[1]}
-          <span className="syntax-quote-marker">{quote[2]}</span>
-          {quote[3]}
-          <span className="syntax-quote-text">
-            {renderInlineMarkdown(quote[4], key)}
-          </span>
-        </span>
-      );
+    INLINE_MATH_PATTERN.lastIndex = 0;
+    for (const match of line.text.matchAll(INLINE_MATH_PATTERN)) {
+      const start = line.from + (match.index ?? 0);
+      builder.add(start, start + match[0].length, inlineMathDecoration);
     }
+  }
 
-    const list = line.match(/^(\s*)([-+*]|\d+[.)])(\s+)(.*)$/);
-    if (list) {
-      return (
-        <span className="syntax-line" key={key}>
-          {list[1]}
-          <span className="syntax-list-marker">{list[2]}</span>
-          {list[3]}
-          {renderInlineMarkdown(list[4], key)}
-        </span>
-      );
-    }
-
-    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
-      return (
-        <span className="syntax-line syntax-divider" key={key}>
-          {line}
-        </span>
-      );
-    }
-
-    return (
-      <span className="syntax-line" key={key}>
-        {renderInlineMarkdown(line, key)}
-      </span>
-    );
-  });
+  return builder.finish();
 }
 
+const editorDecorationPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.decorations = editorDecorations(view);
+    }
+
+    update(update: ViewUpdate) {
+      if (update.docChanged) this.decorations = editorDecorations(update.view);
+    }
+  },
+  {
+    decorations: (value) => value.decorations,
+  },
+);
+
+function createEditorExtensions(theme: Theme) {
+  const dark = theme === "dark";
+  const highlightStyle = HighlightStyle.define([
+    {
+      tag: [
+        tags.heading1,
+        tags.heading2,
+        tags.heading3,
+        tags.heading4,
+        tags.heading5,
+        tags.heading6,
+      ],
+      color: "var(--syntax-heading)",
+    },
+    {
+      tag: [tags.processingInstruction, tags.meta, tags.punctuation],
+      color: "var(--syntax-punctuation)",
+    },
+    { tag: tags.quote, color: "var(--syntax-quote)" },
+    {
+      tag: [tags.link, tags.url],
+      color: "var(--syntax-link)",
+      textDecoration: "underline",
+    },
+    { tag: tags.monospace, color: "var(--syntax-inline-code)" },
+    {
+      tag: [tags.emphasis, tags.strong, tags.strikethrough],
+      color: "var(--syntax-emphasis)",
+    },
+    { tag: tags.comment, color: "var(--syntax-comment)" },
+    { tag: tags.string, color: "var(--syntax-string)" },
+    { tag: tags.number, color: "var(--syntax-number)" },
+    {
+      tag: [tags.keyword, tags.bool, tags.null, tags.atom],
+      color: "var(--syntax-keyword)",
+    },
+    {
+      tag: [
+        tags.typeName,
+        tags.className,
+        tags.namespace,
+        tags.attributeName,
+      ],
+      color: "var(--syntax-type)",
+    },
+    {
+      tag: [tags.function(tags.variableName), tags.definition(tags.variableName)],
+      color: "var(--syntax-function)",
+    },
+  ]);
+
+  return [
+    markdown({ codeLanguages: languages }),
+    syntaxHighlighting(highlightStyle),
+    editorDecorationPlugin,
+    EditorView.contentAttributes.of({
+      spellcheck: "false",
+      autocorrect: "off",
+      autocapitalize: "off",
+      translate: "no",
+      "data-gramm": "false",
+      "data-gramm_editor": "false",
+      "data-enable-grammarly": "false",
+    }),
+    EditorView.theme(
+      {
+        "&": {
+          height: "100%",
+          backgroundColor: "transparent",
+          color: "var(--ink-2)",
+          fontSize: "13px",
+        },
+        "&.cm-focused": { outline: "none" },
+        ".cm-scroller": {
+          overflow: "auto",
+          overscrollBehavior: "contain",
+          fontFamily: "var(--font-code)",
+          lineHeight: "22px",
+        },
+        ".cm-content": {
+          minHeight: "100%",
+          padding: "24px 28px 50px",
+          caretColor: "var(--accent)",
+        },
+        ".cm-line": { padding: "0" },
+        ".cm-cursor, .cm-dropCursor": {
+          borderLeftColor: "var(--accent)",
+          borderLeftWidth: "1.5px",
+        },
+        ".cm-gutters": {
+          borderRight: "1px solid var(--line)",
+          backgroundColor: "color-mix(in srgb, var(--panel) 60%, transparent)",
+          color: "var(--faint)",
+        },
+        ".cm-lineNumbers .cm-gutterElement": {
+          minWidth: "52px",
+          padding: "0 12px 0 8px",
+          fontSize: "12px",
+          lineHeight: "22px",
+        },
+        ".cm-activeLine, .cm-activeLineGutter": {
+          backgroundColor: "transparent",
+        },
+        ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
+          backgroundColor:
+            "color-mix(in srgb, var(--accent) 28%, transparent) !important",
+        },
+        ".cm-folio-code-line": {
+          backgroundColor: "var(--syntax-code-bg)",
+        },
+        ".cm-folio-math-line": {
+          backgroundColor: "var(--syntax-math-bg)",
+          color: "var(--syntax-math)",
+        },
+        ".cm-folio-math-inline": {
+          color: "var(--syntax-math)",
+        },
+        ".cm-folio-quote-line": {
+          backgroundColor: "var(--syntax-quote-bg)",
+        },
+        ".cm-folio-frontmatter-line": {
+          backgroundColor: "var(--syntax-frontmatter-bg)",
+        },
+      },
+      { dark },
+    ),
+  ];
+}
 function headingsFrom(content: string) {
   return content
     .split("\n")
@@ -717,17 +733,15 @@ export default function Home() {
   const [dropTarget, setDropTarget] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const folderInput = useRef<HTMLInputElement>(null);
-  const editorHighlight = useRef<HTMLPreElement>(null);
-  const editorLineNumbers = useRef<HTMLDivElement>(null);
 
   const activeIndex = Math.max(
     0,
     notes.findIndex((note) => note.id === activeId),
   );
   const active = notes[activeIndex] ?? EMPTY_NOTE;
-  const editorSyntax = useMemo(
-    () => renderEditorSyntax(active.content),
-    [active.content],
+  const editorExtensions = useMemo(
+    () => createEditorExtensions(theme),
+    [theme],
   );
 
   const grouped = useMemo(() => {
@@ -817,16 +831,6 @@ export default function Home() {
     );
     setDirty((current) => new Set(current).add(active.id));
     setSaved(false);
-  };
-
-  const syncEditorScroll = (event: React.UIEvent<HTMLTextAreaElement>) => {
-    if (editorHighlight.current) {
-      editorHighlight.current.scrollTop = event.currentTarget.scrollTop;
-      editorHighlight.current.scrollLeft = event.currentTarget.scrollLeft;
-    }
-    if (editorLineNumbers.current) {
-      editorLineNumbers.current.scrollTop = event.currentTarget.scrollTop;
-    }
   };
 
   const beginCreate = (kind: CreateKind) => {
@@ -1515,31 +1519,21 @@ export default function Home() {
                   <span className="editor-language">Markdown</span>
                 </div>
                 <div className="editor-workspace">
-                  <div
-                    className="line-numbers"
-                    ref={editorLineNumbers}
-                    aria-hidden="true"
-                  >
-                    {active.content.split("\n").map((_, index) => (
-                      <span key={index}>{index + 1}</span>
-                    ))}
-                  </div>
-                  <div className="editor-source">
-                    <pre
-                      className="editor-highlight"
-                      ref={editorHighlight}
-                      aria-hidden="true"
-                    >
-                      {editorSyntax}
-                    </pre>
-                    <textarea
-                      value={active.content}
-                      onChange={(event) => updateContent(event.target.value)}
-                      onScroll={syncEditorScroll}
-                      spellCheck="true"
-                      aria-label={`Edit ${active.title}`}
-                    />
-                  </div>
+                  <CodeMirror
+                    key={active.id}
+                    className="folio-code-editor"
+                    value={active.content}
+                    height="100%"
+                    extensions={editorExtensions}
+                    basicSetup={{
+                      lineNumbers: true,
+                      foldGutter: false,
+                      highlightActiveLine: false,
+                      highlightActiveLineGutter: false,
+                    }}
+                    onChange={(value) => updateContent(value)}
+                    aria-label={`Edit ${active.title}`}
+                  />
                 </div>
                 <div className="editor-status">
                   <span>Markdown</span>
