@@ -609,8 +609,24 @@ function createEditorExtensions(theme: Theme) {
           minHeight: "100%",
           padding: "24px 28px 50px",
           caretColor: "var(--accent)",
+          cursor: "text",
+          userSelect: "text",
+          WebkitUserSelect: "text",
         },
-        ".cm-line": { padding: "0" },
+        ".cm-line": {
+          padding: "0",
+          cursor: "text",
+          userSelect: "text",
+          WebkitUserSelect: "text",
+        },
+        ".cm-selectionLayer": {
+          zIndex: "3",
+          pointerEvents: "none",
+        },
+        ".cm-cursorLayer": {
+          zIndex: "4",
+          pointerEvents: "none",
+        },
         ".cm-cursor, .cm-dropCursor": {
           borderLeftColor: "var(--accent)",
           borderLeftWidth: "1.5px",
@@ -1527,6 +1543,7 @@ export default function Home() {
                     extensions={editorExtensions}
                     basicSetup={{
                       lineNumbers: true,
+                      drawSelection: true,
                       foldGutter: false,
                       highlightActiveLine: false,
                       highlightActiveLineGutter: false,

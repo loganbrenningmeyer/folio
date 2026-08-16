@@ -722,6 +722,18 @@ kbd {
   scrollbar-color: var(--line-strong) transparent;
 }
 
+.folio-code-editor .cm-content,
+.folio-code-editor .cm-line {
+  cursor: text;
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+.folio-code-editor .cm-selectionLayer,
+.folio-code-editor .cm-cursorLayer {
+  pointer-events: none;
+}
+
 .editor-status { height: 26px; flex: 0 0 auto; justify-content: flex-end; border-top: 1px solid var(--line); background: var(--panel); }
 .editor-status span + span { padding-left: 10px; border-left: 1px solid var(--line); }
 
