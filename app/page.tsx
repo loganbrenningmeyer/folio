@@ -97,6 +97,7 @@ import {
   LockOpen,
   Menu,
   Moon,
+  PenLine,
   Palette,
   PanelLeftClose,
   PanelLeftOpen,
@@ -104,6 +105,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Plus,
+  RefreshCw,
   Save,
   Search,
   Sun,
@@ -142,7 +144,10 @@ type DirectoryHandleLike = {
     name: string,
     options?: { create?: boolean },
   ) => Promise<FileHandleLike>;
-  removeEntry: (name: string, options?: { recursive?: boolean }) => Promise<void>;
+  removeEntry: (
+    name: string,
+    options?: { recursive?: boolean },
+  ) => Promise<void>;
   queryPermission?: (options: {
     mode: "read" | "readwrite";
   }) => Promise<PermissionState>;
@@ -244,8 +249,18 @@ $$`,
 ];
 
 const APP_SHORTCUT_COMMANDS = [
-  { id: "find", label: "Find a page", group: "General", defaultShortcut: "Meta-k" },
-  { id: "save", label: "Save now", group: "General", defaultShortcut: "Meta-s" },
+  {
+    id: "find",
+    label: "Find a page",
+    group: "General",
+    defaultShortcut: "Meta-k",
+  },
+  {
+    id: "save",
+    label: "Save now",
+    group: "General",
+    defaultShortcut: "Meta-s",
+  },
   {
     id: "previous-page",
     label: "Previous page",
@@ -258,14 +273,24 @@ const APP_SHORTCUT_COMMANDS = [
     group: "Navigation",
     defaultShortcut: "Meta-ArrowRight",
   },
-  { id: "new-file", label: "New file", group: "Files", defaultShortcut: "Meta-n" },
+  {
+    id: "new-file",
+    label: "New file",
+    group: "Files",
+    defaultShortcut: "Meta-n",
+  },
   {
     id: "new-folder",
     label: "New folder",
     group: "Files",
     defaultShortcut: "Meta-Shift-n",
   },
-  { id: "open-folder", label: "Open folder", group: "Files", defaultShortcut: "Meta-o" },
+  {
+    id: "open-folder",
+    label: "Open folder",
+    group: "Files",
+    defaultShortcut: "Meta-o",
+  },
   {
     id: "toggle-read-write",
     label: "Toggle Read / Write",
@@ -305,22 +330,104 @@ const EDITOR_BASIC_SETUP = {
 } as const;
 
 const FONT_CHOICES = [
-  { id: "iowan", label: "Iowan Old Style", category: "Serif", stack: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif' },
-  { id: "new-york", label: "New York", category: "Serif", stack: '"New York", "Iowan Old Style", Georgia, serif' },
-  { id: "charter", label: "Charter", category: "Serif", stack: 'Charter, "Bitstream Charter", Georgia, serif' },
-  { id: "georgia", label: "Georgia", category: "Serif", stack: 'Georgia, "Times New Roman", serif' },
-  { id: "palatino", label: "Palatino", category: "Serif", stack: 'Palatino, "Palatino Linotype", Georgia, serif' },
-  { id: "geist-sans", label: "Geist Sans", category: "Sans serif", stack: 'var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif' },
-  { id: "system", label: "System UI", category: "Sans serif", stack: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif' },
-  { id: "avenir", label: "Avenir Next", category: "Sans serif", stack: '"Avenir Next", Avenir, "Helvetica Neue", sans-serif' },
-  { id: "helvetica", label: "Helvetica Neue", category: "Sans serif", stack: '"Helvetica Neue", Helvetica, Arial, sans-serif' },
-  { id: "futura", label: "Futura", category: "Sans serif", stack: 'Futura, "Avenir Next", Avenir, sans-serif' },
-  { id: "trebuchet", label: "Trebuchet", category: "Sans serif", stack: '"Trebuchet MS", "Helvetica Neue", sans-serif' },
-  { id: "geist-mono", label: "Geist Mono", category: "Monospace", stack: 'var(--font-geist-mono), "SFMono-Regular", Menlo, monospace' },
-  { id: "sf-mono", label: "SF Mono", category: "Monospace", stack: '"SFMono-Regular", "SF Mono", Menlo, Monaco, Consolas, monospace' },
-  { id: "menlo", label: "Menlo", category: "Monospace", stack: 'Menlo, Monaco, "Courier New", monospace' },
-  { id: "monaco", label: "Monaco", category: "Monospace", stack: 'Monaco, Menlo, "Courier New", monospace' },
-  { id: "courier", label: "Courier Prime", category: "Monospace", stack: '"Courier Prime", "Courier New", Courier, monospace' },
+  {
+    id: "iowan",
+    label: "Iowan Old Style",
+    category: "Serif",
+    stack: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif',
+  },
+  {
+    id: "new-york",
+    label: "New York",
+    category: "Serif",
+    stack: '"New York", "Iowan Old Style", Georgia, serif',
+  },
+  {
+    id: "charter",
+    label: "Charter",
+    category: "Serif",
+    stack: 'Charter, "Bitstream Charter", Georgia, serif',
+  },
+  {
+    id: "georgia",
+    label: "Georgia",
+    category: "Serif",
+    stack: 'Georgia, "Times New Roman", serif',
+  },
+  {
+    id: "palatino",
+    label: "Palatino",
+    category: "Serif",
+    stack: 'Palatino, "Palatino Linotype", Georgia, serif',
+  },
+  {
+    id: "geist-sans",
+    label: "Geist Sans",
+    category: "Sans serif",
+    stack:
+      'var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif',
+  },
+  {
+    id: "system",
+    label: "System UI",
+    category: "Sans serif",
+    stack:
+      '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif',
+  },
+  {
+    id: "avenir",
+    label: "Avenir Next",
+    category: "Sans serif",
+    stack: '"Avenir Next", Avenir, "Helvetica Neue", sans-serif',
+  },
+  {
+    id: "helvetica",
+    label: "Helvetica Neue",
+    category: "Sans serif",
+    stack: '"Helvetica Neue", Helvetica, Arial, sans-serif',
+  },
+  {
+    id: "futura",
+    label: "Futura",
+    category: "Sans serif",
+    stack: 'Futura, "Avenir Next", Avenir, sans-serif',
+  },
+  {
+    id: "trebuchet",
+    label: "Trebuchet",
+    category: "Sans serif",
+    stack: '"Trebuchet MS", "Helvetica Neue", sans-serif',
+  },
+  {
+    id: "geist-mono",
+    label: "Geist Mono",
+    category: "Monospace",
+    stack: 'var(--font-geist-mono), "SFMono-Regular", Menlo, monospace',
+  },
+  {
+    id: "sf-mono",
+    label: "SF Mono",
+    category: "Monospace",
+    stack: '"SFMono-Regular", "SF Mono", Menlo, Monaco, Consolas, monospace',
+  },
+  {
+    id: "menlo",
+    label: "Menlo",
+    category: "Monospace",
+    stack: 'Menlo, Monaco, "Courier New", monospace',
+  },
+  {
+    id: "monaco",
+    label: "Monaco",
+    category: "Monospace",
+    stack: 'Monaco, Menlo, "Courier New", monospace',
+  },
+  {
+    id: "courier",
+    label: "Courier Prime",
+    category: "Monospace",
+    stack: '"Courier Prime", "Courier New", Courier, monospace',
+  },
 ] as const;
 
 type FontId = (typeof FONT_CHOICES)[number]["id"];
@@ -333,7 +440,9 @@ function isFontId(value: string | null): value is FontId {
 }
 
 function fontStack(id: FontId) {
-  return FONT_CHOICES.find((font) => font.id === id)?.stack ?? FONT_CHOICES[0].stack;
+  return (
+    FONT_CHOICES.find((font) => font.id === id)?.stack ?? FONT_CHOICES[0].stack
+  );
 }
 
 // Notches for the reading-width slider: the widest the page column is allowed
@@ -358,11 +467,36 @@ function readerWidthIndex(value: string | null) {
 }
 
 const COLOR_PALETTES = [
-  { id: "sage", label: "Sage", description: "Greenish gray", swatches: ["#f3f1ea", "#45664e", "#252621"] },
-  { id: "slate", label: "Slate", description: "Bluish gray", swatches: ["#edf1f4", "#476d8a", "#20262b"] },
-  { id: "graphite", label: "Graphite", description: "Neutral gray", swatches: ["#f1f1f1", "#61666b", "#222222"] },
-  { id: "sepia", label: "Sepia", description: "Warm paper", swatches: ["#f3ecdf", "#876342", "#2b251e"] },
-  { id: "plum", label: "Plum", description: "Muted violet", swatches: ["#f1edf3", "#765d82", "#29232c"] },
+  {
+    id: "sage",
+    label: "Sage",
+    description: "Greenish gray",
+    swatches: ["#f3f1ea", "#45664e", "#252621"],
+  },
+  {
+    id: "slate",
+    label: "Slate",
+    description: "Bluish gray",
+    swatches: ["#edf1f4", "#476d8a", "#20262b"],
+  },
+  {
+    id: "graphite",
+    label: "Graphite",
+    description: "Neutral gray",
+    swatches: ["#f1f1f1", "#61666b", "#222222"],
+  },
+  {
+    id: "sepia",
+    label: "Sepia",
+    description: "Warm paper",
+    swatches: ["#f3ecdf", "#876342", "#2b251e"],
+  },
+  {
+    id: "plum",
+    label: "Plum",
+    description: "Muted violet",
+    swatches: ["#f1edf3", "#765d82", "#29232c"],
+  },
 ] as const;
 
 type PaletteId = (typeof COLOR_PALETTES)[number]["id"];
@@ -782,7 +916,10 @@ function freshDefaultTextSnippets() {
 
 function freshDefaultAppShortcuts() {
   return Object.fromEntries(
-    APP_SHORTCUT_COMMANDS.map(({ id, defaultShortcut }) => [id, defaultShortcut]),
+    APP_SHORTCUT_COMMANDS.map(({ id, defaultShortcut }) => [
+      id,
+      defaultShortcut,
+    ]),
   ) as AppShortcuts;
 }
 
@@ -790,13 +927,20 @@ function parseStoredAppShortcuts(value: string | null) {
   if (!value) return;
   try {
     const stored = JSON.parse(value) as Partial<StoredAppShortcutSettings>;
-    if (stored.version !== 1 || !stored.shortcuts || typeof stored.shortcuts !== "object") {
+    if (
+      stored.version !== 1 ||
+      !stored.shortcuts ||
+      typeof stored.shortcuts !== "object"
+    ) {
       return;
     }
     const shortcuts = freshDefaultAppShortcuts();
     for (const { id } of APP_SHORTCUT_COMMANDS) {
       const shortcut = stored.shortcuts[id];
-      if (typeof shortcut === "string" && (!shortcut || isCommandShortcut(shortcut))) {
+      if (
+        typeof shortcut === "string" &&
+        (!shortcut || isCommandShortcut(shortcut))
+      ) {
         shortcuts[id] = shortcut;
       }
     }
@@ -847,7 +991,8 @@ function appShortcutIssue(
     (textSnippet) =>
       textSnippet.shortcut.toLowerCase() === shortcut.toLowerCase(),
   );
-  if (snippetConflict) return `Already assigned to ${snippetConflict.name || "a text snippet"}.`;
+  if (snippetConflict)
+    return `Already assigned to ${snippetConflict.name || "a text snippet"}.`;
 }
 
 function isTextSnippet(value: unknown): value is TextSnippet {
@@ -885,7 +1030,9 @@ function createSnippetExtension(
 ): Extension {
   const seen = new Set<string>();
   const appBindings = new Set(
-    Object.values(appShortcuts).filter(Boolean).map((shortcut) => shortcut.toLowerCase()),
+    Object.values(appShortcuts)
+      .filter(Boolean)
+      .map((shortcut) => shortcut.toLowerCase()),
   );
   const bindings: KeyBinding[] = [];
 
@@ -901,7 +1048,9 @@ function createSnippetExtension(
       continue;
     }
     seen.add(normalized);
-    const insert = applyCodeMirrorSnippet(toCodeMirrorSnippet(textSnippet.template));
+    const insert = applyCodeMirrorSnippet(
+      toCodeMirrorSnippet(textSnippet.template),
+    );
     bindings.push({
       key: textSnippet.shortcut,
       preventDefault: true,
@@ -928,7 +1077,9 @@ function highlightSearchText(value: string, query: string): ReactNode {
   while (matchIndex >= 0) {
     if (matchIndex > cursor) parts.push(value.slice(cursor, matchIndex));
     const end = matchIndex + normalizedQuery.length;
-    parts.push(<mark key={`${matchIndex}-${end}`}>{value.slice(matchIndex, end)}</mark>);
+    parts.push(
+      <mark key={`${matchIndex}-${end}`}>{value.slice(matchIndex, end)}</mark>,
+    );
     cursor = end;
     matchIndex = normalizedValue.indexOf(normalizedQuery, cursor);
   }
@@ -952,7 +1103,10 @@ async function hasWritePermission(
   handle: Pick<DirectoryHandleLike, "queryPermission" | "requestPermission">,
 ) {
   const options = { mode: "readwrite" as const };
-  if (handle.queryPermission && (await handle.queryPermission(options)) === "granted") {
+  if (
+    handle.queryPermission &&
+    (await handle.queryPermission(options)) === "granted"
+  ) {
     return true;
   }
   if (!handle.requestPermission) return true;
@@ -969,10 +1123,13 @@ function slugify(value: string) {
 }
 
 function withWikiLinks(content: string) {
-  return content.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, label) => {
-    const href = `wiki:${encodeURIComponent(target.trim())}`;
-    return `[${(label || target).trim()}](${href})`;
-  });
+  return content.replace(
+    /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+    (_, target, label) => {
+      const href = `wiki:${encodeURIComponent(target.trim())}`;
+      return `[${(label || target).trim()}](${href})`;
+    },
+  );
 }
 
 function normalizeMathDelimiters(content: string): NormalizedMarkdown {
@@ -1009,9 +1166,10 @@ function normalizeMathDelimiters(content: string): NormalizedMarkdown {
       const index = match.index ?? cursor;
       appendUnchanged(value.slice(cursor, index));
       const original = match[0];
-      const replacement = match[1] !== undefined
-        ? `$$\n${match[1].trim()}\n$$`
-        : `$${match[2] ?? ""}$`;
+      const replacement =
+        match[1] !== undefined
+          ? `$$\n${match[1].trim()}\n$$`
+          : `$${match[2] ?? ""}$`;
       appendReplacement(original, replacement);
       cursor = index + original.length;
     }
@@ -1135,7 +1293,11 @@ function editorDecorations(view: EditorView) {
   let mathCloser: "$$" | "\\]" | undefined;
   let inFrontmatter = false;
 
-  for (let lineNumber = 1; lineNumber <= view.state.doc.lines; lineNumber += 1) {
+  for (
+    let lineNumber = 1;
+    lineNumber <= view.state.doc.lines;
+    lineNumber += 1
+  ) {
     const line = view.state.doc.line(lineNumber);
     const trimmed = line.text.trim();
 
@@ -1289,16 +1451,14 @@ function createEditorExtensions(theme: Theme) {
       color: "var(--syntax-keyword)",
     },
     {
-      tag: [
-        tags.typeName,
-        tags.className,
-        tags.namespace,
-        tags.attributeName,
-      ],
+      tag: [tags.typeName, tags.className, tags.namespace, tags.attributeName],
       color: "var(--syntax-type)",
     },
     {
-      tag: [tags.function(tags.variableName), tags.definition(tags.variableName)],
+      tag: [
+        tags.function(tags.variableName),
+        tags.definition(tags.variableName),
+      ],
       color: "var(--syntax-function)",
     },
   ]);
@@ -1415,7 +1575,9 @@ function headingsFrom(content: string) {
 
 // Forward the renderer props (notably data-source-line, which split-view
 // scroll sync reads) while replacing the hast node with a heading anchor id.
-function markdownHeading<Tag extends "h1" | "h2" | "h3" | "h4">(HeadingTag: Tag) {
+function markdownHeading<Tag extends "h1" | "h2" | "h3" | "h4">(
+  HeadingTag: Tag,
+) {
   return function MarkdownHeading({
     node,
     children,
@@ -1440,7 +1602,8 @@ const MARKDOWN_HEADING_COMPONENTS = {
 function nodeText(children: ReactNode): string {
   return React.Children.toArray(children)
     .map((child) => {
-      if (typeof child === "string" || typeof child === "number") return String(child);
+      if (typeof child === "string" || typeof child === "number")
+        return String(child);
       if (React.isValidElement<{ children?: ReactNode }>(child)) {
         return nodeText(child.props.children);
       }
@@ -1474,7 +1637,10 @@ async function readDirectory(
     }
   }
   notes.sort((a, b) =>
-    a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: "base" }),
+    a.path.localeCompare(b.path, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    }),
   );
   folders.sort((a, b) =>
     a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
@@ -1629,6 +1795,69 @@ function insertImageMarkdown(
   view.focus();
 }
 
+/** A page or folder in the library panel, addressed by its relative path. */
+type LibraryEntry = { kind: "note" | "folder"; path: string };
+
+function sameEntry(a: LibraryEntry | undefined, b: LibraryEntry | undefined) {
+  return Boolean(a && b && a.kind === b.kind && a.path === b.path);
+}
+
+/** The name shown when renaming: pages drop the extension, folders keep all. */
+function entryEditName(entry: LibraryEntry, path: string) {
+  const name = fileNameFromPath(path);
+  if (entry.kind === "folder") return name;
+  return name.replace(/\.md$/i, "");
+}
+
+/**
+ * Inline rename field, in the shape of the row it replaces. Enter or losing
+ * focus commits, Escape abandons — the Finder behaviour.
+ */
+function EntryRenameField({
+  className,
+  initial,
+  onCommit,
+  onCancel,
+}: {
+  className: string;
+  initial: string;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const settled = useRef(false);
+  const field = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    field.current?.select();
+  }, []);
+  return (
+    <div className={className}>
+      <input
+        ref={field}
+        defaultValue={initial}
+        aria-label="New name"
+        spellCheck={false}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+          if (event.key === "Enter") {
+            event.preventDefault();
+            settled.current = true;
+            onCommit(event.currentTarget.value);
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            settled.current = true;
+            onCancel();
+          }
+        }}
+        onBlur={(event) => {
+          if (settled.current) return;
+          settled.current = true;
+          onCommit(event.currentTarget.value);
+        }}
+      />
+    </div>
+  );
+}
+
 const TABLE_MAX_COLUMNS = 8;
 const TABLE_MAX_ROWS = 8;
 const TABLE_FIRST_HEADING = "Column 1";
@@ -1653,15 +1882,9 @@ function tableMarkdown(columns: number, rows: number) {
  * a block, so a blank line is added on either side when the neighbouring lines
  * have content. The first heading is selected, ready to be typed over.
  */
-function insertTableMarkdown(
-  view: EditorView,
-  columns: number,
-  rows: number,
-) {
+function insertTableMarkdown(view: EditorView, columns: number, rows: number) {
   const { doc } = view.state;
-  const line = doc.lineAt(
-    Math.min(view.state.selection.main.head, doc.length),
-  );
+  const line = doc.lineAt(Math.min(view.state.selection.main.head, doc.length));
   const table = tableMarkdown(columns, rows);
   const blank = !line.text.trim();
   const from = blank ? line.from : line.to;
@@ -1727,12 +1950,15 @@ export default function Home() {
   const [readerFont, setReaderFont] = useState<FontId>("iowan");
   const [editorFont, setEditorFont] = useState<FontId>("sf-mono");
   const [readerWidth, setReaderWidth] = useState(DEFAULT_READER_WIDTH_INDEX);
-  const [appearancePreferencesLoaded, setAppearancePreferencesLoaded] = useState(false);
-  const [preferenceTab, setPreferenceTab] = useState<PreferenceTab>("appearance");
+  const [appearancePreferencesLoaded, setAppearancePreferencesLoaded] =
+    useState(false);
+  const [preferenceTab, setPreferenceTab] =
+    useState<PreferenceTab>("appearance");
   const [textSnippets, setTextSnippets] = useState<TextSnippet[]>(
     freshDefaultTextSnippets,
   );
-  const [snippetPreferencesLoaded, setSnippetPreferencesLoaded] = useState(false);
+  const [snippetPreferencesLoaded, setSnippetPreferencesLoaded] =
+    useState(false);
   const [appShortcuts, setAppShortcuts] = useState<AppShortcuts>(
     freshDefaultAppShortcuts,
   );
@@ -1750,12 +1976,23 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [navOpen, setNavOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
+    new Set(),
+  );
   const [createKind, setCreateKind] = useState<CreateKind>();
   const [newEntryName, setNewEntryName] = useState("");
   const [newEntryParent, setNewEntryParent] = useState("");
   const [draggedNoteId, setDraggedNoteId] = useState<string>();
   const [dropTarget, setDropTarget] = useState<string>();
+  // Explorer selection is separate from the open page: a folder can be
+  // selected for rename or delete without being a page you can open.
+  const [selectedEntry, setSelectedEntry] = useState<LibraryEntry>();
+  const [renamingEntry, setRenamingEntry] = useState<LibraryEntry>();
+  const [refreshing, setRefreshing] = useState(false);
+  const deleteEntryRef = useRef<(entry: LibraryEntry) => void>(() => undefined);
+  const [entryMenu, setEntryMenu] = useState<
+    (LibraryEntry & { x: number; y: number }) | undefined
+  >();
   const [notice, setNotice] = useState<string>();
   const folderInput = useRef<HTMLInputElement>(null);
   const createNameInput = useRef<HTMLInputElement>(null);
@@ -1803,7 +2040,8 @@ export default function Home() {
   const handleEditorCreate = useCallback((editor: EditorView) => {
     editorViewRef.current = editor;
     editor.scrollDOM.addEventListener("scroll", () => {
-      if (editorViewRef.current === editor) splitScrollEventRef.current?.("editor");
+      if (editorViewRef.current === editor)
+        splitScrollEventRef.current?.("editor");
     });
     splitScrollMapRef.current = undefined;
     splitScrollRefreshRef.current?.("editor");
@@ -1867,7 +2105,9 @@ export default function Home() {
     0,
     activeSectionNotes.findIndex((note) => note.id === active.id),
   );
-  const pageProgress = notes.length ? ((activeIndex + 1) / notes.length) * 100 : 0;
+  const pageProgress = notes.length
+    ? ((activeIndex + 1) / notes.length) * 100
+    : 0;
 
   const pageHeadings = useMemo(
     () => headingsFrom(active?.content ?? ""),
@@ -1876,7 +2116,8 @@ export default function Home() {
 
   const backlinks = useMemo(() => {
     if (!active) return [];
-    const base = active.path.split("/").pop()?.replace(/\.md$/i, "") ?? active.title;
+    const base =
+      active.path.split("/").pop()?.replace(/\.md$/i, "") ?? active.title;
     const needles = [
       `[[${active.title.toLowerCase()}`,
       `[[${base.toLowerCase()}`,
@@ -1893,14 +2134,22 @@ export default function Home() {
     const query = searchQuery.trim();
     const normalizedQuery = query.toLowerCase();
     if (!normalizedQuery) {
-      return notes.map<SearchResult>((note) => ({ note, score: 0, excerpts: [] }));
+      return notes.map<SearchResult>((note) => ({
+        note,
+        score: 0,
+        excerpts: [],
+      }));
     }
     return notes
       .map<SearchResult>((note) => {
         const titleMatch = note.title.toLowerCase().includes(normalizedQuery);
         const pathMatch = note.path.toLowerCase().includes(normalizedQuery);
-        const contentMatch = note.content.toLowerCase().includes(normalizedQuery);
-        const excerpts = contentMatch ? extractSearchExcerpts(note.content, query) : [];
+        const contentMatch = note.content
+          .toLowerCase()
+          .includes(normalizedQuery);
+        const excerpts = contentMatch
+          ? extractSearchExcerpts(note.content, query)
+          : [];
         return {
           note,
           excerpts,
@@ -1957,19 +2206,27 @@ export default function Home() {
 
       const editorOffsets = [0];
       const previewOffsets = [0];
-      const previewOrigin = preview.getBoundingClientRect().top - preview.scrollTop;
+      const previewOrigin =
+        preview.getBoundingClientRect().top - preview.scrollTop;
       const lastLine = editor.state.doc.lines;
       const scroller = editor.scrollDOM;
 
-      for (const anchor of body.querySelectorAll<HTMLElement>("[data-source-line]")) {
+      for (const anchor of body.querySelectorAll<HTMLElement>(
+        "[data-source-line]",
+      )) {
         const sourceLine = Number(anchor.dataset.sourceLine);
-        if (!Number.isInteger(sourceLine) || sourceLine < 1 || sourceLine > lastLine) {
+        if (
+          !Number.isInteger(sourceLine) ||
+          sourceLine < 1 ||
+          sourceLine > lastLine
+        ) {
           continue;
         }
         const editorOffset =
           editor.documentPadding.top +
           editor.lineBlockAt(editor.state.doc.line(sourceLine).from).top;
-        const previewOffset = anchor.getBoundingClientRect().top - previewOrigin;
+        const previewOffset =
+          anchor.getBoundingClientRect().top - previewOrigin;
         // Interpolation needs both anchor sequences to increase together, so
         // nested blocks that revisit an earlier source line are skipped.
         if (
@@ -2023,8 +2280,16 @@ export default function Home() {
       const target = side === "editor" ? preview : editor.scrollDOM;
       const mapped =
         side === "editor"
-          ? mapScrollOffset(source.scrollTop, map.editorOffsets, map.previewOffsets)
-          : mapScrollOffset(source.scrollTop, map.previewOffsets, map.editorOffsets);
+          ? mapScrollOffset(
+              source.scrollTop,
+              map.editorOffsets,
+              map.previewOffsets,
+            )
+          : mapScrollOffset(
+              source.scrollTop,
+              map.previewOffsets,
+              map.editorOffsets,
+            );
       const limit = Math.max(0, target.scrollHeight - target.clientHeight);
       const next = Math.min(Math.round(mapped), limit);
       if (Math.abs(target.scrollTop - next) < 1) return;
@@ -2050,7 +2315,8 @@ export default function Home() {
     const scheduleSplitScrollSync = (side: ScrollSide) => {
       pendingScrollSideRef.current = side;
       if (splitScrollFrameRef.current !== undefined) return;
-      splitScrollFrameRef.current = window.requestAnimationFrame(syncSplitScroll);
+      splitScrollFrameRef.current =
+        window.requestAnimationFrame(syncSplitScroll);
     };
 
     splitScrollEventRef.current = (side) => {
@@ -2102,7 +2368,9 @@ export default function Home() {
 
   useEffect(() => {
     if (view !== "split" || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => splitScrollRefreshRef.current?.());
+    const observer = new ResizeObserver(() =>
+      splitScrollRefreshRef.current?.(),
+    );
     const preview = previewScrollRef.current;
     const body = markdownBodyRef.current;
     const editor = editorViewRef.current;
@@ -2117,13 +2385,17 @@ export default function Home() {
 
   useEffect(() => {
     if (!createKind) return;
-    const frame = window.requestAnimationFrame(() => createNameInput.current?.focus());
+    const frame = window.requestAnimationFrame(() =>
+      createNameInput.current?.focus(),
+    );
     return () => window.cancelAnimationFrame(frame);
   }, [createKind]);
 
   useEffect(() => {
     if (!searchOpen) return;
-    const frame = window.requestAnimationFrame(() => searchInput.current?.focus());
+    const frame = window.requestAnimationFrame(() =>
+      searchInput.current?.focus(),
+    );
     return () => window.cancelAnimationFrame(frame);
   }, [searchOpen]);
 
@@ -2147,7 +2419,8 @@ export default function Home() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const storedTheme = localStorage.getItem("folio-theme") as Theme | null;
-      const preferred = window.matchMedia("(prefers-color-scheme: dark)").matches
+      const preferred = window.matchMedia("(prefers-color-scheme: dark)")
+        .matches
         ? "dark"
         : "light";
       const storedPalette = localStorage.getItem("folio-color-palette");
@@ -2214,7 +2487,10 @@ export default function Home() {
 
   useEffect(() => {
     if (!snippetPreferencesLoaded) return;
-    const stored: StoredSnippetSettings = { version: 1, snippets: textSnippets };
+    const stored: StoredSnippetSettings = {
+      version: 1,
+      snippets: textSnippets,
+    };
     try {
       localStorage.setItem("folio-snippet-shortcuts", JSON.stringify(stored));
     } catch {
@@ -2248,9 +2524,15 @@ export default function Home() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      setLibraryCollapsed(localStorage.getItem("folio-library-collapsed") === "true");
-      setOutlineCollapsed(localStorage.getItem("folio-outline-collapsed") === "true");
-      setSplitScrollLocked(localStorage.getItem("folio-split-scroll-locked") !== "false");
+      setLibraryCollapsed(
+        localStorage.getItem("folio-library-collapsed") === "true",
+      );
+      setOutlineCollapsed(
+        localStorage.getItem("folio-outline-collapsed") === "true",
+      );
+      setSplitScrollLocked(
+        localStorage.getItem("folio-split-scroll-locked") !== "false",
+      );
       setLayoutPreferencesLoaded(true);
     }, 0);
     return () => window.clearTimeout(timer);
@@ -2260,8 +2542,16 @@ export default function Home() {
     if (!layoutPreferencesLoaded) return;
     localStorage.setItem("folio-library-collapsed", String(libraryCollapsed));
     localStorage.setItem("folio-outline-collapsed", String(outlineCollapsed));
-    localStorage.setItem("folio-split-scroll-locked", String(splitScrollLocked));
-  }, [layoutPreferencesLoaded, libraryCollapsed, outlineCollapsed, splitScrollLocked]);
+    localStorage.setItem(
+      "folio-split-scroll-locked",
+      String(splitScrollLocked),
+    );
+  }, [
+    layoutPreferencesLoaded,
+    libraryCollapsed,
+    outlineCollapsed,
+    splitScrollLocked,
+  ]);
 
   useEffect(() => {
     if (!desktopMode) return;
@@ -2273,19 +2563,25 @@ export default function Home() {
         if (!cancelled && restored) {
           applyNativeLibrary(restored);
         } else if (!cancelled) {
-          const message = "Choose a Markdown folder when you're ready to open your library.";
+          const message =
+            "Choose a Markdown folder when you're ready to open your library.";
           setNotice(message);
           window.setTimeout(
-            () => setNotice((current) => (current === message ? undefined : current)),
+            () =>
+              setNotice((current) =>
+                current === message ? undefined : current,
+              ),
             4800,
           );
         }
       } catch {
         if (cancelled) return;
-        const message = "Folio could not reopen that folder. Choose it again to reconnect.";
+        const message =
+          "Folio could not reopen that folder. Choose it again to reconnect.";
         setNotice(message);
         window.setTimeout(
-          () => setNotice((current) => (current === message ? undefined : current)),
+          () =>
+            setNotice((current) => (current === message ? undefined : current)),
           4800,
         );
       }
@@ -2316,6 +2612,66 @@ export default function Home() {
       imageFileInput.current?.click();
     }
   }, [active.id, active.path, desktopMode, nativeLibraryOpen, showNotice]);
+
+  // Finder's keys for the selected library entry. Bound at the document
+  // rather than the panel because opening a page moves focus out of the
+  // library, which would leave a panel-level handler unreachable. Typing
+  // targets are excluded so these never fire while writing.
+  useEffect(() => {
+    if (!selectedEntry || renamingEntry) return undefined;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (fontPanelOpen || searchOpen || createKind || entryMenu) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.closest?.(
+          "input, textarea, select, [contenteditable='true'], .cm-editor",
+        )
+      ) {
+        return;
+      }
+      if (
+        event.key === "Enter" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        setRenamingEntry(selectedEntry);
+      } else if (
+        (event.key === "Backspace" || event.key === "Delete") &&
+        (event.metaKey || event.ctrlKey)
+      ) {
+        event.preventDefault();
+        deleteEntryRef.current(selectedEntry);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [
+    createKind,
+    entryMenu,
+    fontPanelOpen,
+    renamingEntry,
+    searchOpen,
+    selectedEntry,
+  ]);
+
+  // The entry menu dismisses like any context menu.
+  useEffect(() => {
+    if (!entryMenu) return undefined;
+    const close = () => setEntryMenu(undefined);
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("scroll", close, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("scroll", close, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [entryMenu]);
 
   // The size picker closes on Escape or a click elsewhere, like a menu.
   useEffect(() => {
@@ -2360,7 +2716,10 @@ export default function Home() {
       TABLE_MAX_COLUMNS,
       Math.max(1, tableSize.columns + delta[0]),
     );
-    const rows = Math.min(TABLE_MAX_ROWS, Math.max(1, tableSize.rows + delta[1]));
+    const rows = Math.min(
+      TABLE_MAX_ROWS,
+      Math.max(1, tableSize.rows + delta[1]),
+    );
     setTableSize({ columns, rows });
     tableGrid.current
       ?.querySelector<HTMLButtonElement>(`[data-cell="${columns}x${rows}"]`)
@@ -2431,7 +2790,9 @@ export default function Home() {
           appShortcuts[commandId].toLowerCase() === shortcut.toLowerCase(),
       );
       if (appConflict) {
-        showNotice(`That shortcut is already assigned to ${appConflict.label}.`);
+        showNotice(
+          `That shortcut is already assigned to ${appConflict.label}.`,
+        );
         return;
       }
       if (
@@ -2441,7 +2802,9 @@ export default function Home() {
             candidate.shortcut.toLowerCase() === shortcut.toLowerCase(),
         )
       ) {
-        showNotice("That shortcut is already assigned to another text snippet.");
+        showNotice(
+          "That shortcut is already assigned to another text snippet.",
+        );
         return;
       }
       updateTextSnippet(id, { shortcut });
@@ -2484,7 +2847,9 @@ export default function Home() {
           appShortcuts[id].toLowerCase() === shortcut.toLowerCase(),
       );
       if (commandConflict) {
-        showNotice(`That shortcut is already assigned to ${commandConflict.label}.`);
+        showNotice(
+          `That shortcut is already assigned to ${commandConflict.label}.`,
+        );
         return;
       }
 
@@ -2662,7 +3027,8 @@ export default function Home() {
         Array.from(noteIds, (noteId) => flushNativeSave(noteId)),
       );
       const failed = results.find(
-        (result): result is PromiseRejectedResult => result.status === "rejected",
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected",
       );
       if (failed) throw failed.reason;
     }
@@ -2762,17 +3128,22 @@ export default function Home() {
     };
   }, [desktopMode, flushAllNativeSaves]);
 
-  const beginCreate = useCallback((kind: CreateKind) => {
-    if (desktopMode && !nativeLibraryOpen) {
-      showNotice("Choose a library folder before creating files or sections.");
-      return;
-    }
-    setCreateKind(kind);
-    setNewEntryName("");
-    setNewEntryParent(
-      active.id === EMPTY_NOTE.id ? "" : parentPath(active.path),
-    );
-  }, [active.id, active.path, desktopMode, nativeLibraryOpen, showNotice]);
+  const beginCreate = useCallback(
+    (kind: CreateKind) => {
+      if (desktopMode && !nativeLibraryOpen) {
+        showNotice(
+          "Choose a library folder before creating files or sections.",
+        );
+        return;
+      }
+      setCreateKind(kind);
+      setNewEntryName("");
+      setNewEntryParent(
+        active.id === EMPTY_NOTE.id ? "" : parentPath(active.path),
+      );
+    },
+    [active.id, active.path, desktopMode, nativeLibraryOpen, showNotice],
+  );
 
   const createEntry = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -2784,13 +3155,17 @@ export default function Home() {
       return;
     }
     if (/[\\/:*?"<>|]/.test(rawName)) {
-      showNotice("Names cannot contain \\ / : * ? \" < > or |.");
+      showNotice('Names cannot contain \\ / : * ? " < > or |.');
       return;
     }
 
     if (createKind === "folder") {
       const folderPath = joinPath(newEntryParent, rawName);
-      if (folders.some((folder) => folder.toLowerCase() === folderPath.toLowerCase())) {
+      if (
+        folders.some(
+          (folder) => folder.toLowerCase() === folderPath.toLowerCase(),
+        )
+      ) {
         showNotice("A folder with that name already exists here.");
         return;
       }
@@ -2803,13 +3178,19 @@ export default function Home() {
             showNotice("Write access is needed to create a folder.");
             return;
           }
-          const parent = await getDirectoryAtPath(rootDirectory, newEntryParent);
+          const parent = await getDirectoryAtPath(
+            rootDirectory,
+            newEntryParent,
+          );
           await parent.getDirectoryHandle(rawName, { create: true });
         }
         if (!desktopMode) {
           setFolders((current) =>
             [...current, folderPath].sort((a, b) =>
-              a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+              a.localeCompare(b, undefined, {
+                numeric: true,
+                sensitivity: "base",
+              }),
             ),
           );
         }
@@ -2889,15 +3270,20 @@ export default function Home() {
 
     const originalName = fileNameFromPath(note.path);
     const extensionIndex = originalName.toLowerCase().lastIndexOf(".md");
-    const baseName = extensionIndex >= 0 ? originalName.slice(0, extensionIndex) : originalName;
-    const extension = extensionIndex >= 0 ? originalName.slice(extensionIndex) : ".md";
+    const baseName =
+      extensionIndex >= 0
+        ? originalName.slice(0, extensionIndex)
+        : originalName;
+    const extension =
+      extensionIndex >= 0 ? originalName.slice(extensionIndex) : ".md";
     let destinationName = originalName;
     let counter = 2;
     while (
       notes.some(
         (item) =>
           item.id !== note.id &&
-          item.path.toLowerCase() === joinPath(targetFolder, destinationName).toLowerCase(),
+          item.path.toLowerCase() ===
+            joinPath(targetFolder, destinationName).toLowerCase(),
       )
     ) {
       destinationName = `${baseName} ${counter}${extension}`;
@@ -2909,7 +3295,8 @@ export default function Home() {
       if (desktopMode) {
         await flushAllNativeSaves();
         const snapshot = await nativeLibrary.move(note.path, destinationPath);
-        const preferredPath = active.id === note.id ? destinationPath : active.path;
+        const preferredPath =
+          active.id === note.id ? destinationPath : active.path;
         applyNativeLibrary(snapshot, preferredPath);
         showNotice(`Moved ${note.title} to ${displayGroup(targetFolder)}.`);
         return;
@@ -2970,8 +3357,151 @@ export default function Home() {
       }
       showNotice(`Moved ${note.title} to ${displayGroup(targetFolder)}.`);
     } catch {
-      showNotice("Folio could not move that file. The original was kept in place.");
+      showNotice(
+        "Folio could not move that file. The original was kept in place.",
+      );
     }
+  };
+
+  // Renaming a folder rewrites the paths of everything inside it, so the open
+  // page is followed to its new location rather than matched by path.
+  const renameEntry = async (entry: LibraryEntry, rawName: string) => {
+    setRenamingEntry(undefined);
+    const currentName = entryEditName(entry, entry.path);
+    const name = rawName.trim();
+    if (!name || name === currentName) return;
+    if (name.includes("/")) {
+      showNotice("Names cannot contain slashes.");
+      return;
+    }
+
+    const parent = parentPath(entry.path);
+    const fileName = entry.kind === "folder" ? name : `${name}.md`;
+    const destination = joinPath(parent, fileName);
+    const label = entry.kind === "folder" ? "folder" : "page";
+
+    if (!desktopMode || !nativeLibraryOpen) {
+      showNotice(`Open a folder to rename a ${label}.`);
+      return;
+    }
+
+    try {
+      await flushAllNativeSaves();
+      const snapshot = await nativeLibrary.rename(
+        entry.path,
+        fileName,
+        entry.kind === "folder",
+      );
+      const openPath =
+        entry.kind === "note" && active.path === entry.path
+          ? destination
+          : entry.kind === "folder" && active.path.startsWith(`${entry.path}/`)
+            ? `${destination}${active.path.slice(entry.path.length)}`
+            : active.path;
+      applyNativeLibrary(snapshot, openPath);
+      setSelectedEntry({ kind: entry.kind, path: destination });
+      showNotice(`Renamed to ${name}.`);
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  // Re-reads the folder from disk to pick up changes made outside Folio.
+  // Pending edits are flushed first, so a refresh can never discard them.
+  const refreshLibrary = async () => {
+    if (!desktopMode || !nativeLibraryOpen) {
+      showNotice("Open a folder to refresh it.");
+      return;
+    }
+    setRefreshing(true);
+    try {
+      await flushAllNativeSaves();
+      const snapshot = await nativeLibrary.scan();
+      if (!snapshot) return;
+      setNotes(snapshot.notes);
+      setFolders(snapshot.folders);
+      setLibraryName(snapshot.name);
+      setDirty(new Set());
+      // Collapsed folders and the open page are left as they were, unless the
+      // page itself is gone from disk.
+      if (!snapshot.notes.some((note) => note.id === activeIdRef.current)) {
+        setActiveId(snapshot.notes[0]?.id ?? "");
+      }
+      setSelectedEntry((current) => {
+        if (!current) return current;
+        const exists =
+          current.kind === "folder"
+            ? snapshot.folders.includes(current.path)
+            : snapshot.notes.some((note) => note.path === current.path);
+        return exists ? current : undefined;
+      });
+      showNotice(
+        `Refreshed — ${snapshot.notes.length} page${
+          snapshot.notes.length === 1 ? "" : "s"
+        }.`,
+      );
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const deleteEntry = async (entry: LibraryEntry) => {
+    setEntryMenu(undefined);
+      const label = entry.kind === "folder" ? "folder" : "page";
+      if (!desktopMode || !nativeLibraryOpen) {
+        showNotice(`Open a folder to delete a ${label}.`);
+        return;
+      }
+
+      const name = entryEditName(entry, entry.path);
+      if (entry.kind === "folder") {
+        const contained = notes.filter(
+          (note) =>
+            note.path === entry.path || note.path.startsWith(`${entry.path}/`),
+        ).length;
+        const detail = contained
+          ? ` and the ${contained} page${contained === 1 ? "" : "s"} inside it`
+          : "";
+        if (
+          !window.confirm(
+            `Move “${name}”${detail} to the Trash?\n\nYou can restore it from the Finder.`,
+          )
+        ) {
+          return;
+        }
+      }
+
+      try {
+        await flushAllNativeSaves();
+        const snapshot = await nativeLibrary.remove(
+          entry.path,
+          entry.kind === "folder",
+        );
+        // Keep the current page open when something else was removed.
+        const stillOpen = snapshot.notes.some(
+          (note) => note.path === active.path,
+        );
+        applyNativeLibrary(snapshot, stillOpen ? active.path : undefined);
+        setSelectedEntry(undefined);
+      showNotice(`Moved ${name} to the Trash.`);
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  // The document-level key handler needs the current version of this without
+  // re-subscribing on every render.
+  useEffect(() => {
+    deleteEntryRef.current = deleteEntry;
+  });
+
+  const openEntryMenu = (event: React.MouseEvent, entry: LibraryEntry) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedEntry(entry);
+    setEntryMenu({ ...entry, x: event.clientX, y: event.clientY });
   };
 
   const startNoteDrag = (
@@ -2986,7 +3516,9 @@ export default function Home() {
   };
 
   const downloadNote = useCallback((note: Note) => {
-    const blob = new Blob([note.content], { type: "text/markdown;charset=utf-8" });
+    const blob = new Blob([note.content], {
+      type: "text/markdown;charset=utf-8",
+    });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -3099,7 +3631,8 @@ export default function Home() {
           if (activeIndex > 0) selectNote(notes[activeIndex - 1].id);
           return;
         case "next-page":
-          if (activeIndex < notes.length - 1) selectNote(notes[activeIndex + 1].id);
+          if (activeIndex < notes.length - 1)
+            selectNote(notes[activeIndex + 1].id);
           return;
         case "new-file":
           beginCreate("file");
@@ -3112,7 +3645,8 @@ export default function Home() {
           return;
         case "toggle-read-write":
           setView((current) => {
-            const singleView = current === "split" ? lastSingleViewRef.current : current;
+            const singleView =
+              current === "split" ? lastSingleViewRef.current : current;
             const next = singleView === "preview" ? "editor" : "preview";
             lastSingleViewRef.current = next;
             return next;
@@ -3160,19 +3694,20 @@ export default function Home() {
         return;
       }
 
-      const pressedShortcut = shortcutFromEvent(event, { allowUnmodified: true });
+      const pressedShortcut = shortcutFromEvent(event, {
+        allowUnmodified: true,
+      });
       if (!pressedShortcut) return;
-      const command = APP_SHORTCUT_COMMANDS.find(
-        ({ id }) => shortcutMatches(appShortcuts[id], pressedShortcut),
+      const command = APP_SHORTCUT_COMMANDS.find(({ id }) =>
+        shortcutMatches(appShortcuts[id], pressedShortcut),
       );
       if (!command) return;
 
-      const isTyping =
-        Boolean(
-          target?.closest(
-            "input, select, textarea, .cm-editor, [contenteditable='true'], [contenteditable='plaintext-only']",
-          ),
-        );
+      const isTyping = Boolean(
+        target?.closest(
+          "input, select, textarea, .cm-editor, [contenteditable='true'], [contenteditable='plaintext-only']",
+        ),
+      );
       const hasPrimaryModifier = event.ctrlKey || event.metaKey || event.altKey;
       if (isTyping && !hasPrimaryModifier) return;
 
@@ -3210,7 +3745,9 @@ export default function Home() {
         };
       }),
     );
-    loaded.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));
+    loaded.sort((a, b) =>
+      a.path.localeCompare(b.path, undefined, { numeric: true }),
+    );
     const importedFolders = new Set<string>();
     loaded.forEach((note) => {
       let folder = parentPath(note.path);
@@ -3247,7 +3784,8 @@ export default function Home() {
       return currentNotes.find(
         (note) =>
           note.title.toLowerCase() === target ||
-          note.path.split("/").pop()?.replace(/\.md$/i, "").toLowerCase() === target,
+          note.path.split("/").pop()?.replace(/\.md$/i, "").toLowerCase() ===
+            target,
       );
     }
     const activePath =
@@ -3257,12 +3795,15 @@ export default function Home() {
       ? activePath.slice(0, activePath.lastIndexOf("/") + 1)
       : "";
     const resolved = normalizePath(
-      withoutHash.startsWith("/") ? withoutHash.slice(1) : `${base}${withoutHash}`,
+      withoutHash.startsWith("/")
+        ? withoutHash.slice(1)
+        : `${base}${withoutHash}`,
     ).toLowerCase();
     return currentNotes.find(
       (note) =>
         normalizePath(note.path).toLowerCase() === resolved ||
-        note.path.split("/").pop()?.toLowerCase() === withoutHash.split("/").pop()?.toLowerCase(),
+        note.path.split("/").pop()?.toLowerCase() ===
+          withoutHash.split("/").pop()?.toLowerCase(),
     );
   }, []);
 
@@ -3275,7 +3816,10 @@ export default function Home() {
       selectNote(linked.id);
       const hash = href.split("#")[1];
       if (hash) {
-        window.setTimeout(() => document.getElementById(hash)?.scrollIntoView(), 50);
+        window.setTimeout(
+          () => document.getElementById(hash)?.scrollIntoView(),
+          50,
+        );
       }
     },
     [findLinkedNote, selectNote],
@@ -3334,10 +3878,7 @@ export default function Home() {
       }: React.ComponentPropsWithoutRef<"code">) => {
         const language = className?.match(/language-([\w-]+)/)?.[1];
         return (
-          <code
-            className={className}
-            data-language={language}
-          >
+          <code className={className} data-language={language}>
             {children}
           </code>
         );
@@ -3362,10 +3903,7 @@ export default function Home() {
 
   const markdown = (
     <ReactMarkdown
-      remarkPlugins={[
-        remarkGfm,
-        [remarkMath, { singleDollarTextMath: true }],
-      ]}
+      remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
       rehypePlugins={[
         [rehypeSanitize, markdownSanitizeSchema],
         [rehypeSourceLines, { sourceLines: normalizedMarkdown.sourceLines }],
@@ -3411,7 +3949,11 @@ export default function Home() {
             aria-expanded={!libraryCollapsed}
             title={`${libraryCollapsed ? "Show" : "Hide"} library panel`}
           >
-            {libraryCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+            {libraryCollapsed ? (
+              <PanelLeftOpen size={16} />
+            ) : (
+              <PanelLeftClose size={16} />
+            )}
           </button>
           <div className="brand-mark" aria-hidden="true">
             <span />
@@ -3424,10 +3966,15 @@ export default function Home() {
         </div>
 
         <div className="top-actions">
-          <button className="search-trigger" onClick={() => setSearchOpen(true)}>
+          <button
+            className="search-trigger"
+            onClick={() => setSearchOpen(true)}
+          >
             <Search size={15} />
             <span>Find a page</span>
-            {appShortcuts.find && <kbd>{formatShortcut(appShortcuts.find)}</kbd>}
+            {appShortcuts.find && (
+              <kbd>{formatShortcut(appShortcuts.find)}</kbd>
+            )}
           </button>
           <button
             ref={preferencesTrigger}
@@ -3466,11 +4013,19 @@ export default function Home() {
             aria-expanded={!outlineCollapsed}
             title={`${outlineCollapsed ? "Show" : "Hide"} page outline panel`}
           >
-            {outlineCollapsed ? <PanelRightOpen size={16} /> : <PanelRightClose size={16} />}
+            {outlineCollapsed ? (
+              <PanelRightOpen size={16} />
+            ) : (
+              <PanelRightClose size={16} />
+            )}
           </button>
           <button className="open-button" onClick={openFolder}>
             <FolderOpen size={16} />
-            <span>{desktopMode && nativeLibraryOpen ? "Change folder" : "Open folder"}</span>
+            <span>
+              {desktopMode && nativeLibraryOpen
+                ? "Change folder"
+                : "Open folder"}
+            </span>
           </button>
           {!desktopMode && (
             <input
@@ -3480,7 +4035,10 @@ export default function Home() {
               multiple
               accept=".md,text/markdown"
               onChange={importFolder}
-              {...({ webkitdirectory: "", directory: "" } as React.InputHTMLAttributes<HTMLInputElement>)}
+              {...({
+                webkitdirectory: "",
+                directory: "",
+              } as React.InputHTMLAttributes<HTMLInputElement>)}
             />
           )}
         </div>
@@ -3516,7 +4074,11 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="preference-tabs" role="tablist" aria-label="Preferences sections">
+            <div
+              className="preference-tabs"
+              role="tablist"
+              aria-label="Preferences sections"
+            >
               <button
                 type="button"
                 className={preferenceTab === "appearance" ? "selected" : ""}
@@ -3551,12 +4113,18 @@ export default function Home() {
               <div className="preference-pane" role="tabpanel">
                 <fieldset className="palette-control">
                   <legend>Color scheme</legend>
-                  <div className="palette-grid" role="radiogroup" aria-label="Color scheme">
+                  <div
+                    className="palette-grid"
+                    role="radiogroup"
+                    aria-label="Color scheme"
+                  >
                     {COLOR_PALETTES.map((colorPalette) => (
                       <button
                         type="button"
                         key={colorPalette.id}
-                        className={palette === colorPalette.id ? "selected" : ""}
+                        className={
+                          palette === colorPalette.id ? "selected" : ""
+                        }
                         onClick={() => setPalette(colorPalette.id)}
                         role="radio"
                         aria-checked={palette === colorPalette.id}
@@ -3581,17 +4149,19 @@ export default function Home() {
                   <span>Reader font</span>
                   <select
                     value={readerFont}
-                    onChange={(event) => setReaderFont(event.target.value as FontId)}
+                    onChange={(event) =>
+                      setReaderFont(event.target.value as FontId)
+                    }
                   >
                     {FONT_CATEGORIES.map((category) => (
                       <optgroup key={category} label={category}>
-                        {FONT_CHOICES.filter((font) => font.category === category).map(
-                          (font) => (
-                            <option key={font.id} value={font.id}>
-                              {font.label}
-                            </option>
-                          ),
-                        )}
+                        {FONT_CHOICES.filter(
+                          (font) => font.category === category,
+                        ).map((font) => (
+                          <option key={font.id} value={font.id}>
+                            {font.label}
+                          </option>
+                        ))}
                       </optgroup>
                     ))}
                   </select>
@@ -3608,17 +4178,19 @@ export default function Home() {
                   <span>Editor font</span>
                   <select
                     value={editorFont}
-                    onChange={(event) => setEditorFont(event.target.value as FontId)}
+                    onChange={(event) =>
+                      setEditorFont(event.target.value as FontId)
+                    }
                   >
                     {FONT_CATEGORIES.map((category) => (
                       <optgroup key={category} label={category}>
-                        {FONT_CHOICES.filter((font) => font.category === category).map(
-                          (font) => (
-                            <option key={font.id} value={font.id}>
-                              {font.label}
-                            </option>
-                          ),
-                        )}
+                        {FONT_CHOICES.filter(
+                          (font) => font.category === category,
+                        ).map((font) => (
+                          <option key={font.id} value={font.id}>
+                            {font.label}
+                          </option>
+                        ))}
                       </optgroup>
                     ))}
                   </select>
@@ -3647,7 +4219,10 @@ export default function Home() {
                   />
                   <datalist id="reader-width-notches">
                     {READER_WIDTHS.map((option) => (
-                      <option key={option.width} value={READER_WIDTHS.indexOf(option)} />
+                      <option
+                        key={option.width}
+                        value={READER_WIDTHS.indexOf(option)}
+                      />
                     ))}
                   </datalist>
                   <div className="width-readout">
@@ -3655,69 +4230,83 @@ export default function Home() {
                     <span>{READER_WIDTHS[readerWidth].width}px</span>
                   </div>
                   <p className="width-note">
-                    Applies to Read and Split views alike. A narrower pane just uses
-                    the room it has.
+                    Applies to Read and Split views alike. A narrower pane just
+                    uses the room it has.
                   </p>
                 </fieldset>
 
-                <p className="font-footnote">Preferences stay on this device.</p>
+                <p className="font-footnote">
+                  Preferences stay on this device.
+                </p>
               </div>
             )}
 
             {preferenceTab === "shortcuts" && (
-              <div className="preference-pane shortcut-preferences" role="tabpanel">
+              <div
+                className="preference-pane shortcut-preferences"
+                role="tabpanel"
+              >
                 <p className="shortcut-help">
-                  Focus a shortcut field and press the keys you want. Backspace clears a
-                  binding. Bare navigation and function keys are allowed; printable keys need
-                  Ctrl, Command, or Alt. Modified shortcuts also work while writing.
+                  Focus a shortcut field and press the keys you want. Backspace
+                  clears a binding. Bare navigation and function keys are
+                  allowed; printable keys need Ctrl, Command, or Alt. Modified
+                  shortcuts also work while writing.
                 </p>
                 <div className="app-shortcut-groups">
-                  {(["General", "Navigation", "Files", "View"] as const).map((group) => (
-                    <fieldset className="app-shortcut-group" key={group}>
-                      <legend>{group}</legend>
-                      {APP_SHORTCUT_COMMANDS.filter(
-                        (command) => command.group === group,
-                      ).map((command) => {
-                        const issue = appShortcutIssue(
-                          command.id,
-                          appShortcuts,
-                          textSnippets,
-                        );
-                        return (
-                          <label className="app-shortcut-row" key={command.id}>
-                            <span>{command.label}</span>
-                            <input
-                              className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
-                              // Symbols are set large, so the unbound state
-                              // uses a short placeholder rather than a label
-                              // that would not fit.
-                              value={
-                                appShortcuts[command.id]
-                                  ? formatShortcut(appShortcuts[command.id])
-                                  : ""
-                              }
-                              placeholder="Not set"
-                              onKeyDown={(event) =>
-                                recordAppShortcut(event, command.id)
-                              }
-                              onFocus={(event) => event.currentTarget.select()}
-                              readOnly
-                              aria-label={`Record shortcut for ${command.label}`}
-                              aria-invalid={Boolean(issue)}
-                              title="Focus, then press the shortcut. Backspace clears it."
-                            />
-                            {issue && <small className="shortcut-issue">{issue}</small>}
-                          </label>
-                        );
-                      })}
-                    </fieldset>
-                  ))}
+                  {(["General", "Navigation", "Files", "View"] as const).map(
+                    (group) => (
+                      <fieldset className="app-shortcut-group" key={group}>
+                        <legend>{group}</legend>
+                        {APP_SHORTCUT_COMMANDS.filter(
+                          (command) => command.group === group,
+                        ).map((command) => {
+                          const issue = appShortcutIssue(
+                            command.id,
+                            appShortcuts,
+                            textSnippets,
+                          );
+                          return (
+                            <label
+                              className="app-shortcut-row"
+                              key={command.id}
+                            >
+                              <span>{command.label}</span>
+                              <input
+                                className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
+                                // Symbols are set large, so the unbound state
+                                // uses a short placeholder rather than a label
+                                // that would not fit.
+                                value={
+                                  appShortcuts[command.id]
+                                    ? formatShortcut(appShortcuts[command.id])
+                                    : ""
+                                }
+                                placeholder="Not set"
+                                onKeyDown={(event) =>
+                                  recordAppShortcut(event, command.id)
+                                }
+                                onFocus={(event) =>
+                                  event.currentTarget.select()
+                                }
+                                readOnly
+                                aria-label={`Record shortcut for ${command.label}`}
+                                aria-invalid={Boolean(issue)}
+                                title="Focus, then press the shortcut. Backspace clears it."
+                              />
+                              {issue && (
+                                <small className="shortcut-issue">
+                                  {issue}
+                                </small>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </fieldset>
+                    ),
+                  )}
                 </div>
                 <div className="snippet-actions shortcut-actions">
-                  <button
-                    type="button"
-                    onClick={restoreDefaultAppShortcuts}
-                  >
+                  <button type="button" onClick={restoreDefaultAppShortcuts}>
                     Restore defaults
                   </button>
                 </div>
@@ -3725,11 +4314,15 @@ export default function Home() {
             )}
 
             {preferenceTab === "snippets" && (
-              <div className="preference-pane snippet-preferences" role="tabpanel">
+              <div
+                className="preference-pane snippet-preferences"
+                role="tabpanel"
+              >
                 <p className="snippet-help">
-                  Record a shortcut, then enter the text it should insert. Use <code>$1</code>,{" "}
-                  <code>$2</code>, and so on for Tab stops; <code>$0</code> is the final cursor.
-                  Write <code>\$1</code> for literal text.
+                  Record a shortcut, then enter the text it should insert. Use{" "}
+                  <code>$1</code>, <code>$2</code>, and so on for Tab stops;{" "}
+                  <code>$0</code> is the final cursor. Write <code>\$1</code>{" "}
+                  for literal text.
                 </p>
                 <div className="snippet-list">
                   {textSnippets.map((textSnippet) => {
@@ -3761,7 +4354,9 @@ export default function Home() {
                             className="snippet-name"
                             value={textSnippet.name}
                             onChange={(event) =>
-                              updateTextSnippet(textSnippet.id, { name: event.target.value })
+                              updateTextSnippet(textSnippet.id, {
+                                name: event.target.value,
+                              })
                             }
                             placeholder="Snippet name"
                             aria-label="Snippet name"
@@ -3790,7 +4385,10 @@ export default function Home() {
                             className="subtle-icon"
                             onClick={() =>
                               setTextSnippets((current) =>
-                                current.filter((candidate) => candidate.id !== textSnippet.id),
+                                current.filter(
+                                  (candidate) =>
+                                    candidate.id !== textSnippet.id,
+                                ),
                               )
                             }
                             aria-label={`Delete ${label}`}
@@ -3799,12 +4397,16 @@ export default function Home() {
                             <Trash2 size={13} />
                           </button>
                         </div>
-                        {issue && <small className="snippet-issue">{issue}</small>}
+                        {issue && (
+                          <small className="snippet-issue">{issue}</small>
+                        )}
                         <textarea
                           className="snippet-template"
                           value={textSnippet.template}
                           onChange={(event) =>
-                            updateTextSnippet(textSnippet.id, { template: event.target.value })
+                            updateTextSnippet(textSnippet.id, {
+                              template: event.target.value,
+                            })
                           }
                           placeholder="Text to insert…"
                           spellCheck={false}
@@ -3814,17 +4416,16 @@ export default function Home() {
                     );
                   })}
                   {!textSnippets.length && (
-                    <p className="snippet-empty">No snippets yet. Add one to get started.</p>
+                    <p className="snippet-empty">
+                      No snippets yet. Add one to get started.
+                    </p>
                   )}
                 </div>
                 <div className="snippet-actions">
                   <button type="button" onClick={addTextSnippet}>
                     <Plus size={14} /> Add snippet
                   </button>
-                  <button
-                    type="button"
-                    onClick={restoreDefaultTextSnippets}
-                  >
+                  <button type="button" onClick={restoreDefaultTextSnippets}>
                     Restore defaults
                   </button>
                 </div>
@@ -3846,10 +4447,17 @@ export default function Home() {
             aria-label="Close library"
           />
         )}
-        <aside id="library-panel" className={`library-panel ${navOpen ? "is-open" : ""}`}>
+        <aside
+          id="library-panel"
+          className={`library-panel ${navOpen ? "is-open" : ""}`}
+        >
           <div className="panel-mobile-head">
             <span>Library</span>
-            <button className="icon-button" onClick={() => setNavOpen(false)} aria-label="Close library">
+            <button
+              className="icon-button"
+              onClick={() => setNavOpen(false)}
+              aria-label="Close library"
+            >
               <X size={18} />
             </button>
           </div>
@@ -3859,6 +4467,15 @@ export default function Home() {
               <h2>{libraryName}</h2>
             </div>
             <div className="library-create-actions">
+              <button
+                className="subtle-icon"
+                onClick={() => void refreshLibrary()}
+                disabled={refreshing}
+                aria-label="Refresh library"
+                title="Re-read this folder from disk"
+              >
+                <RefreshCw size={15} className={refreshing ? "spinning" : ""} />
+              </button>
               <button
                 className="subtle-icon"
                 onClick={() => beginCreate("file")}
@@ -3910,7 +4527,9 @@ export default function Home() {
                     setDropTarget(group);
                   }}
                   onDragLeave={(event) => {
-                    if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+                    if (
+                      !event.currentTarget.contains(event.relatedTarget as Node)
+                    ) {
                       setDropTarget(undefined);
                     }
                   }}
@@ -3923,49 +4542,116 @@ export default function Home() {
                     if (noteId) void moveNote(noteId, group);
                   }}
                 >
-                  <button
-                    className="section-label"
-                    onClick={() =>
-                      setCollapsedGroups((current) => {
-                        const next = new Set(current);
-                        if (next.has(group)) next.delete(group);
-                        else next.add(group);
-                        return next;
-                      })
-                    }
-                  >
-                    <span>{String(groupIndex + 1).padStart(2, "0")}</span>
-                    <strong>{displayGroup(group)}</strong>
-                    <small>{groupNotes.length}</small>
-                    <ChevronDown size={14} className={collapsed ? "rotated" : ""} />
-                  </button>
+                  {renamingEntry?.kind === "folder" &&
+                  renamingEntry.path === group ? (
+                    <EntryRenameField
+                      className="section-label renaming"
+                      initial={entryEditName(renamingEntry, group)}
+                      onCommit={(value) =>
+                        void renameEntry(renamingEntry, value)
+                      }
+                      onCancel={() => setRenamingEntry(undefined)}
+                    />
+                  ) : (
+                    <button
+                      className={`section-label ${
+                        sameEntry(selectedEntry, {
+                          kind: "folder",
+                          path: group,
+                        })
+                          ? "selected-entry"
+                          : ""
+                      }`}
+                      onClick={() => {
+                        setSelectedEntry({ kind: "folder", path: group });
+                        setCollapsedGroups((current) => {
+                          const next = new Set(current);
+                          if (next.has(group)) next.delete(group);
+                          else next.add(group);
+                          return next;
+                        });
+                      }}
+                      onContextMenu={(event) =>
+                        group &&
+                        openEntryMenu(event, { kind: "folder", path: group })
+                      }
+                    >
+                      <span>{String(groupIndex + 1).padStart(2, "0")}</span>
+                      <strong>{displayGroup(group)}</strong>
+                      <small>{groupNotes.length}</small>
+                      <ChevronDown
+                        size={14}
+                        className={collapsed ? "rotated" : ""}
+                      />
+                    </button>
+                  )}
                   {!collapsed && (
                     <div className="page-list">
-                      {groupNotes.map((note, noteIndex) => (
-                        <button
-                          key={note.id}
-                          className={`page-row ${note.id === active.id ? "active" : ""} ${
-                            draggedNoteId === note.id ? "dragging" : ""
-                          }`}
-                          onClick={() => selectNote(note.id)}
-                          draggable
-                          onDragStart={(event) => startNoteDrag(event, note.id)}
-                          onDragEnd={() => {
-                            draggedNoteIdRef.current = undefined;
-                            setDraggedNoteId(undefined);
-                            setDropTarget(undefined);
-                          }}
-                          title="Open this page, or drag it into another folder"
-                        >
-                          <span className="page-spine" />
-                          <span className="page-order">
-                            {String(noteIndex + 1).padStart(2, "0")}
-                          </span>
-                          <span className="page-title">{note.title}</span>
-                          {dirty.has(note.id) && <i aria-label="Unsaved changes" />}
-                          <GripVertical className="drag-handle" size={13} aria-hidden="true" />
-                        </button>
-                      ))}
+                      {groupNotes.map((note, noteIndex) =>
+                        renamingEntry?.kind === "note" &&
+                        renamingEntry.path === note.path ? (
+                          <EntryRenameField
+                            key={note.id}
+                            className="page-row renaming"
+                            initial={entryEditName(renamingEntry, note.path)}
+                            onCommit={(value) =>
+                              void renameEntry(renamingEntry, value)
+                            }
+                            onCancel={() => setRenamingEntry(undefined)}
+                          />
+                        ) : (
+                          <button
+                            key={note.id}
+                            className={`page-row ${note.id === active.id ? "active" : ""} ${
+                              draggedNoteId === note.id ? "dragging" : ""
+                            } ${
+                              sameEntry(selectedEntry, {
+                                kind: "note",
+                                path: note.path,
+                              })
+                                ? "selected-entry"
+                                : ""
+                            }`}
+                            onClick={() => {
+                              setSelectedEntry({
+                                kind: "note",
+                                path: note.path,
+                              });
+                              selectNote(note.id);
+                            }}
+                            onContextMenu={(event) =>
+                              openEntryMenu(event, {
+                                kind: "note",
+                                path: note.path,
+                              })
+                            }
+                            draggable
+                            onDragStart={(event) =>
+                              startNoteDrag(event, note.id)
+                            }
+                            onDragEnd={() => {
+                              draggedNoteIdRef.current = undefined;
+                              setDraggedNoteId(undefined);
+                              setDropTarget(undefined);
+                            }}
+                            title="Open this page, or drag it into another folder"
+                          >
+                            <span className="page-spine" />
+                            <span className="page-order">
+                              {String(noteIndex + 1).padStart(2, "0")}
+                            </span>
+                            <span className="page-title">{note.title}</span>
+                            {dirty.has(note.id) && (
+                              <i aria-label="Unsaved changes" />
+                            )}
+                            <GripVertical
+                              className="drag-handle"
+                              size={13}
+                              aria-hidden="true"
+                            />
+                          </button>
+                        ),
+                      )}
                     </div>
                   )}
                 </section>
@@ -4016,7 +4702,11 @@ export default function Home() {
             </div>
 
             <div className="document-actions">
-              <div className="view-switcher" role="group" aria-label="Document view">
+              <div
+                className="view-switcher"
+                role="group"
+                aria-label="Document view"
+              >
                 <button
                   className={view === "preview" ? "selected" : ""}
                   onClick={() => setView("preview")}
@@ -4063,7 +4753,11 @@ export default function Home() {
                       : "Panes scroll independently — click to scroll them together"
                   }
                 >
-                  {splitScrollLocked ? <Lock size={14} /> : <LockOpen size={14} />}
+                  {splitScrollLocked ? (
+                    <Lock size={14} />
+                  ) : (
+                    <LockOpen size={14} />
+                  )}
                 </button>
               )}
               {!desktopMode && (
@@ -4071,7 +4765,11 @@ export default function Home() {
                   className={`save-button ${saved ? "saved" : ""}`}
                   onClick={() => void saveActive()}
                   disabled={!dirty.has(active.id) && !saved}
-                  title={active.handle ? "Save to Markdown file" : "Download Markdown file"}
+                  title={
+                    active.handle
+                      ? "Save to Markdown file"
+                      : "Download Markdown file"
+                  }
                 >
                   {saved ? (
                     <Check size={15} />
@@ -4080,7 +4778,9 @@ export default function Home() {
                   ) : (
                     <Download size={15} />
                   )}
-                  <span>{saved ? "Saved" : active.handle ? "Save" : "Export"}</span>
+                  <span>
+                    {saved ? "Saved" : active.handle ? "Save" : "Export"}
+                  </span>
                 </button>
               )}
             </div>
@@ -4096,11 +4796,15 @@ export default function Home() {
                 ref={previewScrollRef}
                 onScroll={handlePreviewScroll}
               >
-                <div className="markdown-body" ref={markdownBodyRef}>{markdown}</div>
+                <div className="markdown-body" ref={markdownBodyRef}>
+                  {markdown}
+                </div>
 
                 <nav className="page-turner" aria-label="Page navigation">
                   {activeIndex > 0 ? (
-                    <button onClick={() => selectNote(notes[activeIndex - 1].id)}>
+                    <button
+                      onClick={() => selectNote(notes[activeIndex - 1].id)}
+                    >
                       <ChevronLeft size={18} />
                       <span>
                         <small>Previous</small>
@@ -4111,7 +4815,10 @@ export default function Home() {
                     <span />
                   )}
                   {activeIndex < notes.length - 1 ? (
-                    <button className="next" onClick={() => selectNote(notes[activeIndex + 1].id)}>
+                    <button
+                      className="next"
+                      onClick={() => selectNote(notes[activeIndex + 1].id)}
+                    >
                       <span>
                         <small>Next</small>
                         <strong>{notes[activeIndex + 1].title}</strong>
@@ -4165,50 +4872,61 @@ export default function Home() {
                         <span>Table</span>
                       </button>
                       {tableMenuOpen && (
-                        <div className="table-popover" role="dialog" aria-label="Table size">
+                        <div
+                          className="table-popover"
+                          role="dialog"
+                          aria-label="Table size"
+                        >
                           <div
                             className="table-grid"
                             ref={tableGrid}
                             role="group"
                             aria-label="Table size"
                           >
-                            {Array.from({ length: TABLE_MAX_ROWS }, (_, row) => (
-                              <div className="table-grid-row" key={row}>
-                                {Array.from(
-                                  { length: TABLE_MAX_COLUMNS },
-                                  (_, column) => {
-                                    const columns = column + 1;
-                                    const rows = row + 1;
-                                    const active =
-                                      columns <= tableSize.columns &&
-                                      rows <= tableSize.rows;
-                                    return (
-                                      <button
-                                        type="button"
-                                        key={column}
-                                        data-cell={`${columns}x${rows}`}
-                                        className={`table-grid-cell${active ? " active" : ""}${
-                                          rows === 1 ? " heading" : ""
-                                        }`}
-                                        tabIndex={
-                                          columns === tableSize.columns &&
-                                          rows === tableSize.rows
-                                            ? 0
-                                            : -1
-                                        }
-                                        aria-label={`${columns} columns by ${rows} rows`}
-                                        onKeyDown={handleTableGridKey}
-                                        onMouseEnter={() =>
-                                          setTableSize({ columns, rows })
-                                        }
-                                        onFocus={() => setTableSize({ columns, rows })}
-                                        onClick={() => insertTable(columns, rows)}
-                                      />
-                                    );
-                                  },
-                                )}
-                              </div>
-                            ))}
+                            {Array.from(
+                              { length: TABLE_MAX_ROWS },
+                              (_, row) => (
+                                <div className="table-grid-row" key={row}>
+                                  {Array.from(
+                                    { length: TABLE_MAX_COLUMNS },
+                                    (_, column) => {
+                                      const columns = column + 1;
+                                      const rows = row + 1;
+                                      const active =
+                                        columns <= tableSize.columns &&
+                                        rows <= tableSize.rows;
+                                      return (
+                                        <button
+                                          type="button"
+                                          key={column}
+                                          data-cell={`${columns}x${rows}`}
+                                          className={`table-grid-cell${active ? " active" : ""}${
+                                            rows === 1 ? " heading" : ""
+                                          }`}
+                                          tabIndex={
+                                            columns === tableSize.columns &&
+                                            rows === tableSize.rows
+                                              ? 0
+                                              : -1
+                                          }
+                                          aria-label={`${columns} columns by ${rows} rows`}
+                                          onKeyDown={handleTableGridKey}
+                                          onMouseEnter={() =>
+                                            setTableSize({ columns, rows })
+                                          }
+                                          onFocus={() =>
+                                            setTableSize({ columns, rows })
+                                          }
+                                          onClick={() =>
+                                            insertTable(columns, rows)
+                                          }
+                                        />
+                                      );
+                                    },
+                                  )}
+                                </div>
+                              ),
+                            )}
                           </div>
                           <p className="table-readout" aria-live="polite">
                             <strong>
@@ -4242,7 +4960,9 @@ export default function Home() {
                   />
                 </div>
                 <div className="editor-status">
-                  <span>{active.content.split(/\s+/).filter(Boolean).length} words</span>
+                  <span>
+                    {active.content.split(/\s+/).filter(Boolean).length} words
+                  </span>
                   <span>{active.content.length} characters</span>
                 </div>
               </div>
@@ -4257,10 +4977,17 @@ export default function Home() {
             aria-label="Close outline"
           />
         )}
-        <aside id="outline-panel" className={`outline-panel ${outlineOpen ? "is-open" : ""}`}>
+        <aside
+          id="outline-panel"
+          className={`outline-panel ${outlineOpen ? "is-open" : ""}`}
+        >
           <div className="panel-mobile-head">
             <span>On this page</span>
-            <button className="icon-button" onClick={() => setOutlineOpen(false)} aria-label="Close outline">
+            <button
+              className="icon-button"
+              onClick={() => setOutlineOpen(false)}
+              aria-label="Close outline"
+            >
               <X size={18} />
             </button>
           </div>
@@ -4275,7 +5002,11 @@ export default function Home() {
                   <button
                     key={`${heading.slug}-${heading.depth}`}
                     className={heading.depth === 3 ? "nested" : ""}
-                    onClick={() => document.getElementById(heading.slug)?.scrollIntoView({ behavior: "smooth" })}
+                    onClick={() =>
+                      document
+                        .getElementById(heading.slug)
+                        ?.scrollIntoView({ behavior: "smooth" })
+                    }
                   >
                     {heading.text}
                   </button>
@@ -4355,7 +5086,9 @@ export default function Home() {
               <span>
                 <small>New {createKind}</small>
                 <strong>
-                  {createKind === "file" ? "Start a new page" : "Organize your library"}
+                  {createKind === "file"
+                    ? "Start a new page"
+                    : "Organize your library"}
                 </strong>
               </span>
               <button
@@ -4374,7 +5107,9 @@ export default function Home() {
                 ref={createNameInput}
                 value={newEntryName}
                 onChange={(event) => setNewEntryName(event.target.value)}
-                placeholder={createKind === "file" ? "Untitled note" : "New section"}
+                placeholder={
+                  createKind === "file" ? "Untitled note" : "New section"
+                }
               />
             </label>
 
@@ -4414,8 +5149,17 @@ export default function Home() {
       )}
 
       {searchOpen && (
-        <div className="command-layer" role="dialog" aria-modal="true" aria-label="Find a page">
-          <button className="command-backdrop" onClick={() => setSearchOpen(false)} aria-label="Close search" />
+        <div
+          className="command-layer"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Find a page"
+        >
+          <button
+            className="command-backdrop"
+            onClick={() => setSearchOpen(false)}
+            aria-label="Close search"
+          />
           <div className="command-palette">
             <div className="command-input">
               <Search size={18} />
@@ -4450,16 +5194,28 @@ export default function Home() {
                     setSearchQuery("");
                   }}
                 >
-                  <span className="result-icon"><FileText size={16} /></span>
+                  <span className="result-icon">
+                    <FileText size={16} />
+                  </span>
                   <span className="result-copy">
-                    <strong>{highlightSearchText(note.title, searchQuery)}</strong>
+                    <strong>
+                      {highlightSearchText(note.title, searchQuery)}
+                    </strong>
                     <small>{highlightSearchText(note.path, searchQuery)}</small>
                     {excerpts.length > 0 && (
-                      <span className="result-excerpts" aria-label="Matching lines">
+                      <span
+                        className="result-excerpts"
+                        aria-label="Matching lines"
+                      >
                         {excerpts.map((excerpt) => (
-                          <span className="result-excerpt" key={`${note.id}:${excerpt.line}`}>
+                          <span
+                            className="result-excerpt"
+                            key={`${note.id}:${excerpt.line}`}
+                          >
                             <span className="result-line">L{excerpt.line}</span>
-                            <span>{highlightSearchText(excerpt.text, searchQuery)}</span>
+                            <span>
+                              {highlightSearchText(excerpt.text, searchQuery)}
+                            </span>
                           </span>
                         ))}
                       </span>
@@ -4469,14 +5225,58 @@ export default function Home() {
                 </button>
               ))}
               {!searchResults.length && (
-                <div className="no-results">No page matches “{searchQuery}”.</div>
+                <div className="no-results">
+                  No page matches “{searchQuery}”.
+                </div>
               )}
             </div>
             <div className="command-foot">
-              <span><kbd>↵</kbd> open page</span>
-              <span>{notes.length} pages in {libraryName}</span>
+              <span>
+                <kbd>↵</kbd> open page
+              </span>
+              <span>
+                {notes.length} pages in {libraryName}
+              </span>
             </div>
           </div>
+        </div>
+      )}
+
+      {entryMenu && (
+        <div
+          className="entry-menu"
+          role="menu"
+          tabIndex={-1}
+          aria-label={
+            entryMenu.kind === "folder" ? "Folder actions" : "Page actions"
+          }
+          style={{ left: entryMenu.x, top: entryMenu.y }}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setEntryMenu(undefined);
+              setRenamingEntry({ kind: entryMenu.kind, path: entryMenu.path });
+            }}
+          >
+            <PenLine size={13} aria-hidden="true" />
+            <span>Rename</span>
+            <small>⏎</small>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="entry-menu-danger"
+            onClick={() =>
+              void deleteEntry({ kind: entryMenu.kind, path: entryMenu.path })
+            }
+          >
+            <Trash2 size={13} aria-hidden="true" />
+            <span>Move to Trash</span>
+            <small>⌘⌫</small>
+          </button>
         </div>
       )}
 
@@ -4484,7 +5284,10 @@ export default function Home() {
         <div className="notice-toast" role="status">
           <Check size={15} />
           <span>{notice}</span>
-          <button onClick={() => setNotice(undefined)} aria-label="Dismiss message">
+          <button
+            onClick={() => setNotice(undefined)}
+            aria-label="Dismiss message"
+          >
             <X size={14} />
           </button>
         </div>
@@ -4492,15 +5295,22 @@ export default function Home() {
 
       <div className="mobile-page-nav">
         <button
-          onClick={() => activeIndex > 0 && selectNote(notes[activeIndex - 1].id)}
+          onClick={() =>
+            activeIndex > 0 && selectNote(notes[activeIndex - 1].id)
+          }
           disabled={activeIndex === 0}
           aria-label="Previous page"
         >
           <ArrowLeft size={17} />
         </button>
-        <span>{notes.length ? activeIndex + 1 : 0} / {notes.length}</span>
+        <span>
+          {notes.length ? activeIndex + 1 : 0} / {notes.length}
+        </span>
         <button
-          onClick={() => activeIndex < notes.length - 1 && selectNote(notes[activeIndex + 1].id)}
+          onClick={() =>
+            activeIndex < notes.length - 1 &&
+            selectNote(notes[activeIndex + 1].id)
+          }
           disabled={activeIndex === notes.length - 1}
           aria-label="Next page"
         >

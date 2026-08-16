@@ -254,6 +254,153 @@ async fn move_note(
     scan_library_root(&root)
 }
 
+/// Renames a note or folder in place. `name` is a single path segment; a note
+/// keeps (or gains) its `.md` extension.
+#[tauri::command]
+async fn rename_entry(
+    path: String,
+    name: String,
+    folder: bool,
+    state: State<'_, LibraryState>,
+) -> Result<LibrarySnapshot, String> {
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    let kind = if folder {
+        PathKind::Folder
+    } else {
+        PathKind::MarkdownFile
+    };
+    rename_in_library(&root, &path, &name, kind)?;
+    scan_library_root(&root)
+}
+
+/// The filesystem half of `rename_entry`, split out so it can be tested
+/// against a real directory without a Tauri state handle.
+fn rename_in_library(
+    root: &Path,
+    path: &str,
+    name: &str,
+    kind: PathKind,
+) -> Result<(), String> {
+    let folder = matches!(kind, PathKind::Folder);
+    let relative = validate_relative_path(path, kind)?;
+    let new_name = validate_entry_name(name, kind)?;
+
+    let source = if folder {
+        resolve_existing_directory(root, &relative)?
+    } else {
+        resolve_existing_file(root, &relative)?
+    };
+    let parent = resolve_existing_directory(
+        root,
+        relative.parent().unwrap_or_else(|| Path::new("")),
+    )?;
+    let destination = parent.join(&new_name);
+
+    if destination == source {
+        return Ok(());
+    }
+
+    // A case-only rename on a case-insensitive volume resolves to the same
+    // entry and is safe; any other existing destination is left untouched.
+    let same_entry = fs::canonicalize(&destination)
+        .map(|canonical| canonical == source)
+        .unwrap_or(false);
+    if same_entry {
+        fs::rename(&source, &destination)
+            .map_err(|error| io_error("rename the entry", &destination, error))?;
+    } else {
+        ensure_destination_absent(&destination)?;
+        if folder {
+            // Directories cannot be hard-linked, so this is the atomic option
+            // available; the absence check above closes the common case.
+            fs::rename(&source, &destination)
+                .map_err(|error| io_error("rename the folder", &destination, error))?;
+        } else {
+            move_file_without_replacing(&source, &destination)
+                .map_err(|error| io_error("rename the Markdown file", &destination, error))?;
+        }
+    }
+
+    sync_directory(&parent);
+    Ok(())
+}
+
+/// Moves a note or folder to the Finder trash, so a mistake stays undoable.
+#[tauri::command]
+async fn delete_entry(
+    path: String,
+    folder: bool,
+    state: State<'_, LibraryState>,
+) -> Result<LibrarySnapshot, String> {
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    let kind = if folder {
+        PathKind::Folder
+    } else {
+        PathKind::MarkdownFile
+    };
+    let relative = validate_relative_path(&path, kind)?;
+    let target = if folder {
+        resolve_existing_directory(&root, &relative)?
+    } else {
+        resolve_existing_file(&root, &relative)?
+    };
+    if target == root {
+        return Err("The library folder itself cannot be deleted.".to_string());
+    }
+
+    let parent = target.parent().map(Path::to_path_buf);
+    trash::delete(&target).map_err(|error| {
+        format!(
+            "Folio could not move {} to the trash: {error}",
+            display_path(&target)
+        )
+    })?;
+    if let Some(parent) = parent {
+        sync_directory(&parent);
+    }
+    scan_library_root(&root)
+}
+
+/// Validates a single path segment typed by the user. Markdown files keep an
+/// `.md` extension whether or not the typed name included one.
+fn validate_entry_name(value: &str, kind: PathKind) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("A name is required.".to_string());
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err("Names cannot contain slashes.".to_string());
+    }
+    if trimmed.contains('\0') || trimmed.chars().any(char::is_control) {
+        return Err("Names cannot contain control characters.".to_string());
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err("That name is reserved.".to_string());
+    }
+    // A leading dot would hide the entry from the library scan.
+    if trimmed.starts_with('.') {
+        return Err("Names cannot start with a dot.".to_string());
+    }
+
+    let name = match kind {
+        PathKind::Folder => trimmed.to_string(),
+        PathKind::MarkdownFile => {
+            if has_markdown_extension(Path::new(trimmed)) {
+                trimmed.to_string()
+            } else {
+                format!("{trimmed}.md")
+            }
+        }
+    };
+
+    // Round-trip through the strict validator so a rename can never widen what
+    // a path is allowed to be.
+    validate_relative_path(&name, kind)?;
+    Ok(name)
+}
+
 /// Saves image bytes (base64) beside the note and returns the file name that
 /// was actually used, deduplicated against existing files.
 #[tauri::command]
@@ -891,6 +1038,8 @@ pub fn run() {
             create_note,
             write_note,
             move_note,
+            rename_entry,
+            delete_entry,
             write_asset,
             import_assets,
             read_asset
@@ -902,6 +1051,30 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_entry_names_for_renames() {
+        assert_eq!(
+            validate_entry_name("Field notes", PathKind::MarkdownFile).unwrap(),
+            "Field notes.md"
+        );
+        // An existing extension is kept rather than doubled.
+        assert_eq!(
+            validate_entry_name("Field notes.md", PathKind::MarkdownFile).unwrap(),
+            "Field notes.md"
+        );
+        assert_eq!(
+            validate_entry_name("  Research  ", PathKind::Folder).unwrap(),
+            "Research"
+        );
+        assert!(validate_entry_name("", PathKind::Folder).is_err());
+        assert!(validate_entry_name("   ", PathKind::Folder).is_err());
+        assert!(validate_entry_name("a/b", PathKind::Folder).is_err());
+        assert!(validate_entry_name("a\\b", PathKind::Folder).is_err());
+        assert!(validate_entry_name("..", PathKind::Folder).is_err());
+        assert!(validate_entry_name(".hidden", PathKind::Folder).is_err());
+        assert!(validate_entry_name("bad\nname", PathKind::Folder).is_err());
+    }
 
     #[test]
     fn sanitizes_asset_names_to_safe_segments() {
@@ -1002,5 +1175,80 @@ mod tests {
         );
 
         fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn renames_pages_and_folders_without_clobbering() {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "folio-rename-test-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create test root");
+        let root = fs::canonicalize(&root).expect("canonicalize root");
+        fs::create_dir(root.join("Research")).expect("create folder");
+        fs::write(root.join("Research/Idea.md"), "body").expect("write note");
+        fs::write(root.join("Research/Taken.md"), "other").expect("write other note");
+
+        // A page rename keeps the contents and adds the extension for you.
+        rename_in_library(&root, "Research/Idea.md", "Better idea", PathKind::MarkdownFile)
+            .expect("rename note");
+        assert!(!root.join("Research/Idea.md").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("Research/Better idea.md")).expect("read renamed"),
+            "body"
+        );
+
+        // Renaming onto an existing page is refused, and changes nothing.
+        assert!(rename_in_library(
+            &root,
+            "Research/Better idea.md",
+            "Taken",
+            PathKind::MarkdownFile
+        )
+        .is_err());
+        assert_eq!(
+            fs::read_to_string(root.join("Research/Taken.md")).expect("read taken"),
+            "other"
+        );
+        assert!(root.join("Research/Better idea.md").exists());
+
+        // A folder rename carries its contents along.
+        rename_in_library(&root, "Research", "Field notes", PathKind::Folder)
+            .expect("rename folder");
+        assert!(!root.join("Research").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("Field notes/Better idea.md")).expect("read moved"),
+            "body"
+        );
+
+        // Escaping the library is refused.
+        assert!(rename_in_library(&root, "../outside", "x", PathKind::Folder).is_err());
+        assert!(
+            rename_in_library(&root, "Field notes", "../escape", PathKind::Folder).is_err()
+        );
+
+        fs::remove_dir_all(&root).expect("remove test root");
+    }
+
+    /// Ignored by default because it leaves a file in the Finder trash. Run
+    /// with `cargo test -- --ignored` to confirm trashing still works on a
+    /// new macOS release.
+    #[test]
+    #[ignore = "moves a file to the Finder trash"]
+    fn moves_entries_to_the_trash() {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "folio-trash-test-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create test root");
+        let victim = root.join("folio-trash-check.md");
+        fs::write(&victim, "delete me").expect("write victim");
+
+        trash::delete(&victim).expect("trash the file");
+        assert!(!victim.exists(), "the file should be gone from the library");
+
+        fs::remove_dir_all(&root).expect("remove test root");
     }
 }

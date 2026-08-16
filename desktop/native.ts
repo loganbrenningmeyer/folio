@@ -81,6 +81,23 @@ export function moveNote(
   return invokeNative("move_note", { fromPath, toPath });
 }
 
+/** Renames a note or folder in place. `name` is a single path segment. */
+export function renameEntry(
+  path: RelativePath,
+  name: string,
+  folder: boolean,
+): Promise<LibrarySnapshot> {
+  return invokeNative("rename_entry", { path, name, folder });
+}
+
+/** Moves a note or folder to the Finder trash. */
+export function deleteEntry(
+  path: RelativePath,
+  folder: boolean,
+): Promise<LibrarySnapshot> {
+  return invokeNative("delete_entry", { path, folder });
+}
+
 /** Saves image bytes beside the note; returns the deduplicated file name. */
 export function writeAsset(
   notePath: RelativePath,
@@ -112,6 +129,8 @@ export const nativeLibrary = Object.freeze({
   createNote,
   write: writeNote,
   move: moveNote,
+  rename: renameEntry,
+  remove: deleteEntry,
   writeAsset,
   importAssets,
   readAsset,
