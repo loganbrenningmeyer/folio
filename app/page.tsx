@@ -604,28 +604,17 @@ function createEditorExtensions(theme: Theme) {
           overscrollBehavior: "contain",
           fontFamily: "var(--font-code)",
           lineHeight: "22px",
+          cursor: "text",
         },
         ".cm-content": {
           minHeight: "100%",
           padding: "24px 28px 50px",
           caretColor: "var(--accent)",
           cursor: "text",
-          userSelect: "text",
-          WebkitUserSelect: "text",
         },
         ".cm-line": {
           padding: "0",
           cursor: "text",
-          userSelect: "text",
-          WebkitUserSelect: "text",
-        },
-        ".cm-selectionLayer": {
-          zIndex: "3",
-          pointerEvents: "none",
-        },
-        ".cm-cursorLayer": {
-          zIndex: "4",
-          pointerEvents: "none",
         },
         ".cm-cursor, .cm-dropCursor": {
           borderLeftColor: "var(--accent)",
@@ -635,6 +624,7 @@ function createEditorExtensions(theme: Theme) {
           borderRight: "1px solid var(--line)",
           backgroundColor: "color-mix(in srgb, var(--panel) 60%, transparent)",
           color: "var(--faint)",
+          cursor: "default",
         },
         ".cm-lineNumbers .cm-gutterElement": {
           minWidth: "52px",
@@ -1540,6 +1530,7 @@ export default function Home() {
                     className="folio-code-editor"
                     value={active.content}
                     height="100%"
+                    theme="none"
                     extensions={editorExtensions}
                     basicSetup={{
                       lineNumbers: true,

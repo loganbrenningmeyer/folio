@@ -75,7 +75,9 @@ test("ships the requested reading, editing, and organization capabilities", asyn
   assert.match(css, /\.markdown-body h3\s*\{[^}]*font-size:\s*20px/);
   assert.match(css, /\.markdown-body h4\s*\{[^}]*font-size:\s*17px[^}]*font-weight:\s*700/);
   assert.match(css, /\.folio-code-editor/);
-  assert.match(css, /user-select:\s*text !important/);
+  assert.match(page, /theme="none"/);
+  assert.match(css, /cursor:\s*text !important/);
+  assert.doesNotMatch(css, /user-select:\s*text !important/);
   assert.match(css, /--syntax-math:\s*#266fa9/);
   assert.match(layout, /\/og\.png/);
   assert.match(packageJson, /"name": "folio-markdown-reader"/);
