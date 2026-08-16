@@ -54,6 +54,7 @@ import {
   Save,
   Search,
   Sun,
+  Type,
   X,
 } from "lucide-react";
 
@@ -117,6 +118,38 @@ type ViewMode = "preview" | "editor" | "split";
 type Theme = "light" | "dark";
 type CreateKind = "file" | "folder";
 type LibraryScan = { notes: Note[]; folders: string[] };
+
+const FONT_CHOICES = [
+  { id: "iowan", label: "Iowan Old Style", category: "Serif", stack: '"Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif' },
+  { id: "new-york", label: "New York", category: "Serif", stack: '"New York", "Iowan Old Style", Georgia, serif' },
+  { id: "charter", label: "Charter", category: "Serif", stack: 'Charter, "Bitstream Charter", Georgia, serif' },
+  { id: "georgia", label: "Georgia", category: "Serif", stack: 'Georgia, "Times New Roman", serif' },
+  { id: "palatino", label: "Palatino", category: "Serif", stack: 'Palatino, "Palatino Linotype", Georgia, serif' },
+  { id: "geist-sans", label: "Geist Sans", category: "Sans serif", stack: 'var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif' },
+  { id: "system", label: "System UI", category: "Sans serif", stack: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif' },
+  { id: "avenir", label: "Avenir Next", category: "Sans serif", stack: '"Avenir Next", Avenir, "Helvetica Neue", sans-serif' },
+  { id: "helvetica", label: "Helvetica Neue", category: "Sans serif", stack: '"Helvetica Neue", Helvetica, Arial, sans-serif' },
+  { id: "futura", label: "Futura", category: "Sans serif", stack: 'Futura, "Avenir Next", Avenir, sans-serif' },
+  { id: "trebuchet", label: "Trebuchet", category: "Sans serif", stack: '"Trebuchet MS", "Helvetica Neue", sans-serif' },
+  { id: "geist-mono", label: "Geist Mono", category: "Monospace", stack: 'var(--font-geist-mono), "SFMono-Regular", Menlo, monospace' },
+  { id: "sf-mono", label: "SF Mono", category: "Monospace", stack: '"SFMono-Regular", "SF Mono", Menlo, Monaco, Consolas, monospace' },
+  { id: "menlo", label: "Menlo", category: "Monospace", stack: 'Menlo, Monaco, "Courier New", monospace' },
+  { id: "monaco", label: "Monaco", category: "Monospace", stack: 'Monaco, Menlo, "Courier New", monospace' },
+  { id: "courier", label: "Courier Prime", category: "Monospace", stack: '"Courier Prime", "Courier New", Courier, monospace' },
+] as const;
+
+type FontId = (typeof FONT_CHOICES)[number]["id"];
+type FontCategory = (typeof FONT_CHOICES)[number]["category"];
+
+const FONT_CATEGORIES: FontCategory[] = ["Serif", "Sans serif", "Monospace"];
+
+function isFontId(value: string | null): value is FontId {
+  return FONT_CHOICES.some((font) => font.id === value);
+}
+
+function fontStack(id: FontId) {
+  return FONT_CHOICES.find((font) => font.id === id)?.stack ?? FONT_CHOICES[0].stack;
+}
 
 const markdownSanitizeSchema = {
   ...defaultSchema,
@@ -725,6 +758,9 @@ export default function Home() {
   const [libraryName, setLibraryName] = useState("The Folio Field Guide");
   const [view, setView] = useState<ViewMode>("preview");
   const [theme, setTheme] = useState<Theme>("light");
+  const [readerFont, setReaderFont] = useState<FontId>("iowan");
+  const [editorFont, setEditorFont] = useState<FontId>("sf-mono");
+  const [fontPanelOpen, setFontPanelOpen] = useState(false);
   const [dirty, setDirty] = useState<Set<string>>(new Set());
   const [saved, setSaved] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -813,6 +849,26 @@ export default function Home() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("folio-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const storedReaderFont = localStorage.getItem("folio-reader-font");
+    const storedEditorFont = localStorage.getItem("folio-editor-font");
+    if (isFontId(storedReaderFont)) setReaderFont(storedReaderFont);
+    if (isFontId(storedEditorFont)) setEditorFont(storedEditorFont);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      "--font-reading",
+      fontStack(readerFont),
+    );
+    document.documentElement.style.setProperty(
+      "--font-code",
+      fontStack(editorFont),
+    );
+    localStorage.setItem("folio-reader-font", readerFont);
+    localStorage.setItem("folio-editor-font", editorFont);
+  }, [editorFont, readerFont]);
 
   const selectNote = useCallback((id: string) => {
     setActiveId(id);
@@ -1092,6 +1148,7 @@ export default function Home() {
         setSearchOpen(false);
         setNavOpen(false);
         setOutlineOpen(false);
+        setFontPanelOpen(false);
         setCreateKind(undefined);
       }
       if (!isTyping && event.key === "ArrowRight" && activeIndex < notes.length - 1) {
@@ -1281,6 +1338,15 @@ export default function Home() {
             <kbd>⌘ K</kbd>
           </button>
           <button
+            className={`icon-button ${fontPanelOpen ? "active" : ""}`}
+            onClick={() => setFontPanelOpen((open) => !open)}
+            aria-label="Choose reader and editor fonts"
+            aria-expanded={fontPanelOpen}
+            title="Fonts"
+          >
+            <Type size={17} />
+          </button>
+          <button
             className="icon-button"
             onClick={() => setTheme(theme === "light" ? "dark" : "light")}
             aria-label={`Use ${theme === "light" ? "dark" : "light"} mode`}
@@ -1309,6 +1375,92 @@ export default function Home() {
           />
         </div>
       </header>
+
+      {fontPanelOpen && (
+        <>
+          <button
+            className="font-popover-scrim"
+            onClick={() => setFontPanelOpen(false)}
+            aria-label="Close font settings"
+          />
+          <section
+            className="font-popover"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Font settings"
+          >
+            <div className="font-popover-head">
+              <span>
+                <small>Appearance</small>
+                <strong>Typography</strong>
+              </span>
+              <button
+                className="subtle-icon"
+                onClick={() => setFontPanelOpen(false)}
+                aria-label="Close font settings"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <label className="font-control">
+              <span>Reader font</span>
+              <select
+                value={readerFont}
+                onChange={(event) => setReaderFont(event.target.value as FontId)}
+              >
+                {FONT_CATEGORIES.map((category) => (
+                  <optgroup key={category} label={category}>
+                    {FONT_CHOICES.filter((font) => font.category === category).map(
+                      (font) => (
+                        <option key={font.id} value={font.id}>
+                          {font.label}
+                        </option>
+                      ),
+                    )}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+            <div
+              className="font-sample reader-sample"
+              style={{ fontFamily: fontStack(readerFont) }}
+            >
+              <span>Aa</span>
+              <p>The shape of a thoughtful page.</p>
+            </div>
+
+            <label className="font-control">
+              <span>Editor font</span>
+              <select
+                value={editorFont}
+                onChange={(event) => setEditorFont(event.target.value as FontId)}
+              >
+                {FONT_CATEGORIES.map((category) => (
+                  <optgroup key={category} label={category}>
+                    {FONT_CHOICES.filter((font) => font.category === category).map(
+                      (font) => (
+                        <option key={font.id} value={font.id}>
+                          {font.label}
+                        </option>
+                      ),
+                    )}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+            <div
+              className="font-sample editor-sample"
+              style={{ fontFamily: fontStack(editorFont) }}
+            >
+              <span>01</span>
+              <p>const note = "connected";</p>
+            </div>
+
+            <p className="font-footnote">Saved automatically on this device.</p>
+          </section>
+        </>
+      )}
 
       <div className="workspace">
         {navOpen && <button className="scrim" onClick={() => setNavOpen(false)} aria-label="Close library" />}
