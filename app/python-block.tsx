@@ -16,6 +16,7 @@ import {
   Play,
   RotateCcw,
   Square,
+  ZapOff,
 } from "lucide-react";
 import {
   resetPythonSession,
@@ -38,6 +39,9 @@ type HastNode = {
   value?: string;
   tagName?: string;
   properties?: Record<string, unknown>;
+  // `mdast-util-to-hast` parks the fence info string here, and
+  // `hast-util-sanitize` clones `data` through untouched.
+  data?: { meta?: string };
   children?: HastNode[];
 };
 
@@ -53,14 +57,22 @@ function hastClassNames(node: HastNode): string[] {
   return [];
 }
 
-// Returns the source of a ```python fence, or undefined for any other <pre>.
-export function pythonCodeFromPre(node: unknown): string | undefined {
+export type PythonFence = { code: string; runnable: boolean };
+
+// A python fence stays inert unless its info string opts in — ```python run.
+// Other renderers read only the first word, so a shared file still highlights
+// as Python everywhere else. Returns undefined for any other <pre>.
+export function pythonFenceFromPre(node: unknown): PythonFence | undefined {
   const pre = node as HastNode | undefined;
   const code = pre?.children?.find((child) => child.tagName === "code");
   if (!code || !hastClassNames(code).includes("language-python")) {
     return undefined;
   }
-  return hastText(code).replace(/\n$/, "");
+  const meta = typeof code.data?.meta === "string" ? code.data.meta : "";
+  return {
+    code: hastText(code).replace(/\n$/, ""),
+    runnable: /(^|\s)run(\s|$)/.test(meta),
+  };
 }
 
 const PHASE_LABELS: Record<PythonRunPhase, string> = {
@@ -357,15 +369,47 @@ function PythonWidgetField({
 
 type PendingWidgetAction = { widgetId: string; action: PythonWidgetAction };
 
+type StaticPythonBlockProps = HTMLAttributes<HTMLPreElement> & {
+  onEnableRun?: () => void;
+  children: ReactNode;
+};
+
+// A plain python fence. The enable control rides along quietly until the
+// block is hovered or focused, so reading is undisturbed.
+export function StaticPythonBlock({
+  onEnableRun,
+  children,
+  ...preProps
+}: StaticPythonBlockProps) {
+  return (
+    <pre {...preProps} className="python-static">
+      {onEnableRun && (
+        <button
+          type="button"
+          className="python-static-enable"
+          onClick={onEnableRun}
+          title="Make this block runnable (adds `run` to the fence)"
+        >
+          <Play size={11} fill="currentColor" aria-hidden="true" />
+          <span>Enable running</span>
+        </button>
+      )}
+      {children}
+    </pre>
+  );
+}
+
 type PythonCodeBlockProps = HTMLAttributes<HTMLDivElement> & {
   code: string;
   sessionId: string;
+  onDisableRun?: () => void;
   children: ReactNode;
 };
 
 export function PythonCodeBlock({
   code,
   sessionId,
+  onDisableRun,
   children,
   ...preProps
 }: PythonCodeBlockProps) {
@@ -760,6 +804,17 @@ export function PythonCodeBlock({
               aria-label="Restart the Python session for this page"
             >
               <RotateCcw size={13} />
+            </button>
+          )}
+          {onDisableRun && !busy && (
+            <button
+              type="button"
+              className="python-block-disable"
+              onClick={onDisableRun}
+              title="Turn off running (removes `run` from the fence)"
+              aria-label="Turn off running for this block"
+            >
+              <ZapOff size={13} />
             </button>
           )}
           <span className="python-block-lang">Python</span>

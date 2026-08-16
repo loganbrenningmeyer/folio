@@ -9,7 +9,12 @@ import {
   isCommandShortcut,
   isRecordedShortcut,
   markdownBlockCompletion,
+  imageLineText,
+  imageTitleText,
   mapScrollOffset,
+  parseImageLine,
+  parseImageTitle,
+  setPythonFenceRunnable,
   shortcutFromEvent,
   shortcutMatches,
   toCodeMirrorSnippet,
@@ -397,4 +402,131 @@ test("aligned anchors spread a short pane's whole range when the ramp exceeds it
     }),
     { editorOffsets: [0], previewOffsets: [0] },
   );
+});
+
+test("setPythonFenceRunnable adds and removes the run flag in place", () => {
+  const doc = ["# Title", "", "```python", "print(1)", "```", ""].join("\n");
+  const enabled = setPythonFenceRunnable(doc, 3, true);
+  assert.equal(
+    enabled,
+    ["# Title", "", "```python run", "print(1)", "```", ""].join("\n"),
+  );
+  assert.equal(setPythonFenceRunnable(enabled, 3, false), doc);
+  // Enabling twice stays idempotent.
+  assert.equal(setPythonFenceRunnable(enabled, 3, true), enabled);
+});
+
+test("setPythonFenceRunnable preserves other info words and indentation", () => {
+  const doc = ["  ~~~~python title=demo run extra", "pass", "  ~~~~"].join("\n");
+  assert.equal(
+    setPythonFenceRunnable(doc, 1, false),
+    ["  ~~~~python title=demo extra", "pass", "  ~~~~"].join("\n"),
+  );
+  assert.equal(
+    setPythonFenceRunnable(doc, 1, true),
+    ["  ~~~~python run title=demo extra", "pass", "  ~~~~"].join("\n"),
+  );
+});
+
+test("setPythonFenceRunnable refuses lines that are not python fence openers", () => {
+  const doc = ["```js", "print(1)", "```", "plain text"].join("\n");
+  assert.equal(setPythonFenceRunnable(doc, 1, true), doc);
+  assert.equal(setPythonFenceRunnable(doc, 2, true), doc);
+  assert.equal(setPythonFenceRunnable(doc, 4, true), doc);
+  assert.equal(setPythonFenceRunnable(doc, 99, true), doc);
+  assert.equal(setPythonFenceRunnable(doc, 0, true), doc);
+});
+
+test("image lines round-trip through parse and serialize", () => {
+  assert.deepEqual(parseImageLine("![A cat](cat.png)"), {
+    indent: "",
+    alt: "A cat",
+    src: "cat.png",
+    caption: "",
+  });
+  assert.deepEqual(parseImageLine('  ![](img/plot.webp "My caption | width=420 center")'), {
+    indent: "  ",
+    alt: "",
+    src: "img/plot.webp",
+    width: 420,
+    align: "center",
+    caption: "My caption",
+  });
+  assert.equal(
+    imageLineText(parseImageLine('![x](a.png "width=300 right")')),
+    '![x](a.png "width=300 right")',
+  );
+  assert.equal(
+    imageLineText({ alt: "x", src: "a.png", width: 300.4, align: "left" }),
+    '![x](a.png "width=300")',
+  );
+  assert.equal(imageLineText({ src: "a.png" }), "![](a.png)");
+});
+
+test("image line parsing rejects non-image and inline-image lines", () => {
+  assert.equal(parseImageLine("text ![x](a.png)"), undefined);
+  assert.equal(parseImageLine("![x](a.png) trailing"), undefined);
+  assert.equal(parseImageLine("[x](a.png)"), undefined);
+  assert.equal(parseImageLine("![x](has space.png)"), undefined);
+  assert.equal(parseImageLine("![x]()"), undefined);
+});
+
+test("titles with no separator keep parsing as directives plus caption", () => {
+  assert.deepEqual(parseImageTitle("Portrait width=200"), {
+    width: 200,
+    caption: "Portrait",
+  });
+  assert.deepEqual(parseImageTitle("width=200"), { width: 200, caption: "" });
+  assert.deepEqual(parseImageTitle(undefined), { caption: "" });
+  assert.equal(
+    imageTitleText({ width: 340, align: "center", caption: "Portrait" }),
+    "Portrait | width=340 center",
+  );
+  assert.equal(imageTitleText({ align: "left", caption: "" }), "");
+  assert.equal(imageTitleText({ caption: "Just a caption" }), "Just a caption");
+});
+
+test("captions survive round-tripping even when they read like directives", () => {
+  // Without the separator these words would be parsed away as formatting.
+  for (const caption of [
+    "center",
+    "shifted right",
+    "left of the barn",
+    "width=300 explained",
+  ]) {
+    const title = imageTitleText({ caption, width: 200 });
+    assert.deepEqual(
+      parseImageTitle(title),
+      { width: 200, caption },
+      `round trip with directives failed for ${JSON.stringify(caption)}`,
+    );
+    const bare = imageTitleText({ caption });
+    assert.deepEqual(
+      parseImageTitle(bare),
+      { caption },
+      `round trip without directives failed for ${JSON.stringify(caption)}`,
+    );
+  }
+});
+
+test("captions round-trip through a whole image line", () => {
+  const line = imageLineText({
+    alt: "Plot",
+    src: "plot.png",
+    caption: "Figure 1 — results centered on the mean",
+    width: 480,
+    align: "center",
+  });
+  assert.equal(
+    line,
+    '![Plot](plot.png "Figure 1 — results centered on the mean | width=480 center")',
+  );
+  assert.deepEqual(parseImageLine(line), {
+    indent: "",
+    alt: "Plot",
+    src: "plot.png",
+    caption: "Figure 1 — results centered on the mean",
+    width: 480,
+    align: "center",
+  });
 });

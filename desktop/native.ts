@@ -81,6 +81,28 @@ export function moveNote(
   return invokeNative("move_note", { fromPath, toPath });
 }
 
+/** Saves image bytes beside the note; returns the deduplicated file name. */
+export function writeAsset(
+  notePath: RelativePath,
+  fileName: string,
+  contentsBase64: string,
+): Promise<string> {
+  return invokeNative("write_asset", { notePath, fileName, contentsBase64 });
+}
+
+/** Native image picker; copies selections beside the note, returns names. */
+export function importAssets(notePath: RelativePath): Promise<string[]> {
+  return invokeNative("import_assets", { notePath });
+}
+
+/** Reads an image referenced by the note, as base64. */
+export function readAsset(
+  notePath: RelativePath,
+  src: string,
+): Promise<string> {
+  return invokeNative("read_asset", { notePath, src });
+}
+
 export const nativeLibrary = Object.freeze({
   isAvailable: isNativeRuntime,
   restore: restoreLibrary,
@@ -90,6 +112,9 @@ export const nativeLibrary = Object.freeze({
   createNote,
   write: writeNote,
   move: moveNote,
+  writeAsset,
+  importAssets,
+  readAsset,
 });
 
 export type NativeLibraryBridge = typeof nativeLibrary;

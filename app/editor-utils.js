@@ -547,3 +547,123 @@ export function extractSearchExcerpts(content, query, limit = 3) {
 
   return excerpts;
 }
+
+/**
+ * Adds or removes the `run` flag on the python fence that opens at
+ * `sourceLine`, leaving any other info-string words in place. Returns the
+ * original content when that line is not a python fence opener, so a stale
+ * anchor is a no-op rather than a corrupting edit.
+ *
+ * @param {string} content
+ * @param {number} sourceLine 1-based line of the opening fence
+ * @param {boolean} runnable
+ * @returns {string}
+ */
+export function setPythonFenceRunnable(content, sourceLine, runnable) {
+  const lines = content.split("\n");
+  const index = sourceLine - 1;
+  if (index < 0 || index >= lines.length) return content;
+
+  const fence = /^(\s*(?:`{3,}|~{3,})\s*)([A-Za-z0-9_+-]+)(.*)$/.exec(lines[index]);
+  if (!fence) return content;
+
+  const [, opener, language, rest] = fence;
+  if (language.toLowerCase() !== "python") return content;
+
+  const words = rest.split(/\s+/).filter(Boolean);
+  const without = words.filter((word) => word !== "run");
+  const next = runnable ? ["run", ...without] : without;
+  lines[index] = `${opener}${language}${next.length ? ` ${next.join(" ")}` : ""}`;
+
+  return lines.join("\n");
+}
+
+// A whole line consisting of a single Markdown image, with an optional quoted
+// title. Folio stores image formatting as title tokens — `width=NNN` and
+// `center`/`right` — so the file stays plain Markdown everywhere else.
+const IMAGE_LINE_PATTERN = /^(\s*)!\[([^\]]*)\]\(([^()\s]+)(?:\s+"([^"]*)")?\)\s*$/;
+
+const IMAGE_DIRECTIVE_PATTERN = /^(?:width=\d+|left|center|right)$/;
+
+/**
+ * Splits an image title into Folio's formatting directives and the caption.
+ *
+ * The title reads `caption | width=420 center`. The separator matters because a
+ * caption is free prose that may itself contain a word like "center"; only text
+ * after the last `|` is read as directives. A title with no `|` is parsed
+ * entirely as directives, with any leftover words treated as the caption, so
+ * hand-written `"width=300"` titles keep working.
+ *
+ * @param {string | undefined} title
+ * @returns {{ width?: number; align?: "left" | "center" | "right"; caption: string }}
+ */
+export function parseImageTitle(title) {
+  const text = (title ?? "").trim();
+  const separator = text.lastIndexOf("|");
+  const captionPart = separator < 0 ? "" : text.slice(0, separator);
+  const directivePart = separator < 0 ? text : text.slice(separator + 1);
+
+  /** @type {{ width?: number; align?: "left" | "center" | "right"; caption: string }} */
+  const parsed = { caption: "" };
+  const caption = [captionPart.trim()];
+  for (const token of directivePart.split(/\s+/).filter(Boolean)) {
+    const width = /^width=(\d+)$/.exec(token);
+    if (width) {
+      parsed.width = Number(width[1]);
+    } else if (token === "left" || token === "center" || token === "right") {
+      parsed.align = token;
+    } else {
+      caption.push(token);
+    }
+  }
+  parsed.caption = caption.filter(Boolean).join(" ");
+  return parsed;
+}
+
+/**
+ * @param {{ width?: number; align?: string; caption?: string }} image
+ * @returns {string} the title text, possibly empty
+ */
+export function imageTitleText({ width, align, caption }) {
+  const directives = [];
+  if (width) directives.push(`width=${Math.round(width)}`);
+  // Left is the default presentation, so it needs no token.
+  if (align === "center" || align === "right") directives.push(align);
+
+  const text = (caption ?? "").replace(/\s+/g, " ").trim();
+  if (!text) return directives.join(" ");
+  // Without directives the separator is only needed when the caption's own
+  // words would otherwise parse as directives.
+  const ambiguous = text
+    .split(" ")
+    .some((word) => IMAGE_DIRECTIVE_PATTERN.test(word));
+  if (!directives.length && !ambiguous) return text;
+  return `${text} | ${directives.join(" ")}`.trim();
+}
+
+/**
+ * Parses a line that is exactly one Markdown image.
+ *
+ * @param {string} lineText
+ * @returns {{ indent: string; alt: string; src: string; width?: number;
+ *   align?: "left" | "center" | "right"; caption: string } | undefined}
+ */
+export function parseImageLine(lineText) {
+  const match = IMAGE_LINE_PATTERN.exec(lineText);
+  if (!match) return undefined;
+  const [, indent, alt, src, title] = match;
+  return { indent, alt, src, ...parseImageTitle(title) };
+}
+
+/**
+ * Serializes the structure `parseImageLine` produces back into Markdown.
+ *
+ * @param {{ indent?: string; alt?: string; src: string; width?: number;
+ *   align?: string; caption?: string }} image
+ * @returns {string}
+ */
+export function imageLineText(image) {
+  const title = imageTitleText(image);
+  const titlePart = title ? ` "${title}"` : "";
+  return `${image.indent ?? ""}![${image.alt ?? ""}](${image.src}${titlePart})`;
+}

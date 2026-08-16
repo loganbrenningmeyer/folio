@@ -1422,6 +1422,48 @@ kbd {
   text-transform: uppercase;
 }
 
+/* Plain python fences offer to opt in. The control keeps to the top-left,
+   clear of the language chip, and stays out of sight until the block is
+   hovered or the button is tabbed to. */
+
+.markdown-body .python-static-enable {
+  display: inline-flex;
+  position: absolute;
+  top: 7px;
+  left: 14px;
+  z-index: 1;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 8%);
+  color: #899184;
+  font: 600 9px var(--font-ui);
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: opacity .15s ease, background .15s ease, color .15s ease;
+}
+
+.markdown-body .python-static:hover .python-static-enable,
+.markdown-body .python-static-enable:focus-visible {
+  opacity: 1;
+}
+
+.markdown-body .python-static-enable:hover,
+.markdown-body .python-static-enable:focus-visible {
+  background: rgb(255 255 255 / 14%);
+  color: var(--code-ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .markdown-body .python-static-enable {
+    transition: none;
+  }
+}
+
 /* Runnable Python blocks */
 
 .markdown-body .python-block {
@@ -1447,6 +1489,7 @@ kbd {
 .markdown-body .python-block-run,
 .markdown-body .python-block-stop,
 .markdown-body .python-block-restart,
+.markdown-body .python-block-disable,
 .markdown-body .python-block-animbar button {
   display: inline-flex;
   flex-shrink: 0;
@@ -1484,12 +1527,14 @@ kbd {
   background: rgb(230 130 120 / 28%);
 }
 
-.markdown-body .python-block-restart {
+.markdown-body .python-block-restart,
+.markdown-body .python-block-disable {
   background: transparent;
   color: #899184;
 }
 
-.markdown-body .python-block-restart:hover {
+.markdown-body .python-block-restart:hover,
+.markdown-body .python-block-disable:hover {
   background: rgb(255 255 255 / 10%);
   color: var(--code-ink);
 }
@@ -1924,6 +1969,29 @@ kbd {
 .editor-chrome { height: 38px; flex: 0 0 auto; border-bottom: 1px solid var(--line); background: var(--panel); }
 .editor-file { display: flex; align-items: center; gap: 6px; }
 .editor-language { text-transform: uppercase; letter-spacing: .08em; }
+.editor-chrome-end { display: flex; align-items: center; gap: 10px; }
+
+.editor-image-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px 0 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--paper);
+  color: var(--ink-2);
+  font: 500 10px var(--font-ui);
+  letter-spacing: .04em;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+
+.editor-image-button:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
 
 .editor-workspace {
   min-height: 0;
@@ -2518,5 +2586,280 @@ kbd {
     transition-duration: .01ms !important;
     animation-duration: .01ms !important;
     animation-iteration-count: 1 !important;
+  }
+}
+
+/* Images in Read view. Folio's title tokens (width=NNN, center, right) become
+   real presentation here; plain Markdown images stay at their natural size. */
+
+.markdown-body .markdown-figure {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.markdown-body .markdown-figure.align-center { align-items: center; }
+.markdown-body .markdown-figure.align-right { align-items: flex-end; }
+
+.markdown-body img.markdown-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+
+.markdown-body .markdown-caption {
+  display: block;
+  max-width: 100%;
+  color: var(--muted);
+  font-size: .85em;
+  font-style: italic;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.markdown-body .align-left > .markdown-caption { text-align: left; }
+.markdown-body .align-right > .markdown-caption { text-align: right; }
+
+.markdown-body .markdown-image-missing {
+  display: inline-block;
+  padding: 6px 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  color: var(--muted);
+  font: 12px var(--font-ui);
+}
+
+.markdown-body .markdown-image-loading {
+  display: block;
+  height: 120px;
+  border-radius: 8px;
+  background: var(--paper-deep);
+}
+
+/* Image widgets in Write view. The Markdown line is replaced by the image;
+   the toolbar and resize handle appear on hover or keyboard focus. */
+
+.folio-code-editor .cm-image-widget {
+  display: flex;
+  justify-content: flex-start;
+  padding: 8px 0;
+}
+
+.folio-code-editor .cm-image-widget[data-align="center"] {
+  justify-content: center;
+}
+
+.folio-code-editor .cm-image-widget[data-align="right"] {
+  justify-content: flex-end;
+}
+
+.folio-code-editor .cm-image-widget-expanded {
+  padding-bottom: 2px;
+}
+
+.folio-code-editor .cm-image-frame {
+  display: flex;
+  position: relative;
+  flex-direction: column;
+  min-width: 48px;
+  max-width: 100%;
+  gap: 7px;
+}
+
+/* Wraps the image itself so the caption sits outside the selection outline
+   and the resize handle anchors to the picture, not the whole block. */
+.folio-code-editor .cm-image-shell {
+  position: relative;
+  border-radius: 8px;
+  outline: 1px solid transparent;
+  outline-offset: 2px;
+  transition: outline-color .15s ease;
+}
+
+.folio-code-editor .cm-image-shell img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+}
+
+.folio-code-editor .cm-image-selected .cm-image-shell,
+.folio-code-editor .cm-image-resizing .cm-image-shell {
+  outline-color: var(--accent);
+}
+
+.folio-code-editor .cm-image-shell.cm-image-loading {
+  width: 180px;
+  height: 110px;
+  background: var(--paper-deep);
+}
+
+.folio-code-editor .cm-image-shell.cm-image-missing {
+  padding: 8px 12px;
+  border: 1px dashed var(--line-strong);
+  color: var(--muted);
+  font: 12px var(--font-ui);
+}
+
+.folio-code-editor .cm-image-shell.cm-image-missing img {
+  display: none;
+}
+
+.folio-code-editor .cm-image-caption {
+  width: 100%;
+  padding: 2px 0;
+  border: 0;
+  border-bottom: 1px dashed var(--line-strong);
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--muted);
+  font: italic 12px var(--font-ui);
+  text-align: center;
+}
+
+.folio-code-editor .cm-image-widget[data-align="left"] .cm-image-caption {
+  text-align: left;
+}
+
+.folio-code-editor .cm-image-widget[data-align="right"] .cm-image-caption {
+  text-align: right;
+}
+
+.folio-code-editor .cm-image-caption::placeholder {
+  color: var(--faint);
+}
+
+.folio-code-editor .cm-image-caption:focus {
+  border-bottom-color: var(--accent);
+  color: var(--ink-2);
+}
+
+.folio-code-editor .cm-image-actions {
+  display: flex;
+  position: absolute;
+  z-index: 3;
+  top: 6px;
+  left: 6px;
+  width: max-content;
+  gap: 2px;
+  opacity: 0;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgb(20 22 19 / 72%);
+  transition: opacity .15s ease;
+}
+
+.folio-code-editor .cm-image-shell:hover .cm-image-actions,
+.folio-code-editor .cm-image-selected .cm-image-actions,
+.folio-code-editor .cm-image-actions:focus-within {
+  opacity: 1;
+}
+
+.folio-code-editor .cm-image-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #cfd4c9;
+  cursor: pointer;
+}
+
+.folio-code-editor .cm-image-actions button:hover {
+  background: rgb(255 255 255 / 16%);
+  color: #fff;
+}
+
+.folio-code-editor .cm-image-actions button[aria-pressed="true"] {
+  background: rgb(255 255 255 / 22%);
+  color: #fff;
+}
+
+.folio-code-editor .cm-image-actions svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.folio-code-editor .cm-image-actions .cm-image-code-toggle {
+  margin-left: 2px;
+  border-left: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 0 6px 6px 0;
+}
+
+.folio-code-editor .cm-image-actions .cm-image-code-toggle svg {
+  fill: none;
+}
+
+.folio-code-editor .cm-image-resize {
+  display: flex;
+  position: absolute;
+  right: -7px;
+  bottom: -7px;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--paper);
+  border-radius: 6px;
+  background: var(--accent);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 28%);
+  opacity: 0;
+  cursor: nwse-resize;
+  touch-action: none;
+  transition: opacity .15s ease, transform .15s ease;
+}
+
+/* Two diagonal grip lines, so it reads as a handle rather than a dot. */
+.folio-code-editor .cm-image-resize::before,
+.folio-code-editor .cm-image-resize::after {
+  position: absolute;
+  background: var(--paper);
+  content: "";
+}
+
+.folio-code-editor .cm-image-resize::before {
+  width: 9px;
+  height: 1.5px;
+  transform: rotate(-45deg) translate(1px, 1px);
+}
+
+.folio-code-editor .cm-image-resize::after {
+  width: 5px;
+  height: 1.5px;
+  transform: rotate(-45deg) translate(-2px, -2px);
+}
+
+.folio-code-editor .cm-image-widget[data-align="right"] .cm-image-resize {
+  right: auto;
+  left: -7px;
+  cursor: nesw-resize;
+}
+
+.folio-code-editor .cm-image-widget[data-align="right"] .cm-image-resize::before,
+.folio-code-editor .cm-image-widget[data-align="right"] .cm-image-resize::after {
+  transform: rotate(45deg);
+}
+
+.folio-code-editor .cm-image-shell:hover .cm-image-resize,
+.folio-code-editor .cm-image-selected .cm-image-resize {
+  opacity: 1;
+}
+
+.folio-code-editor .cm-image-resize:hover {
+  transform: scale(1.12);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .folio-code-editor .cm-image-actions,
+  .folio-code-editor .cm-image-resize {
+    transition: none;
   }
 }

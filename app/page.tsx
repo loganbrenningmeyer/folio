@@ -41,17 +41,32 @@ import {
   isCommandShortcut,
   isRecordedShortcut,
   mapScrollOffset,
+  imageLineText,
   markdownBlockCompletion,
+  parseImageTitle,
+  setPythonFenceRunnable,
   shortcutFromEvent,
   shortcutMatches,
   toCodeMirrorSnippet,
 } from "@/app/editor-utils.js";
+import { editorImages } from "@/app/editor-images";
+import {
+  imageAltFromName,
+  imageFilesFromDataTransfer,
+  isDirectImageSrc,
+  resolveNoteImage,
+  saveNoteImage,
+} from "@/app/image-assets";
 import {
   isNativeRuntime,
   nativeLibrary,
   type LibrarySnapshot,
 } from "@/desktop/native";
-import { PythonCodeBlock, pythonCodeFromPre } from "@/app/python-block";
+import {
+  PythonCodeBlock,
+  StaticPythonBlock,
+  pythonFenceFromPre,
+} from "@/app/python-block";
 import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
@@ -74,6 +89,7 @@ import {
   FolderPlus,
   FolderOpen,
   GripVertical,
+  ImagePlus,
   Keyboard,
   Link2,
   ListTree,
@@ -221,7 +237,7 @@ $$`,
     id: "python-block",
     name: "Python block",
     shortcut: "Ctrl-Shift-p",
-    template: ["```python", "$0", "```"].join("\n"),
+    template: ["```python run", "$0", "```"].join("\n"),
     enabled: true,
   },
 ];
@@ -341,6 +357,11 @@ const markdownSanitizeSchema = {
       ...(defaultSchema.attributes?.code ?? []),
       ["className", /^language-./, "math-inline", "math-display"],
     ],
+  },
+  protocols: {
+    ...defaultSchema.protocols,
+    // Images pasted in non-native runtimes are embedded as data URIs.
+    src: [...(defaultSchema.protocols?.src ?? []), "data"],
   },
 };
 
@@ -530,13 +551,19 @@ That is the whole loop: read, connect, write, and return.`,
     title: "Interactive Python",
     content: `# Interactive Python
 
-Folio can run Python inside a page. Any \`python\` code block gains a **Run** button in Read view, powered by [Pyodide](https://pyodide.org) — Python compiled to WebAssembly. Everything executes on your device, and the output stays inside the block.
+Folio can run Python inside a page. Open a fence with \`\` \`\`\`python run \`\` and the block gains a **Run** button in Read view, powered by [Pyodide](https://pyodide.org) — Python compiled to WebAssembly. Everything executes on your device, and the output stays inside the block.
+
+A plain \`\` \`\`\`python \`\` fence stays an ordinary code block. Hover over one in Read view and use **Enable running** to opt it in — Folio adds the \`run\` flag to the fence for you, and the lightning-off button in a runnable block's corner removes it again. Try it on this one:
+
+\`\`\`python
+print("This block is just text until you enable it.")
+\`\`\`
 
 ## Terminal output
 
 The first run downloads the Python runtime, so give it a moment. Printed text appears beneath the code, and the value of the last expression is shown like a notebook.
 
-\`\`\`python
+\`\`\`python run
 message = "Hello from Folio"
 print(message)
 sum(range(10))
@@ -546,7 +573,7 @@ sum(range(10))
 
 Scientific packages such as NumPy and Matplotlib are fetched automatically the first time a block imports them. Figures render inside the block and scroll with the document.
 
-\`\`\`python
+\`\`\`python run
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -564,7 +591,7 @@ plt.show()
 
 Import \`folio\` to add controls. Move a knob and the block re-runs with the new values.
 
-\`\`\`python
+\`\`\`python run
 import numpy as np
 import matplotlib.pyplot as plt
 from folio import slider, toggle
@@ -587,7 +614,7 @@ plt.show()
 
 Matplotlib's own \`matplotlib.widgets.Slider\` works too. Its sliders appear as live controls beneath the figure and drive their Python callbacks directly — the block does not re-run, the open figure just updates.
 
-\`\`\`python
+\`\`\`python run
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
@@ -611,7 +638,7 @@ plt.show()
 
 Buttons, check boxes, radio buttons, range sliders, and text boxes bridge the same way — their callbacks run on the live figure.
 
-\`\`\`python
+\`\`\`python run
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, CheckButtons, RadioButtons, TextBox
 
@@ -635,7 +662,7 @@ plt.show()
 
 \`matplotlib.animation.FuncAnimation\` runs live: the page pulls frames from the interpreter at the animation's own interval, and the pause control sits right under the figure.
 
-\`\`\`python
+\`\`\`python run
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
@@ -658,7 +685,7 @@ plt.show()
 
 Blocks on the same page share a Python session, so earlier definitions stay available below — run the first block, then this one. The restart button in a block's header clears the session, and the stop button halts a running block if a loop gets away from you.
 
-\`\`\`python
+\`\`\`python run
 print(f"The message above was: {message!r}")
 \`\`\``,
   },
@@ -1433,6 +1460,175 @@ async function readDirectory(
   return { notes, folders };
 }
 
+// Read view's image renderer. Sizing and alignment arrive as Folio's title
+// tokens (see parseImageTitle); library-relative sources resolve through the
+// native bridge into blob URLs.
+function MarkdownImage({
+  notePath,
+  src,
+  alt,
+  title,
+}: {
+  notePath: string;
+  src?: string;
+  alt?: string;
+  title?: string;
+}) {
+  const directives = useMemo(() => parseImageTitle(title), [title]);
+  const source = src ?? "";
+  // Direct sources (data:, blob:, remote, or non-native runtimes) need no
+  // asynchronous work; everything else loads through the native bridge.
+  const direct = isDirectImageSrc(source) || !isNativeRuntime();
+  const key = `${notePath} ${source}`;
+  const [loaded, setLoaded] = useState<{
+    key: string;
+    url?: string;
+    missing: boolean;
+  }>();
+
+  useEffect(() => {
+    if (direct || !source) return undefined;
+    let cancelled = false;
+    Promise.resolve(resolveNoteImage(notePath, source))
+      .then((url) => {
+        if (!cancelled) setLoaded({ key, url, missing: false });
+      })
+      .catch(() => {
+        if (!cancelled) setLoaded({ key, missing: true });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [direct, key, notePath, source]);
+
+  // A result for another key is a leftover from the previous image.
+  const current = loaded?.key === key ? loaded : undefined;
+  const resolved = direct ? source : current?.url;
+
+  if (!source || current?.missing) {
+    return (
+      <span className="markdown-image-missing">Missing image: {source}</span>
+    );
+  }
+  if (!resolved) {
+    return <span className="markdown-image-loading" aria-hidden="true" />;
+  }
+
+  // Spans, not <figure>, because react-markdown renders a lone image inside a
+  // paragraph and a block element there would be invalid nesting.
+  return (
+    <span className={`markdown-figure align-${directives.align ?? "left"}`}>
+      <img
+        src={resolved}
+        alt={alt ?? ""}
+        className="markdown-image"
+        style={
+          directives.width ? { width: `${directives.width}px` } : undefined
+        }
+      />
+      {directives.caption && (
+        <span className="markdown-caption">{directives.caption}</span>
+      )}
+    </span>
+  );
+}
+
+// What the editor's image extension needs to know about the open note. The
+// extension is rebuilt when these change (and the editor itself remounts per
+// note), so plain captured values stay correct.
+type EditorImageContext = {
+  notePath: string;
+  nativeStore: boolean;
+  notice: (message: string) => void;
+};
+
+function createEditorImageExtensions(bridge: EditorImageContext): Extension[] {
+  return [
+    editorImages({
+      resolveSrc: (src) => resolveNoteImage(bridge.notePath, src),
+    }),
+    // Images pasted or dropped into the editor are stored for the note and
+    // inserted as Markdown image lines.
+    EditorView.domEventHandlers({
+      paste: (event, editor) => {
+        const files = imageFilesFromDataTransfer(event.clipboardData);
+        if (!files.length) return false;
+        event.preventDefault();
+        void saveImagesIntoView(
+          editor,
+          editor.state.selection.main.head,
+          files,
+          bridge.notePath,
+          bridge.nativeStore,
+          bridge.notice,
+        );
+        return true;
+      },
+      drop: (event, editor) => {
+        const files = imageFilesFromDataTransfer(event.dataTransfer);
+        if (!files.length) return false;
+        event.preventDefault();
+        const pos =
+          editor.posAtCoords({ x: event.clientX, y: event.clientY }) ??
+          editor.state.selection.main.head;
+        void saveImagesIntoView(
+          editor,
+          pos,
+          files,
+          bridge.notePath,
+          bridge.nativeStore,
+          bridge.notice,
+        );
+        return true;
+      },
+    }),
+  ];
+}
+
+// Inserts image lines below the line holding `pos` (or into it when blank).
+function insertImageMarkdown(
+  view: EditorView,
+  pos: number,
+  images: { src: string; alt: string }[],
+) {
+  if (!images.length) return;
+  const text = images
+    .map((image) => imageLineText({ src: image.src, alt: image.alt }))
+    .join("\n");
+  const line = view.state.doc.lineAt(Math.min(pos, view.state.doc.length));
+  const blank = !line.text.trim();
+  const change = blank
+    ? { from: line.from, to: line.to, insert: text }
+    : { from: line.to, to: line.to, insert: `\n${text}` };
+  view.dispatch({
+    changes: change,
+    selection: { anchor: change.from + change.insert.length },
+  });
+  view.focus();
+}
+
+// Stores each file for the note and inserts the resulting Markdown. Files a
+// save rejects are reported and skipped, never blocking the rest.
+async function saveImagesIntoView(
+  view: EditorView,
+  pos: number,
+  files: File[],
+  notePath: string,
+  nativeLibraryOpen: boolean,
+  onError: (message: string) => void,
+) {
+  const images: { src: string; alt: string }[] = [];
+  for (const file of files) {
+    try {
+      const src = await saveNoteImage(notePath, file, nativeLibraryOpen);
+      images.push({ src, alt: imageAltFromName(file.name || "") });
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error));
+    }
+  }
+  insertImageMarkdown(view, pos, images);
+}
+
 export default function Home() {
   const [notes, setNotes] = useState<Note[]>(SAMPLE_NOTES);
   const [folders, setFolders] = useState<string[]>(SAMPLE_FOLDERS);
@@ -1502,6 +1698,7 @@ export default function Home() {
   const nativeWindowClosing = useRef(false);
   const activeIdRef = useRef(activeId);
   const lastSingleViewRef = useRef<Exclude<ViewMode, "split">>("preview");
+  const imageFileInput = useRef<HTMLInputElement>(null);
 
   const activeIndex = Math.max(
     0,
@@ -1523,12 +1720,32 @@ export default function Home() {
   const handlePreviewScroll = useCallback(() => {
     splitScrollEventRef.current?.("preview");
   }, []);
+  const showNotice = useCallback((message: string) => {
+    setNotice(message);
+    window.setTimeout(() => {
+      setNotice((current) => (current === message ? undefined : current));
+    }, 3600);
+  }, []);
+  const imageNotePath = active.id === EMPTY_NOTE.id ? "" : active.path;
+  const imageNativeStore = desktopMode && nativeLibraryOpen;
   const editorExtensions = useMemo(
     () => [
       ...createEditorExtensions(theme),
       createSnippetExtension(textSnippets, appShortcuts),
+      ...createEditorImageExtensions({
+        notePath: imageNotePath,
+        nativeStore: imageNativeStore,
+        notice: showNotice,
+      }),
     ],
-    [appShortcuts, textSnippets, theme],
+    [
+      appShortcuts,
+      imageNativeStore,
+      imageNotePath,
+      showNotice,
+      textSnippets,
+      theme,
+    ],
   );
 
   const grouped = useMemo(() => {
@@ -1975,12 +2192,46 @@ export default function Home() {
     };
   }, [applyNativeLibrary, desktopMode]);
 
-  const showNotice = useCallback((message: string) => {
-    setNotice(message);
-    window.setTimeout(() => {
-      setNotice((current) => (current === message ? undefined : current));
-    }, 3600);
-  }, []);
+  // The Insert-image button: native runtimes copy files through the system
+  // picker; elsewhere a hidden file input embeds the selection as data URIs.
+  const insertImagesFromPicker = useCallback(async () => {
+    const editor = editorViewRef.current;
+    if (!editor) return;
+    if (desktopMode && nativeLibraryOpen && active.id !== EMPTY_NOTE.id) {
+      try {
+        const names = await nativeLibrary.importAssets(active.path);
+        insertImageMarkdown(
+          editor,
+          editor.state.selection.main.head,
+          names.map((name) => ({ src: name, alt: imageAltFromName(name) })),
+        );
+      } catch (error) {
+        showNotice(error instanceof Error ? error.message : String(error));
+      }
+    } else {
+      imageFileInput.current?.click();
+    }
+  }, [active.id, active.path, desktopMode, nativeLibraryOpen, showNotice]);
+
+  const handleImageFilePick = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const editor = editorViewRef.current;
+      const files = Array.from(event.target.files ?? []).filter((file) =>
+        file.type.startsWith("image/"),
+      );
+      event.target.value = "";
+      if (!editor || !files.length) return;
+      void saveImagesIntoView(
+        editor,
+        editor.state.selection.main.head,
+        files,
+        imageNotePath,
+        imageNativeStore,
+        showNotice,
+      );
+    },
+    [imageNativeStore, imageNotePath, showNotice],
+  );
 
   const updateTextSnippet = useCallback(
     (id: string, patch: Partial<Omit<TextSnippet, "id">>) => {
@@ -2303,6 +2554,16 @@ export default function Home() {
       nativeLibraryOpen,
       scheduleNativeSave,
     ],
+  );
+
+  // Read view's run toggle edits the fence itself, so the choice lives in the
+  // Markdown and survives edits, moves, and other editors.
+  const setFenceRunnable = useCallback(
+    (sourceLine: number, runnable: boolean) => {
+      const next = setPythonFenceRunnable(active.content, sourceLine, runnable);
+      if (next !== active.content) updateContent(next);
+    },
+    [active.content, updateContent],
   );
 
   useEffect(() => {
@@ -2874,26 +3135,44 @@ export default function Home() {
   const markdownComponents = useMemo(
     () => ({
       ...MARKDOWN_HEADING_COMPONENTS,
-      // Python fences become runnable blocks. The pre's props — notably the
-      // data-source-line scroll-sync anchor — move onto the block wrapper.
+      // Python fences become runnable blocks only when the info string says
+      // ```python run. The pre's props — notably the data-source-line
+      // scroll-sync anchor — move onto the block wrapper.
       pre: ({
         node,
         children,
         ...props
-      }: React.ComponentPropsWithoutRef<"pre"> & { node?: unknown }) => {
-        const pythonCode = pythonCodeFromPre(node);
-        if (pythonCode !== undefined) {
+      }: React.ComponentPropsWithoutRef<"pre"> & {
+        node?: unknown;
+        "data-source-line"?: number | string;
+      }) => {
+        const fence = pythonFenceFromPre(node);
+        if (!fence) return <pre {...props}>{children}</pre>;
+
+        // The same anchor the scroll sync uses locates the opening fence,
+        // so the toggle can rewrite that one line of Markdown.
+        const sourceLine = Number(props["data-source-line"]);
+        const toggle = Number.isFinite(sourceLine)
+          ? () => setFenceRunnable(sourceLine, !fence.runnable)
+          : undefined;
+
+        if (!fence.runnable) {
           return (
-            <PythonCodeBlock
-              code={pythonCode}
-              sessionId={activeId}
-              {...(props as React.HTMLAttributes<HTMLDivElement>)}
-            >
+            <StaticPythonBlock onEnableRun={toggle} {...props}>
               {children}
-            </PythonCodeBlock>
+            </StaticPythonBlock>
           );
         }
-        return <pre {...props}>{children}</pre>;
+        return (
+          <PythonCodeBlock
+            code={fence.code}
+            sessionId={activeId}
+            onDisableRun={toggle}
+            {...(props as React.HTMLAttributes<HTMLDivElement>)}
+          >
+            {children}
+          </PythonCodeBlock>
+        );
       },
       code: ({
         className,
@@ -2915,8 +3194,16 @@ export default function Home() {
           {children}
         </a>
       ),
+      img: ({ src, alt, title }: React.ComponentPropsWithoutRef<"img">) => (
+        <MarkdownImage
+          notePath={active.path}
+          src={typeof src === "string" ? src : undefined}
+          alt={alt}
+          title={title}
+        />
+      ),
     }),
-    [activeId, handleMarkdownLink],
+    [activeId, active.path, handleMarkdownLink, setFenceRunnable],
   );
 
   const markdown = (
@@ -3651,7 +3938,27 @@ export default function Home() {
                     <FileCode2 size={14} /> {active.path}
                     {dirty.has(active.id) && <i />}
                   </span>
-                  <span className="editor-language">Markdown</span>
+                  <span className="editor-chrome-end">
+                    <button
+                      type="button"
+                      className="editor-image-button"
+                      onClick={() => void insertImagesFromPicker()}
+                      title="Insert image — or paste and drop images right into the editor"
+                      aria-label="Insert image"
+                    >
+                      <ImagePlus size={13} aria-hidden="true" />
+                      <span>Image</span>
+                    </button>
+                    <input
+                      ref={imageFileInput}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      hidden
+                      onChange={handleImageFilePick}
+                    />
+                    <span className="editor-language">Markdown</span>
+                  </span>
                 </div>
                 <div className="editor-workspace">
                   <CodeMirror

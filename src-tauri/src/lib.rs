@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
@@ -251,6 +252,192 @@ async fn move_note(
     }
 
     scan_library_root(&root)
+}
+
+/// Saves image bytes (base64) beside the note and returns the file name that
+/// was actually used, deduplicated against existing files.
+#[tauri::command]
+async fn write_asset(
+    note_path: String,
+    file_name: String,
+    contents_base64: String,
+    state: State<'_, LibraryState>,
+) -> Result<String, String> {
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(contents_base64.as_bytes())
+        .map_err(|_| "The image data could not be decoded.".to_string())?;
+    store_asset(&root, &note_path, &file_name, &bytes)
+}
+
+/// Opens the native image picker and copies each selection into the note's
+/// folder. Returns the stored file names; an empty list means "cancelled".
+#[tauri::command]
+async fn import_assets(
+    app: AppHandle,
+    note_path: String,
+    state: State<'_, LibraryState>,
+) -> Result<Vec<String>, String> {
+    // Like choose_library, the blocking picker must run on an async command.
+    let Some(selection) = app
+        .dialog()
+        .file()
+        .set_title("Insert images")
+        .add_filter("Images", &IMAGE_EXTENSIONS)
+        .blocking_pick_files()
+    else {
+        return Ok(Vec::new());
+    };
+
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    let mut names = Vec::new();
+    for picked in selection {
+        let path = picked
+            .into_path()
+            .map_err(|_| "A selected image is not available as a local file.".to_string())?;
+        let bytes =
+            fs::read(&path).map_err(|error| io_error("read the selected image", &path, error))?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("image.png");
+        names.push(store_asset(&root, &note_path, name, &bytes)?);
+    }
+    Ok(names)
+}
+
+/// Reads an image a note references and returns it as base64. The source is
+/// resolved relative to the note's folder, `..` allowed but always confined to
+/// the library root by the canonical-path check in resolve_existing_file.
+#[tauri::command]
+async fn read_asset(
+    note_path: String,
+    src: String,
+    state: State<'_, LibraryState>,
+) -> Result<String, String> {
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    let note_directory = note_directory(&note_path)?;
+    let relative = resolve_asset_src(&note_directory, &src)?;
+    if !relative
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(is_image_extension)
+    {
+        return Err("Only image files can be loaded into a page.".to_string());
+    }
+    let path = resolve_existing_file(&root, &relative)?;
+    let bytes = fs::read(&path).map_err(|error| io_error("read an image", &path, error))?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+const IMAGE_EXTENSIONS: [&str; 8] = ["avif", "bmp", "gif", "jpeg", "jpg", "png", "svg", "webp"];
+
+fn is_image_extension(extension: &str) -> bool {
+    IMAGE_EXTENSIONS
+        .iter()
+        .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+}
+
+fn note_directory(note_path: &str) -> Result<PathBuf, String> {
+    let relative = validate_relative_path(note_path, PathKind::MarkdownFile)?;
+    Ok(relative
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .to_path_buf())
+}
+
+/// Reduces an image name to a single safe path segment: ASCII alphanumerics,
+/// hyphens, and underscores over a known image extension. Anything else
+/// becomes a hyphen, which also removes any need for URL escaping in the
+/// Markdown that references the file.
+fn sanitize_asset_name(value: &str) -> Result<(String, String), String> {
+    let name = value.rsplit(['/', '\\']).next().unwrap_or("");
+    let (stem, extension) = name
+        .rsplit_once('.')
+        .ok_or_else(|| "Image files need an extension.".to_string())?;
+    let extension = extension.to_ascii_lowercase();
+    if !is_image_extension(&extension) {
+        return Err(format!("Folio cannot embed .{extension} files."));
+    }
+
+    let mut cleaned = String::new();
+    for character in stem.chars() {
+        if character.is_ascii_alphanumeric() || character == '_' {
+            cleaned.push(character);
+        } else if !cleaned.is_empty() && !cleaned.ends_with('-') {
+            cleaned.push('-');
+        }
+    }
+    let cleaned = cleaned.trim_end_matches('-');
+    let stem = if cleaned.is_empty() { "image" } else { cleaned };
+    Ok((stem.to_string(), extension))
+}
+
+fn store_asset(root: &Path, note_path: &str, name: &str, bytes: &[u8]) -> Result<String, String> {
+    let note_directory = note_directory(note_path)?;
+    let directory = resolve_existing_directory(root, &note_directory)?;
+    let (stem, extension) = sanitize_asset_name(name)?;
+
+    for attempt in 1..1000u32 {
+        let candidate = if attempt == 1 {
+            format!("{stem}.{extension}")
+        } else {
+            format!("{stem}-{attempt}.{extension}")
+        };
+        let destination = directory.join(&candidate);
+        // atomic_write without replace fails on existing files, which makes
+        // the dedup loop race-free.
+        match atomic_write(&destination, bytes, None, false) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(io_error("save an image", &destination, error)),
+        }
+    }
+    Err("Could not find a free image file name.".to_string())
+}
+
+/// Joins a Markdown image src onto the note's folder lexically. `.` and `..`
+/// are resolved here so relative references between folders work; escaping the
+/// library root is rejected, and the caller re-checks the canonical path.
+fn resolve_asset_src(note_directory: &Path, src: &str) -> Result<PathBuf, String> {
+    if src.is_empty()
+        || src.contains('\0')
+        || src.chars().any(char::is_control)
+        || src.contains('\\')
+        || src.starts_with('/')
+        || src.ends_with('/')
+    {
+        return Err("The image path must be relative to its page.".to_string());
+    }
+
+    let mut segments = note_directory
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(segment) => segment.to_str().map(String::from),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    for part in src.split('/') {
+        match part {
+            "" => return Err("The image path contains an empty segment.".to_string()),
+            "." => {}
+            ".." => {
+                if segments.pop().is_none() {
+                    return Err("The image is outside the selected library.".to_string());
+                }
+            }
+            segment => segments.push(segment.to_string()),
+        }
+    }
+
+    if segments.is_empty() {
+        return Err("The image path must name a file.".to_string());
+    }
+    Ok(segments.iter().collect())
 }
 
 fn require_library_root(state: &State<'_, LibraryState>) -> Result<PathBuf, String> {
@@ -703,7 +890,10 @@ pub fn run() {
             create_folder,
             create_note,
             write_note,
-            move_note
+            move_note,
+            write_asset,
+            import_assets,
+            read_asset
         ])
         .run(tauri::generate_context!())
         .expect("error while running Folio");
@@ -712,6 +902,45 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitizes_asset_names_to_safe_segments() {
+        assert_eq!(
+            sanitize_asset_name("My Cat (1).PNG").unwrap(),
+            ("My-Cat-1".to_string(), "png".to_string())
+        );
+        assert_eq!(
+            sanitize_asset_name("../../evil/pasted_image.png").unwrap(),
+            ("pasted_image".to_string(), "png".to_string())
+        );
+        assert_eq!(
+            sanitize_asset_name("()().webp").unwrap(),
+            ("image".to_string(), "webp".to_string())
+        );
+        assert!(sanitize_asset_name("script.js").is_err());
+        assert!(sanitize_asset_name("noextension").is_err());
+    }
+
+    #[test]
+    fn resolves_asset_src_relative_to_the_note() {
+        let note_dir = Path::new("02 Research");
+        assert_eq!(
+            resolve_asset_src(note_dir, "cat.png").unwrap(),
+            PathBuf::from("02 Research/cat.png")
+        );
+        assert_eq!(
+            resolve_asset_src(note_dir, "../attachments/cat.png").unwrap(),
+            PathBuf::from("attachments/cat.png")
+        );
+        assert_eq!(
+            resolve_asset_src(Path::new(""), "img/cat.png").unwrap(),
+            PathBuf::from("img/cat.png")
+        );
+        assert!(resolve_asset_src(note_dir, "../../cat.png").is_err());
+        assert!(resolve_asset_src(note_dir, "/etc/passwd").is_err());
+        assert!(resolve_asset_src(note_dir, "a//b.png").is_err());
+        assert!(resolve_asset_src(note_dir, "..").is_err());
+    }
 
     #[test]
     fn accepts_only_strict_relative_markdown_paths() {

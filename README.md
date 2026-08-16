@@ -65,6 +65,31 @@ The outline panel on the right lists the current page's headings, and below that
 **backlinks** — every other page that links to this one. It's the main way to find
 your way back into things you wrote earlier.
 
+## Images
+
+In Write view you can get images into a page without touching Markdown syntax:
+
+- **Paste** an image from the clipboard
+- **Drag and drop** image files from Finder
+- Click the **image button** in the editor's top bar to pick files
+
+Folio copies the file into the same folder as the page and inserts the Markdown
+for you. The editor then shows the image itself instead of the code:
+
+- **Drag the corner handle** to resize (double-click it to reset to natural size)
+- Hover the image for **left / center / right** alignment buttons
+- Click the **caption button** to type a caption under the image; press Enter to
+  keep it, or clear it to remove it
+- Click the **`</>` button** to reveal the underlying Markdown line and edit it
+  by hand; click again to hide it
+- **Click an image** to select it — you get a light outline showing the space it
+  occupies, and Backspace removes the image and its Markdown together
+
+Everything stays plain Markdown under the hood. The caption, size, and alignment
+live in the image title — `![alt](plot.png "My caption | width=420 center")` — so
+the file still renders as a normal image in any other Markdown tool. The `|`
+keeps a caption safe even when it contains a word like "center".
+
 ## Finding things
 
 ⌘K opens search. It looks at page titles, section names, and the full text of every
@@ -81,10 +106,14 @@ The library panel handles files:
 
 ## Running Python
 
-Any ` ```python ` code block gets a **Run** button in Read view. Code runs locally
-in your browser engine via [Pyodide](https://pyodide.org) (Python compiled to
-WebAssembly) — nothing is sent anywhere. The first run downloads the runtime, so
-it takes a moment; after that it's quick.
+Python blocks are ordinary code blocks by default. Open the fence with
+` ```python run ` instead of ` ```python ` and the block gets a **Run** button in
+Read view — or just hover a plain Python block and click **Enable running**, and
+Folio adds the `run` flag to the fence for you (the ⚡ button on a runnable block
+removes it again). Code runs locally in your browser engine via
+[Pyodide](https://pyodide.org) (Python compiled to WebAssembly) — nothing is sent
+anywhere. The first run downloads the runtime, so it takes a moment; after that
+it's quick.
 
 Printed output appears under the block, and the last expression's value shows up
 like a notebook cell would.
