@@ -18,6 +18,11 @@ const PREFERENCES_FILE: &str = "library.json";
 /// out of the way of the Markdown it describes. See `app/library-order.js`.
 const LIBRARY_DIRECTORY: &str = ".folio";
 const ORDER_FILE: &str = "order.json";
+const MAIN_WINDOW: &str = "main";
+/// How long Folio waits for the frontend to report a painted first frame
+/// before showing its window anyway. Long enough for a large library to be
+/// read from disk, short enough that a broken frontend is not a hang.
+const WINDOW_REVEAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize)]
@@ -41,6 +46,19 @@ pub struct LibrarySnapshot {
 #[serde(rename_all = "camelCase")]
 struct Preferences {
     library_root: Option<PathBuf>,
+    /// The page open when Folio last closed, relative to `library_root`, so a
+    /// library reopens where its reader left off. Absent until a page has been
+    /// opened, and ignored when it no longer names a page in the library.
+    #[serde(default)]
+    open_note: Option<String>,
+}
+
+/// A library reopened from Folio's settings, with the page to open in it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoredLibrary {
+    snapshot: LibrarySnapshot,
+    open_note: Option<String>,
 }
 
 #[derive(Default)]
@@ -76,9 +94,10 @@ impl LibraryState {
 async fn restore_library(
     app: AppHandle,
     state: State<'_, LibraryState>,
-) -> Result<Option<LibrarySnapshot>, String> {
+) -> Result<Option<RestoredLibrary>, String> {
     let _operation = state.lock_operation()?;
-    let Some(stored_root) = load_preferences(&app)?.library_root else {
+    let preferences = load_preferences(&app)?;
+    let Some(stored_root) = preferences.library_root else {
         state.set(None)?;
         return Ok(None);
     };
@@ -86,7 +105,56 @@ async fn restore_library(
     let root = canonical_library_root(&stored_root)?;
     let snapshot = scan_library_root(&root)?;
     state.set(Some(root))?;
-    Ok(Some(snapshot))
+
+    // A page renamed, moved, or deleted outside Folio is no longer somewhere to
+    // reopen at, so the library simply comes back at its first page.
+    let open_note = preferences
+        .open_note
+        .filter(|path| snapshot.notes.iter().any(|note| note.path == *path));
+    Ok(Some(RestoredLibrary {
+        snapshot,
+        open_note,
+    }))
+}
+
+/// Puts Folio's window on screen. The window is created hidden so its first
+/// frame is the reader's own theme and library rather than a white flash of the
+/// starting state; the frontend calls this once that frame has been painted.
+#[tauri::command]
+async fn show_window(app: AppHandle) -> Result<(), String> {
+    show_main_window(&app);
+    Ok(())
+}
+
+fn show_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+        return;
+    };
+    // A window that cannot be shown is not something a reader can act on, and
+    // the alternative — reporting it into a window they cannot see — is worse.
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+/// Records the page to reopen this library at. `path` is a page's library
+/// path, or null to forget one. A path that no longer exists is kept rather
+/// than rejected: the page may be on its way back from a rename, and
+/// `restore_library` checks it against the library anyway.
+#[tauri::command]
+async fn remember_open_note(
+    app: AppHandle,
+    path: Option<String>,
+    state: State<'_, LibraryState>,
+) -> Result<(), String> {
+    let _operation = state.lock_operation()?;
+    let path = match path {
+        Some(path) => Some(relative_path_to_string(&validate_relative_path(
+            &path,
+            PathKind::MarkdownFile,
+        )?)?),
+        None => None,
+    };
+    save_open_note(&app, path)
 }
 
 #[tauri::command]
@@ -988,11 +1056,32 @@ fn load_preferences(app: &AppHandle) -> Result<Preferences, String> {
         .map_err(|error| format!("Folio's saved library setting is invalid: {error}"))
 }
 
+/// Remembers the library folder. The page to reopen at belongs to whichever
+/// library was open, so pointing Folio at another folder forgets it; the page
+/// opened there is recorded a moment later, once it is on screen.
 fn save_preferences(app: &AppHandle, root: Option<&Path>) -> Result<(), String> {
+    write_preferences(
+        app,
+        Preferences {
+            library_root: root.map(Path::to_path_buf),
+            open_note: None,
+        },
+    )
+}
+
+fn save_open_note(app: &AppHandle, open_note: Option<String>) -> Result<(), String> {
+    let preferences = load_preferences(app)?;
+    write_preferences(
+        app,
+        Preferences {
+            open_note,
+            ..preferences
+        },
+    )
+}
+
+fn write_preferences(app: &AppHandle, preferences: Preferences) -> Result<(), String> {
     let path = preferences_path(app)?;
-    let preferences = Preferences {
-        library_root: root.map(Path::to_path_buf),
-    };
     let contents = serde_json::to_vec_pretty(&preferences)
         .map_err(|error| format!("Folio could not encode its settings: {error}"))?;
     atomic_write(&path, &contents, None, true)
@@ -1420,6 +1509,18 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(LibraryState::default())
+        .setup(|app| {
+            // Folio's window waits for the frontend to say it has something
+            // worth looking at. This is the backstop: a frontend that fails to
+            // load must still end up with a window, rather than an app that
+            // runs with nothing on screen and no way to reach it.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(WINDOW_REVEAL_TIMEOUT);
+                show_main_window(&handle);
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             restore_library,
             choose_library,
@@ -1427,6 +1528,8 @@ pub fn run() {
             open_linked_note,
             create_folder,
             create_note,
+            remember_open_note,
+            show_window,
             read_library_order,
             write_library_order,
             write_note,
@@ -1897,6 +2000,23 @@ mod tests {
         assert!(!within_entry_budget(&root.join("missing"), 100));
 
         fs::remove_dir_all(&root).expect("remove test root");
+    }
+
+    #[test]
+    fn settings_saved_before_folio_remembered_a_page_still_load() {
+        let stored: Preferences = serde_json::from_str(r#"{"libraryRoot":"/tmp/pages"}"#)
+            .expect("read settings written by an earlier version");
+        assert_eq!(stored.library_root, Some(PathBuf::from("/tmp/pages")));
+        assert_eq!(stored.open_note, None);
+
+        let written = serde_json::to_string(&Preferences {
+            library_root: Some(PathBuf::from("/tmp/pages")),
+            open_note: Some("guides/setup.md".to_string()),
+        })
+        .expect("encode settings");
+        assert!(written.contains(r#""openNote":"guides/setup.md""#), "{written}");
+        let read_back: Preferences = serde_json::from_str(&written).expect("read settings");
+        assert_eq!(read_back.open_note.as_deref(), Some("guides/setup.md"));
     }
 
     #[test]

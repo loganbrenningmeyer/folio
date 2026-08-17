@@ -53,6 +53,14 @@ folder picker again unless you choose **Change folder** or the saved folder is n
 longer available. Edits, newly created files, new folders, and drag-and-drop moves
 are written to disk automatically.
 
+Folio's window stays hidden for the moment it takes to read your appearance
+settings and your library, so the first thing on screen is your own theme and
+your own pages rather than the starting state repainting into them.
+
+Folio also remembers the page you were reading and reopens it on the next launch.
+If that page has since been renamed, moved, or deleted outside Folio, the library
+opens at its first page instead. Choosing a different folder starts fresh.
+
 Dragging pages into the order you want to read them writes only `.folio/order.json`
 inside the library — Folio never renames a file to record its position. Deleting
 that file returns the library to alphabetical order.

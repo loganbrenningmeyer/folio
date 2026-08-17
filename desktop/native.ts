@@ -15,6 +15,12 @@ export type LibrarySnapshot = {
   folders: RelativePath[];
 };
 
+export type RestoredLibrary = {
+  snapshot: LibrarySnapshot;
+  /** The page open when Folio last closed, when it is still in the library. */
+  openNote: RelativePath | null;
+};
+
 export type LinkedNote = {
   snapshot: LibrarySnapshot;
   /** The linked page's path inside `snapshot`. */
@@ -52,8 +58,25 @@ async function invokeNative<T>(
   return invocation;
 }
 
-export function restoreLibrary(): Promise<LibrarySnapshot | null> {
+export function restoreLibrary(): Promise<RestoredLibrary | null> {
   return invokeNative("restore_library");
+}
+
+/**
+ * Puts Folio's window on screen. It starts hidden so the first thing a reader
+ * sees is their own theme and library, rather than the starting state repainting
+ * into it. Call once that frame is actually on the page.
+ */
+export function showWindow(): Promise<void> {
+  return invokeNative("show_window");
+}
+
+/**
+ * Records the page to reopen the library at, so Folio comes back where it was
+ * left rather than at the library's first page. Null forgets one.
+ */
+export function rememberOpenNote(path: RelativePath | null): Promise<void> {
+  return invokeNative("remember_open_note", { path });
 }
 
 export function chooseLibrary(): Promise<LibrarySnapshot | null> {
@@ -171,6 +194,8 @@ export function renameAsset(
 export const nativeLibrary = Object.freeze({
   isAvailable: isNativeRuntime,
   restore: restoreLibrary,
+  rememberOpenNote,
+  showWindow,
   choose: chooseLibrary,
   scan: scanLibrary,
   openLinked: openLinkedNote,

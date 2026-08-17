@@ -606,6 +606,49 @@ function isPaletteId(value: string | null): value is PaletteId {
   return COLOR_PALETTES.some((palette) => palette.id === value);
 }
 
+function storedPreference(key: string) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    // Unavailable storage simply means nothing was remembered.
+    return null;
+  }
+}
+
+/**
+ * Dresses the document in the reader's stored appearance. The desktop renderer
+ * calls this before React mounts, so Folio's first frame is already in their
+ * theme rather than painting the starting light one and repainting into it.
+ * The effects in Home read the same keys and settle on the same values.
+ */
+export function applyStoredAppearance() {
+  const root = document.documentElement;
+  const theme = storedPreference("folio-theme");
+  root.dataset.theme =
+    theme === "light" || theme === "dark"
+      ? theme
+      : window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+
+  const palette = storedPreference("folio-color-palette");
+  if (isPaletteId(palette)) root.dataset.palette = palette;
+
+  const readerFont = storedPreference("folio-reader-font");
+  if (isFontId(readerFont)) {
+    root.style.setProperty("--font-reading", fontStack(readerFont));
+  }
+  const editorFont = storedPreference("folio-editor-font");
+  if (isFontId(editorFont)) {
+    root.style.setProperty("--font-code", fontStack(editorFont));
+  }
+
+  const width = readerWidthIndex(storedPreference("folio-reader-width"));
+  if (width !== undefined) {
+    root.style.setProperty("--reader-width", `${READER_WIDTHS[width].width}px`);
+  }
+}
+
 const markdownSanitizeSchema = {
   ...defaultSchema,
   attributes: {
@@ -2108,7 +2151,12 @@ async function saveImagesIntoView(
 }
 
 export default function Home() {
-  const [storedNotes, setNotes] = useState<Note[]>(SAMPLE_NOTES);
+  // The desktop app opens a real library a moment later, so it starts empty
+  // rather than showing someone else's sample pages on the way there. In a
+  // browser the sample library is the whole of what there is to read.
+  const [storedNotes, setNotes] = useState<Note[]>(() =>
+    isNativeRuntime() ? [] : SAMPLE_NOTES,
+  );
   const [folders, setFolders] = useState<string[]>(SAMPLE_FOLDERS);
   // A library's own page order, read from `.folio/order.json`. Pages it does
   // not name keep their natural place, so this only ever rearranges what the
@@ -2119,8 +2167,12 @@ export default function Home() {
     [noteOrder, storedNotes],
   );
   const [rootDirectory, setRootDirectory] = useState<DirectoryHandleLike>();
-  const [activeId, setActiveId] = useState(SAMPLE_NOTES[0].id);
-  const [libraryName, setLibraryName] = useState("The Folio Field Guide");
+  const [activeId, setActiveId] = useState(() =>
+    isNativeRuntime() ? "" : SAMPLE_NOTES[0].id,
+  );
+  const [libraryName, setLibraryName] = useState(() =>
+    isNativeRuntime() ? "" : "The Folio Field Guide",
+  );
   const [view, setView] = useState<ViewMode>("preview");
   const [theme, setTheme] = useState<Theme>("light");
   const [palette, setPalette] = useState<PaletteId>("sage");
@@ -2144,6 +2196,9 @@ export default function Home() {
   const [outlineCollapsed, setOutlineCollapsed] = useState(false);
   const [splitScrollLocked, setSplitScrollLocked] = useState(true);
   const [layoutPreferencesLoaded, setLayoutPreferencesLoaded] = useState(false);
+  // Whether the first read of the stored library has finished, however it went.
+  // Folio's window waits for it, so it opens on the reader's own pages.
+  const [librarySettled, setLibrarySettled] = useState(false);
   const [desktopMode] = useState(() => isNativeRuntime());
   const [nativeLibraryOpen, setNativeLibraryOpen] = useState(false);
   const [fontPanelOpen, setFontPanelOpen] = useState(false);
@@ -2219,6 +2274,12 @@ export default function Home() {
   const nativeSavesInFlight = useRef<Map<string, Promise<void>>>(new Map());
   const nativeSavedTimer = useRef<number | undefined>(undefined);
   const nativeWindowClosing = useRef(false);
+  const windowShown = useRef(false);
+  // The page to reopen this library at, held back from the settings file until
+  // reading settles — see flushOpenNote.
+  const openNotePending = useRef<string | undefined>(undefined);
+  const openNoteWritten = useRef<string | undefined>(undefined);
+  const openNoteTimer = useRef<number | undefined>(undefined);
   const activeIdRef = useRef(activeId);
   const lastSingleViewRef = useRef<Exclude<ViewMode, "split">>("preview");
   const imageFileInput = useRef<HTMLInputElement>(null);
@@ -2452,8 +2513,10 @@ export default function Home() {
           : current,
       );
       // The library may have been reopened somewhere else entirely — following
-      // a link can reroot it — so its order comes from the folder now open.
+      // a link can reroot it — so its order comes from the folder now open, and
+      // the page to reopen at belongs to whichever library is in front of us.
       void loadNoteOrder();
+      openNoteWritten.current = undefined;
     },
     [loadNoteOrder],
   );
@@ -2830,6 +2893,14 @@ export default function Home() {
     splitScrollLocked,
   ]);
 
+  /** Folio's built-in guide, which stands in for a library there isn't one. */
+  const showSampleLibrary = useCallback(() => {
+    setNotes(SAMPLE_NOTES);
+    setFolders(SAMPLE_FOLDERS);
+    setActiveId(SAMPLE_NOTES[0].id);
+    setLibraryName("The Folio Field Guide");
+  }, []);
+
   useEffect(() => {
     if (!desktopMode) return;
     let cancelled = false;
@@ -2838,8 +2909,15 @@ export default function Home() {
       try {
         const restored = await nativeLibrary.restore();
         if (!cancelled && restored) {
-          applyNativeLibrary(restored);
+          // Reopen at the page this library was left on, when it is still
+          // there; applyNativeLibrary falls back to the first page otherwise.
+          applyNativeLibrary(restored.snapshot, restored.openNote ?? undefined);
         } else if (!cancelled) {
+          // Nothing to reopen: this is a first launch, and Folio's own guide is
+          // what there is to read until a folder is chosen. It is put in place
+          // here rather than held as the starting state, so a reader who does
+          // have a library never sees it on the way to their own pages.
+          showSampleLibrary();
           const message =
             "Choose a Markdown folder when you're ready to open your library.";
           setNotice(message);
@@ -2852,7 +2930,10 @@ export default function Home() {
           );
         }
       } catch {
-        if (cancelled) return;
+        if (cancelled) {
+          return;
+        }
+        showSampleLibrary();
         const message =
           "Folio could not reopen that folder. Choose it again to reconnect.";
         setNotice(message);
@@ -2861,13 +2942,45 @@ export default function Home() {
             setNotice((current) => (current === message ? undefined : current)),
           4800,
         );
+      } finally {
+        // Whatever came of it — a library, no library, or a folder Folio could
+        // not read — this is as settled as the first screen gets.
+        if (!cancelled) setLibrarySettled(true);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [applyNativeLibrary, desktopMode]);
+  }, [applyNativeLibrary, desktopMode, showSampleLibrary]);
+
+  /**
+   * Folio's window opens hidden, so the first thing on screen is the reader's
+   * own theme and their own library — not the starting state repainting into
+   * them. It is shown once the stored appearance and layout have been applied
+   * and the library has been read, and only after the browser has painted that
+   * frame: one frame to schedule the paint, the next to run after it.
+   */
+  useEffect(() => {
+    if (!desktopMode || windowShown.current) return undefined;
+    if (!appearancePreferencesLoaded || !layoutPreferencesLoaded) {
+      return undefined;
+    }
+    if (!librarySettled) return undefined;
+
+    windowShown.current = true;
+    // Not on an animation frame: a hidden window paints nothing, so those
+    // callbacks never run and the window would only ever appear by way of the
+    // backstop in the Rust side. This effect already runs after React has put
+    // the library and the theme into the document.
+    void nativeLibrary.showWindow().catch(() => undefined);
+    return undefined;
+  }, [
+    appearancePreferencesLoaded,
+    desktopMode,
+    layoutPreferencesLoaded,
+    librarySettled,
+  ]);
 
   // The Insert-image button: native runtimes copy files through the system
   // picker; elsewhere a hidden file input embeds the selection as data URIs.
@@ -3314,6 +3427,41 @@ export default function Home() {
     }
   }, [flushNativeSave]);
 
+  /**
+   * Writes the page to reopen this library at. Page-to-page reading would
+   * otherwise write the settings file on every keypress, so the record is held
+   * back briefly — and flushed outright when the window is closing, which is
+   * the moment it exists for.
+   */
+  const flushOpenNote = useCallback(async () => {
+    if (openNoteTimer.current !== undefined) {
+      window.clearTimeout(openNoteTimer.current);
+      openNoteTimer.current = undefined;
+    }
+    const path = openNotePending.current;
+    if (path === openNoteWritten.current) return;
+    openNoteWritten.current = path;
+    try {
+      await nativeLibrary.rememberOpenNote(path ?? null);
+    } catch {
+      // Coming back to the library's first page is a small enough loss that it
+      // is not worth interrupting a reader over.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!desktopMode || !nativeLibraryOpen) return undefined;
+    openNotePending.current =
+      active.id === EMPTY_NOTE.id ? undefined : active.path;
+    openNoteTimer.current = window.setTimeout(() => void flushOpenNote(), 400);
+    return () => {
+      if (openNoteTimer.current !== undefined) {
+        window.clearTimeout(openNoteTimer.current);
+        openNoteTimer.current = undefined;
+      }
+    };
+  }, [active.id, active.path, desktopMode, flushOpenNote, nativeLibraryOpen]);
+
   const selectNote = useCallback(
     (id: string) => {
       if (desktopMode && active.id !== id) {
@@ -3387,7 +3535,11 @@ export default function Home() {
         let closeSaveTimer: number | undefined;
         try {
           await Promise.race([
-            flushAllNativeSaves().catch(() => undefined),
+            Promise.all([
+              flushAllNativeSaves().catch(() => undefined),
+              // The page on screen right now is the one to come back to.
+              flushOpenNote(),
+            ]),
             new Promise<void>((resolve) => {
               closeSaveTimer = window.setTimeout(resolve, 1200);
             }),
@@ -3406,7 +3558,7 @@ export default function Home() {
       window.removeEventListener("blur", flushOnBlur);
       unlistenClose?.();
     };
-  }, [desktopMode, flushAllNativeSaves]);
+  }, [desktopMode, flushAllNativeSaves, flushOpenNote]);
 
   const beginCreate = useCallback(
     (kind: CreateKind) => {
