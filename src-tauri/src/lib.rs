@@ -14,6 +14,10 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 const PREFERENCES_FILE: &str = "library.json";
+/// Folio's own bookkeeping inside a library, kept in a dot folder so it stays
+/// out of the way of the Markdown it describes. See `app/library-order.js`.
+const LIBRARY_DIRECTORY: &str = ".folio";
+const ORDER_FILE: &str = "order.json";
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize)]
@@ -370,6 +374,49 @@ async fn create_note(
         .map_err(|error| io_error("create the Markdown file", &destination, error))?;
 
     scan_library_root(&root)
+}
+
+/// Reads the page order a library records for itself. A library that has never
+/// been reordered has no file, which is not an error — it simply reads
+/// alphabetically. The contents are handed to the frontend as they are: the
+/// order's shape belongs to `app/library-order.js`, which is shared with the
+/// browser build.
+#[tauri::command]
+async fn read_library_order(state: State<'_, LibraryState>) -> Result<Option<String>, String> {
+    let _operation = state.lock_operation()?;
+    let Some(root) = state.get()? else {
+        return Ok(None);
+    };
+    read_order_file(&root)
+}
+
+#[tauri::command]
+async fn write_library_order(
+    contents: String,
+    state: State<'_, LibraryState>,
+) -> Result<(), String> {
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    write_order_file(&root, &contents)
+}
+
+fn read_order_file(root: &Path) -> Result<Option<String>, String> {
+    let source = root.join(LIBRARY_DIRECTORY).join(ORDER_FILE);
+    match fs::read_to_string(&source) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io_error("read the page order", &source, error)),
+    }
+}
+
+fn write_order_file(root: &Path, contents: &str) -> Result<(), String> {
+    let directory = root.join(LIBRARY_DIRECTORY);
+    fs::create_dir_all(&directory)
+        .map_err(|error| io_error("create Folio's library folder", &directory, error))?;
+
+    let destination = directory.join(ORDER_FILE);
+    atomic_write(&destination, contents.as_bytes(), None, true)
+        .map_err(|error| io_error("save the page order", &destination, error))
 }
 
 #[tauri::command]
@@ -1003,6 +1050,13 @@ fn scan_directory(
 
     for entry in entries {
         let entry_path = entry.path();
+
+        // Hidden entries are not pages a reader put in the library, and Folio's
+        // own `.folio` folder is one of them.
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+
         let file_type = entry
             .file_type()
             .map_err(|error| io_error("inspect a library entry", &entry_path, error))?;
@@ -1373,6 +1427,8 @@ pub fn run() {
             open_linked_note,
             create_folder,
             create_note,
+            read_library_order,
+            write_library_order,
             write_note,
             move_note,
             rename_entry,
@@ -1839,6 +1895,45 @@ mod tests {
         assert!(within_entry_budget(&root, 5));
         assert!(!within_entry_budget(&root, 4));
         assert!(!within_entry_budget(&root.join("missing"), 100));
+
+        fs::remove_dir_all(&root).expect("remove test root");
+    }
+
+    #[test]
+    fn keeps_a_page_order_beside_the_library_and_out_of_its_listing() {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "folio-order-test-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create test root");
+        fs::write(root.join("intro.md"), "# Intro").expect("write page");
+        fs::create_dir(root.join("guides")).expect("create folder");
+        fs::write(root.join("guides/setup.md"), "# Setup").expect("write page");
+
+        // A library that has never been reordered simply has no order.
+        assert_eq!(read_order_file(&root), Ok(None));
+
+        let recorded = "{\"version\":1,\"folders\":{\"\":[\"intro.md\"]}}\n";
+        write_order_file(&root, recorded).expect("write the order");
+        assert_eq!(read_order_file(&root), Ok(Some(recorded.to_string())));
+
+        // Rewriting replaces the file rather than appending to it.
+        let rewritten = "{\"version\":1,\"folders\":{}}\n";
+        write_order_file(&root, rewritten).expect("rewrite the order");
+        assert_eq!(read_order_file(&root), Ok(Some(rewritten.to_string())));
+
+        // Folio's own folder is not a folder of pages, so it stays unlisted.
+        let snapshot = scan_library_root(&root).expect("scan the library");
+        assert_eq!(snapshot.folders, vec!["guides".to_string()]);
+        assert_eq!(
+            snapshot
+                .notes
+                .iter()
+                .map(|note| note.path.clone())
+                .collect::<Vec<_>>(),
+            vec!["guides/setup.md".to_string(), "intro.md".to_string()]
+        );
 
         fs::remove_dir_all(&root).expect("remove test root");
     }

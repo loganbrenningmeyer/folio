@@ -2,7 +2,6 @@
 
 import React, {
   type ChangeEvent,
-  type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -56,6 +55,20 @@ import {
   shortcutMatches,
   toCodeMirrorSnippet,
 } from "@/app/editor-utils.js";
+import {
+  type FolderOrder,
+  folderNames,
+  isHiddenEntryName,
+  ORDER_FILE_NAME,
+  ORDER_DIRECTORY,
+  parseFolderOrder,
+  placedFolderNames,
+  prunedOrder,
+  renamedInOrder,
+  serializeFolderOrder,
+  sortNotesByOrder,
+  withFolderOrder,
+} from "@/app/library-order.js";
 import {
   editorFolding,
   rememberedFolds,
@@ -234,8 +247,22 @@ type SplitScrollMap = {
   // Recording the geometry lets a stale map rebuild itself on the next sync.
   geometry: string;
 };
-const FOLIO_NOTE_DRAG_TYPE = "application/x-folio-note";
 type LibraryScan = { notes: Note[]; folders: string[] };
+
+/**
+ * Where a dragged page would land: the folder it would sit in, and the row it
+ * would take among the pages already there — counting the rows as drawn, so
+ * `index` is the position the insertion line is drawn at.
+ */
+type DropPlace = { folder: string; index: number };
+
+/** How far the pointer travels before a press on a page row becomes a drag. */
+const DRAG_THRESHOLD = 4;
+/** How near the panel's edge a drag scrolls the list, and how fast. */
+const DRAG_SCROLL_MARGIN = 36;
+const DRAG_SCROLL_STEP = 12;
+/** How far outside the panel a drag still counts as aimed at the library. */
+const DRAG_PANEL_REACH = 40;
 
 const DEFAULT_TEXT_SNIPPETS: TextSnippet[] = [
   {
@@ -1696,6 +1723,9 @@ async function readDirectory(
   const notes: Note[] = [];
   const folders: string[] = [];
   for await (const entry of directory.values()) {
+    // Hidden entries are not pages a reader put here, and Folio's own `.folio`
+    // folder is one of them.
+    if (isHiddenEntryName(entry.name)) continue;
     const path = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.kind === "directory") {
       folders.push(path);
@@ -1723,6 +1753,38 @@ async function readDirectory(
     a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
   );
   return { notes, folders };
+}
+
+/**
+ * The page order a library opened in the browser records for itself. A library
+ * that has never been reordered has no file, which reads as no order at all.
+ */
+async function readDirectoryOrder(
+  root: DirectoryHandleLike,
+): Promise<FolderOrder> {
+  try {
+    const directory = await root.getDirectoryHandle(ORDER_DIRECTORY);
+    const handle = await directory.getFileHandle(ORDER_FILE_NAME);
+    return parseFolderOrder(await (await handle.getFile()).text());
+  } catch {
+    return {};
+  }
+}
+
+async function writeDirectoryOrder(
+  root: DirectoryHandleLike,
+  order: FolderOrder,
+) {
+  const directory = await root.getDirectoryHandle(ORDER_DIRECTORY, {
+    create: true,
+  });
+  const handle = await directory.getFileHandle(ORDER_FILE_NAME, {
+    create: true,
+  });
+  const writable = await handle.createWritable?.();
+  if (!writable) throw new Error("This library folder is not writable.");
+  await writable.write(serializeFolderOrder(order));
+  await writable.close();
 }
 
 // Read view's image renderer. Sizing and alignment arrive as Folio's title
@@ -2046,8 +2108,16 @@ async function saveImagesIntoView(
 }
 
 export default function Home() {
-  const [notes, setNotes] = useState<Note[]>(SAMPLE_NOTES);
+  const [storedNotes, setNotes] = useState<Note[]>(SAMPLE_NOTES);
   const [folders, setFolders] = useState<string[]>(SAMPLE_FOLDERS);
+  // A library's own page order, read from `.folio/order.json`. Pages it does
+  // not name keep their natural place, so this only ever rearranges what the
+  // reader has actually dragged.
+  const [noteOrder, setNoteOrder] = useState<FolderOrder>({});
+  const notes = useMemo(
+    () => sortNotesByOrder(storedNotes, noteOrder),
+    [noteOrder, storedNotes],
+  );
   const [rootDirectory, setRootDirectory] = useState<DirectoryHandleLike>();
   const [activeId, setActiveId] = useState(SAMPLE_NOTES[0].id);
   const [libraryName, setLibraryName] = useState("The Folio Field Guide");
@@ -2098,7 +2168,8 @@ export default function Home() {
   const [newEntryName, setNewEntryName] = useState("");
   const [newEntryParent, setNewEntryParent] = useState("");
   const [draggedNoteId, setDraggedNoteId] = useState<string>();
-  const [dropTarget, setDropTarget] = useState<string>();
+  // Where the dragged page would land: the folder, and the row it would take.
+  const [dropTarget, setDropTarget] = useState<DropPlace>();
   // Explorer selection is separate from the open page: a folder can be
   // selected for rename or delete without being a page you can open.
   const [selectedEntry, setSelectedEntry] = useState<LibraryEntry>();
@@ -2129,7 +2200,18 @@ export default function Home() {
   const splitScrollRefreshRef = useRef<(side?: ScrollSide) => void>();
   const splitScrollLockedRef = useRef(splitScrollLocked);
   const viewRef = useRef(view);
-  const draggedNoteIdRef = useRef<string | undefined>(undefined);
+  // Drag bookkeeping the panel reads between renders: the scrolling list, the
+  // place under the pointer, the ghost that follows it, and the flag that stops
+  // the click ending a drag from opening whatever was underneath.
+  const pageListRef = useRef<HTMLElement>(null);
+  const dragGhostRef = useRef<HTMLDivElement>(null);
+  const dropPlace = useRef<DropPlace | undefined>(undefined);
+  const dragPointer = useRef({ x: 0, y: 0 });
+  const dragScroll = useRef(0);
+  const dragScrollFrame = useRef(0);
+  const dragScrollArmed = useRef(false);
+  const dragEnded = useRef(false);
+  const noteOrderRequest = useRef(0);
   const nativeSaveTimers = useRef<Map<string, number>>(new Map());
   const nativePendingSaves = useRef<
     Map<string, { path: string; content: string }>
@@ -2237,8 +2319,16 @@ export default function Home() {
   );
 
   // While a page is being dragged every folder is listed, so an empty folder —
-  // or the root, once the last page has moved out of it — stays reachable.
-  const listedGroups = draggedNoteId ? allGroups : grouped;
+  // or the root, once the last page has moved out of it — stays reachable. The
+  // extra sections are appended below the listed ones rather than slotted in
+  // alphabetically: appearing in sorted order would push the rows down at the
+  // very moment the reader takes hold of one, and pull them back up on the
+  // drop. Nothing already visible may move when a drag begins.
+  const listedGroups = useMemo(() => {
+    if (!draggedNoteId) return grouped;
+    const shown = new Set(grouped.map(([group]) => group));
+    return [...grouped, ...allGroups.filter(([group]) => !shown.has(group))];
+  }, [allGroups, draggedNoteId, grouped]);
 
   const activeGroupPath = useMemo(() => {
     const segments = active.path.split("/");
@@ -2312,6 +2402,37 @@ export default function Home() {
       .sort((a, b) => b.score - a.score);
   }, [notes, searchQuery]);
 
+  /**
+   * Takes a page order as the one in effect. Every change is numbered so a read
+   * of the order file that is still in flight when a drag lands cannot arrive
+   * afterwards and undo it.
+   */
+  const applyNoteOrder = useCallback((order: FolderOrder) => {
+    noteOrderRequest.current += 1;
+    setNoteOrder(order);
+  }, []);
+
+  /** Re-reads the order a library records for itself, whenever one opens. */
+  const loadNoteOrder = useCallback(
+    async (root?: DirectoryHandleLike) => {
+      const request = (noteOrderRequest.current += 1);
+      let order: FolderOrder = {};
+      try {
+        if (desktopMode) {
+          order = parseFolderOrder(await nativeLibrary.readOrder());
+        } else if (root) {
+          order = await readDirectoryOrder(root);
+        }
+      } catch {
+        // An unreadable order file is not worth interrupting a reader over:
+        // the library simply opens in its natural order.
+        order = {};
+      }
+      if (noteOrderRequest.current === request) setNoteOrder(order);
+    },
+    [desktopMode],
+  );
+
   const applyNativeLibrary = useCallback(
     (snapshot: LibrarySnapshot, preferredPath?: string) => {
       setNotes(snapshot.notes);
@@ -2330,8 +2451,11 @@ export default function Home() {
           ? new Set(snapshot.folders.filter((folder) => current.has(folder)))
           : current,
       );
+      // The library may have been reopened somewhere else entirely — following
+      // a link can reroot it — so its order comes from the folder now open.
+      void loadNoteOrder();
     },
-    [],
+    [loadNoteOrder],
   );
 
   useEffect(() => {
@@ -3418,13 +3542,8 @@ export default function Home() {
     }
   };
 
-  const moveNote = async (noteId: string, targetFolder: string) => {
-    draggedNoteIdRef.current = undefined;
-    setDropTarget(undefined);
-    setDraggedNoteId(undefined);
-    const note = notes.find((item) => item.id === noteId);
-    if (!note || parentPath(note.path) === targetFolder) return;
-
+  /** The name a page can take in `folder` without displacing another page. */
+  const availableFileName = (note: Note, folder: string) => {
     const originalName = fileNameFromPath(note.path);
     const extensionIndex = originalName.toLowerCase().lastIndexOf(".md");
     const baseName =
@@ -3433,41 +3552,78 @@ export default function Home() {
         : originalName;
     const extension =
       extensionIndex >= 0 ? originalName.slice(extensionIndex) : ".md";
-    let destinationName = originalName;
+    let name = originalName;
     let counter = 2;
     while (
       notes.some(
         (item) =>
           item.id !== note.id &&
-          item.path.toLowerCase() ===
-            joinPath(targetFolder, destinationName).toLowerCase(),
+          item.path.toLowerCase() === joinPath(folder, name).toLowerCase(),
       )
     ) {
-      destinationName = `${baseName} ${counter}${extension}`;
+      name = `${baseName} ${counter}${extension}`;
       counter += 1;
     }
-    const destinationPath = joinPath(targetFolder, destinationName);
+    return name;
+  };
+
+  /**
+   * Commits a drag. The page moves folders when it was dropped outside the one
+   * holding it, and either way it takes the row the insertion line marked. The
+   * new order is written before the library is re-read, so the panel and the
+   * order file never disagree, even for a moment.
+   */
+  const dropNote = async (noteId: string, place: DropPlace) => {
+    const note = notes.find((item) => item.id === noteId);
+    if (!note) return;
+
+    const sourceFolder = parentPath(note.path);
+    const moving = sourceFolder !== place.folder;
+    const destinationName = moving
+      ? availableFileName(note, place.folder)
+      : fileNameFromPath(note.path);
+    const destinationPath = joinPath(place.folder, destinationName);
+
+    const listed = folderNames(notes, place.folder, noteOrder);
+    const names = placedFolderNames(listed, destinationName, place.index);
+    // A page dropped back where it already sat is not a change worth writing.
+    if (!moving && names.join("/") === listed.join("/")) return;
+    const ordered = withFolderOrder(noteOrder, place.folder, names);
 
     try {
       if (desktopMode) {
-        await flushAllNativeSaves();
-        const snapshot = await nativeLibrary.move(note.path, destinationPath);
-        const preferredPath =
-          active.id === note.id ? destinationPath : active.path;
-        applyNativeLibrary(snapshot, preferredPath);
-        showNotice(`Moved ${note.title} to ${displayGroup(targetFolder)}.`);
+        if (moving) await flushAllNativeSaves();
+        const snapshot = moving
+          ? await nativeLibrary.move(note.path, destinationPath)
+          : undefined;
+        const pruned = prunedOrder(ordered, snapshot?.notes ?? notes);
+        try {
+          await nativeLibrary.writeOrder(serializeFolderOrder(pruned));
+          applyNoteOrder(pruned);
+        } catch {
+          // The page itself has already moved, if it was moving at all. Only
+          // the record of where it sits is missing.
+          showNotice("Folio could not save this order to the library folder.");
+        }
+        if (snapshot) {
+          applyNativeLibrary(
+            snapshot,
+            active.id === note.id ? destinationPath : active.path,
+          );
+          showNotice(`Moved ${note.title} to ${displayGroup(place.folder)}.`);
+        }
         return;
       }
 
       let destinationHandle = note.handle;
-      if (rootDirectory) {
+      if (moving && rootDirectory) {
         if (!(await hasWritePermission(rootDirectory))) {
           showNotice("Write access is needed to move a file.");
           return;
         }
         const destinationDirectory = await getDirectoryAtPath(
           rootDirectory,
-          targetFolder,
+          place.folder,
         );
         const createdHandle = await destinationDirectory.getFileHandle(
           destinationName,
@@ -3491,28 +3647,41 @@ export default function Home() {
         destinationHandle = createdHandle;
       }
 
-      setNotes((current) =>
-        current
-          .map((item) =>
+      const moved = moving
+        ? storedNotes.map((item) =>
             item.id === note.id
               ? { ...item, path: destinationPath, handle: destinationHandle }
               : item,
           )
-          .sort((a, b) =>
-            a.path.localeCompare(b.path, undefined, {
-              numeric: true,
-              sensitivity: "base",
-            }),
-          ),
-      );
-      if (rootDirectory) {
-        setDirty((current) => {
-          const next = new Set(current);
-          next.delete(note.id);
-          return next;
-        });
+        : storedNotes;
+      if (moving) {
+        setNotes(moved);
+        if (rootDirectory) {
+          setDirty((current) => {
+            const next = new Set(current);
+            next.delete(note.id);
+            return next;
+          });
+        }
       }
-      showNotice(`Moved ${note.title} to ${displayGroup(targetFolder)}.`);
+
+      const pruned = prunedOrder(ordered, moved);
+      applyNoteOrder(pruned);
+      if (rootDirectory) {
+        try {
+          if (!(await hasWritePermission(rootDirectory))) {
+            throw new Error("Write access is needed to save the page order.");
+          }
+          await writeDirectoryOrder(rootDirectory, pruned);
+        } catch {
+          // The pages are where the reader put them; only the record of it is
+          // missing, and saying so is better than silently reverting.
+          showNotice("Folio could not save this order to the library folder.");
+        }
+      }
+      if (moving) {
+        showNotice(`Moved ${note.title} to ${displayGroup(place.folder)}.`);
+      }
     } catch {
       showNotice(
         "Folio could not move that file. The original was kept in place.",
@@ -3568,6 +3737,21 @@ export default function Home() {
           return next;
         });
       }
+      // A renamed page keeps the place it was dragged to, rather than dropping
+      // to the end of its folder under a name the order file does not know.
+      const renamed = prunedOrder(
+        renamedInOrder(
+          noteOrder,
+          entry.path,
+          destination,
+          entry.kind === "folder",
+        ),
+        snapshot.notes,
+      );
+      if (serializeFolderOrder(renamed) !== serializeFolderOrder(noteOrder)) {
+        await nativeLibrary.writeOrder(serializeFolderOrder(renamed));
+      }
+      applyNoteOrder(renamed);
       applyNativeLibrary(snapshot, openPath);
       setSelectedEntry({ kind: entry.kind, path: destination });
       showNotice(`Renamed to ${name}.`);
@@ -3653,6 +3837,8 @@ export default function Home() {
       setFolders(snapshot.folders);
       setLibraryName(snapshot.name);
       setDirty(new Set());
+      // A refresh picks up an order file edited or replaced outside Folio too.
+      await loadNoteOrder();
       setRevealedFolders(
         (current) =>
           new Set(snapshot.folders.filter((folder) => current.has(folder))),
@@ -3739,15 +3925,194 @@ export default function Home() {
     setEntryMenu({ ...entry, x: event.clientX, y: event.clientY });
   };
 
-  const startNoteDrag = (
-    event: DragEvent<HTMLButtonElement>,
-    noteId: string,
+  // Dragging pages runs on pointer events rather than the HTML5 drag and drop
+  // API. That API hands the drag to a native macOS drag session, which the
+  // desktop app's webview does not reliably start from web content — and a drag
+  // that has to say *where* in a folder a page lands needs an insertion line
+  // following the pointer, which a native drag image cannot draw.
+
+  /**
+   * Reads the row and folder under the pointer as a place to drop a page. A
+   * pointer carried out of the panel names no place at all, so a page dragged
+   * onto the reader — or off the window — is simply put back.
+   */
+  const placeFromPoint = (): DropPlace | undefined => {
+    const list = pageListRef.current;
+    if (!list) return undefined;
+    const { x, y } = dragPointer.current;
+    const listBox = list.getBoundingClientRect();
+    if (
+      x < listBox.left - DRAG_PANEL_REACH ||
+      x > listBox.right + DRAG_PANEL_REACH
+    ) {
+      return undefined;
+    }
+
+    const sections = Array.from(
+      list.querySelectorAll<HTMLElement>("[data-folder-path]"),
+    );
+    if (!sections.length) return undefined;
+
+    let section = sections.find((element) => {
+      const box = element.getBoundingClientRect();
+      return y >= box.top && y < box.bottom;
+    });
+    if (!section) {
+      // Between folders, or past either end of the list: aim at the nearer one.
+      const above = sections.filter(
+        (element) => element.getBoundingClientRect().bottom <= y,
+      );
+      section = above.length ? above[above.length - 1] : sections[0];
+    }
+
+    const rows = Array.from(
+      section.querySelectorAll<HTMLElement>("[data-page-row]"),
+    );
+    const index = rows.findIndex((row) => {
+      const box = row.getBoundingClientRect();
+      return y < box.top + box.height / 2;
+    });
+    return {
+      folder: section.dataset.folderPath ?? "",
+      index: index === -1 ? rows.length : index,
+    };
+  };
+
+  const showDropPlace = (place: DropPlace | undefined) => {
+    const current = dropPlace.current;
+    if (
+      current?.folder === place?.folder &&
+      current?.index === place?.index
+    ) {
+      return;
+    }
+    dropPlace.current = place;
+    setDropTarget(place);
+  };
+
+  /** Keeps a drag near the panel's edge scrolling, without moving the mouse. */
+  const stepDragScroll = () => {
+    dragScrollFrame.current = 0;
+    const list = pageListRef.current;
+    if (!list || !dragScroll.current) return;
+    const before = list.scrollTop;
+    list.scrollTop += dragScroll.current;
+    if (list.scrollTop !== before) {
+      showDropPlace(placeFromPoint());
+    }
+    dragScrollFrame.current = requestAnimationFrame(stepDragScroll);
+  };
+
+  const trackDragScroll = (y: number) => {
+    const list = pageListRef.current;
+    if (!list) return;
+    const box = list.getBoundingClientRect();
+    const above = box.top + DRAG_SCROLL_MARGIN - y;
+    const below = y - (box.bottom - DRAG_SCROLL_MARGIN);
+    const speed =
+      above > 0 ? -DRAG_SCROLL_STEP : below > 0 ? DRAG_SCROLL_STEP : 0;
+
+    // A page picked up near either end of the list starts inside the band that
+    // scrolls it. Scrolling only once the pointer has been clear of both ends
+    // keeps the list still until the reader actually carries a page to an edge.
+    if (!speed) dragScrollArmed.current = true;
+    dragScroll.current = dragScrollArmed.current ? speed : 0;
+    if (dragScroll.current && !dragScrollFrame.current) {
+      dragScrollFrame.current = requestAnimationFrame(stepDragScroll);
+    }
+  };
+
+  const endDragScroll = () => {
+    dragScroll.current = 0;
+    if (dragScrollFrame.current) {
+      cancelAnimationFrame(dragScrollFrame.current);
+      dragScrollFrame.current = 0;
+    }
+  };
+
+  const beginNoteDrag = (
+    event: React.PointerEvent<HTMLButtonElement>,
+    note: Note,
   ) => {
-    draggedNoteIdRef.current = noteId;
-    setDraggedNoteId(noteId);
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData(FOLIO_NOTE_DRAG_TYPE, noteId);
-    event.dataTransfer.setData("text/plain", noteId);
+    // Touch belongs to scrolling the panel; a drag needs a mouse or a pen.
+    if (event.button !== 0 || event.pointerType === "touch") return;
+    if (renamingEntry) return;
+
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let dragging = false;
+    dragEnded.current = false;
+    dragScrollArmed.current = false;
+
+    const detach = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("keydown", onKey, true);
+    };
+
+    const stop = () => {
+      detach();
+      endDragScroll();
+      dropPlace.current = undefined;
+      setDropTarget(undefined);
+      setDraggedNoteId(undefined);
+      document.body.classList.remove("dragging-page");
+    };
+
+    const onMove = (moving: PointerEvent) => {
+      if (moving.pointerId !== event.pointerId) return;
+      dragPointer.current = { x: moving.clientX, y: moving.clientY };
+      if (!dragging) {
+        if (
+          Math.abs(moving.clientX - startX) < DRAG_THRESHOLD &&
+          Math.abs(moving.clientY - startY) < DRAG_THRESHOLD
+        ) {
+          return;
+        }
+        dragging = true;
+        setDraggedNoteId(note.id);
+        document.body.classList.add("dragging-page");
+      }
+      moving.preventDefault();
+      positionDragGhost(moving.clientX, moving.clientY);
+      showDropPlace(placeFromPoint());
+      trackDragScroll(moving.clientY);
+    };
+
+    const onUp = (up: PointerEvent) => {
+      if (up.pointerId !== event.pointerId) return;
+      const place = dropPlace.current;
+      const dropped = dragging;
+      stop();
+      if (!dropped) return;
+      // The click that follows this pointerup would open the page underneath.
+      dragEnded.current = true;
+      if (place) void dropNote(note.id, place);
+    };
+
+    const onCancel = (cancelled: PointerEvent) => {
+      if (cancelled.pointerId !== event.pointerId) return;
+      stop();
+    };
+
+    const onKey = (key: globalThis.KeyboardEvent) => {
+      if (key.key !== "Escape" || !dragging) return;
+      key.preventDefault();
+      key.stopPropagation();
+      dragEnded.current = true;
+      stop();
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("keydown", onKey, true);
+  };
+
+  const positionDragGhost = (x: number, y: number) => {
+    const ghost = dragGhostRef.current;
+    if (ghost) ghost.style.transform = `translate3d(${x + 14}px, ${y - 12}px, 0)`;
   };
 
   const downloadNote = useCallback((note: Note) => {
@@ -3841,6 +4206,7 @@ export default function Home() {
       const loaded = await readDirectory(directory);
       setNotes(loaded.notes);
       setFolders(loaded.folders);
+      applyNoteOrder(await readDirectoryOrder(directory));
       setRootDirectory(directory);
       setActiveId(loaded.notes[0]?.id ?? "");
       setLibraryName(directory.name);
@@ -3852,7 +4218,13 @@ export default function Home() {
       if (error instanceof DOMException && error.name === "AbortError") return;
       folderInput.current?.click();
     }
-  }, [applyNativeLibrary, desktopMode, flushAllNativeSaves, showNotice]);
+  }, [
+    applyNativeLibrary,
+    applyNoteOrder,
+    desktopMode,
+    flushAllNativeSaves,
+    showNotice,
+  ]);
 
   const executeAppCommand = useCallback(
     (commandId: AppCommandId) => {
@@ -3998,6 +4370,9 @@ export default function Home() {
         a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
       ),
     );
+    // An imported copy has no order file of its own, and the last library's
+    // order says nothing about these pages.
+    applyNoteOrder({});
     setRootDirectory(undefined);
     setActiveId(loaded[0].id);
     setRevealedFolders(new Set());
@@ -4817,7 +5192,11 @@ export default function Home() {
             </div>
           </div>
 
-          <nav className="section-list" aria-label="Library pages">
+          <nav
+            className="section-list"
+            aria-label="Library pages"
+            ref={pageListRef}
+          >
             {!listedGroups.length && (
               <p className="library-empty">
                 No Markdown files here yet. Create one to start this library.
@@ -4825,49 +5204,28 @@ export default function Home() {
             )}
             {listedGroups.map(([group, groupNotes], groupIndex) => {
               const collapsed = collapsedGroups.has(group);
+              // The row a drop would take in this folder, drawn as a line
+              // between pages. Only the folder under the pointer draws one.
+              const dropRow =
+                draggedNoteId && dropTarget?.folder === group
+                  ? dropTarget.index
+                  : undefined;
+              // A folder listed only for the drag in hand — an empty one the
+              // panel normally hides. It is drawn as a drop zone, so appearing
+              // for the drag reads as an offer, not as the library changing.
+              const dropZone =
+                Boolean(draggedNoteId) &&
+                !groupNotes.length &&
+                !revealedFolders.has(group);
               return (
                 <section
                   className={`section-group ${
                     group === activeGroupPath ? "active-section" : ""
-                  } ${dropTarget === group ? "drop-target" : ""}`}
+                  } ${dropRow === undefined ? "" : "drop-target"} ${
+                    dropZone ? "drop-zone" : ""
+                  }`}
                   key={group || "__root__"}
                   data-folder-path={group}
-                  onDragEnter={(event) => {
-                    const hasFolioNote =
-                      Boolean(draggedNoteIdRef.current) ||
-                      Array.from(event.dataTransfer.types).includes(
-                        FOLIO_NOTE_DRAG_TYPE,
-                      );
-                    if (!hasFolioNote) return;
-                    event.preventDefault();
-                    setDropTarget(group);
-                  }}
-                  onDragOver={(event) => {
-                    const hasFolioNote =
-                      Boolean(draggedNoteIdRef.current) ||
-                      Array.from(event.dataTransfer.types).includes(
-                        FOLIO_NOTE_DRAG_TYPE,
-                      );
-                    if (!hasFolioNote) return;
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                    setDropTarget(group);
-                  }}
-                  onDragLeave={(event) => {
-                    if (
-                      !event.currentTarget.contains(event.relatedTarget as Node)
-                    ) {
-                      setDropTarget(undefined);
-                    }
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const noteId =
-                      draggedNoteIdRef.current ||
-                      event.dataTransfer.getData(FOLIO_NOTE_DRAG_TYPE) ||
-                      event.dataTransfer.getData("text/plain");
-                    if (noteId) void moveNote(noteId, group);
-                  }}
                 >
                   {renamingEntry?.kind === "folder" &&
                   renamingEntry.path === group ? (
@@ -4905,7 +5263,7 @@ export default function Home() {
                     >
                       <span>{String(groupIndex + 1).padStart(2, "0")}</span>
                       <strong>{displayGroup(group)}</strong>
-                      <small>{groupNotes.length}</small>
+                      <small>{dropZone ? "drop here" : groupNotes.length}</small>
                       <ChevronDown
                         size={14}
                         className={collapsed ? "rotated" : ""}
@@ -4915,6 +5273,17 @@ export default function Home() {
                   {!collapsed && (
                     <div className="page-list">
                       {groupNotes.map((note, noteIndex) => {
+                        // The insertion line is painted onto the row it would
+                        // land against rather than inserted between rows: a
+                        // real element would take a grid row of its own and
+                        // nudge everything below it while the drag is held.
+                        const dropMark =
+                          dropRow === noteIndex
+                            ? "drop-before"
+                            : dropRow === groupNotes.length &&
+                                noteIndex === groupNotes.length - 1
+                              ? "drop-after"
+                              : "";
                         if (
                           renamingEntry?.kind === "note" &&
                           renamingEntry.path === note.path
@@ -4934,7 +5303,10 @@ export default function Home() {
                         const noteImages = attachments.get(note.id);
                         const imagesOpen = expandedAttachments.has(note.id);
                         return (
-                          <div className="page-entry" key={note.id}>
+                          <div
+                            className={`page-entry ${dropMark}`}
+                            key={note.id}
+                          >
                             <button
                               className={`page-row ${note.id === active.id ? "active" : ""} ${
                                 draggedNoteId === note.id ? "dragging" : ""
@@ -4947,6 +5319,12 @@ export default function Home() {
                                   : ""
                               }`}
                               onClick={() => {
+                                // The click that ends a drag would otherwise
+                                // open whichever page was dropped on.
+                                if (dragEnded.current) {
+                                  dragEnded.current = false;
+                                  return;
+                                }
                                 setSelectedEntry({
                                   kind: "note",
                                   path: note.path,
@@ -4959,16 +5337,11 @@ export default function Home() {
                                   path: note.path,
                                 })
                               }
-                              draggable
-                              onDragStart={(event) =>
-                                startNoteDrag(event, note.id)
+                              onPointerDown={(event) =>
+                                beginNoteDrag(event, note)
                               }
-                              onDragEnd={() => {
-                                draggedNoteIdRef.current = undefined;
-                                setDraggedNoteId(undefined);
-                                setDropTarget(undefined);
-                              }}
-                              title="Open this page, or drag it into another folder"
+                              data-page-row=""
+                              title="Open this page, or drag it into place"
                             >
                               <span className="page-spine" />
                               <span className="page-order">
@@ -5082,12 +5455,29 @@ export default function Home() {
                           </div>
                         );
                       })}
+                      {/* An empty folder has no row to paint the line on, and
+                          a folder always sits above whatever follows it, so a
+                          real element cannot shift anything here either. */}
+                      {dropRow === 0 && !groupNotes.length && (
+                        <div className="drop-line" aria-hidden="true" />
+                      )}
                     </div>
                   )}
                 </section>
               );
             })}
           </nav>
+          {/* The page following the pointer. It stays mounted so a drag can
+              place it before it is shown, rather than flashing at the corner
+              of the screen for the frame before the first move arrives. */}
+          <div
+            className={`drag-ghost ${draggedNoteId ? "is-dragging" : ""}`}
+            ref={dragGhostRef}
+            aria-hidden="true"
+          >
+            <GripVertical size={12} />
+            <span>{notes.find((note) => note.id === draggedNoteId)?.title}</span>
+          </div>
 
           <div className="library-foot">
             <div className="page-count">

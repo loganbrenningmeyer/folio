@@ -1336,6 +1336,37 @@ kbd {
   color: var(--accent-ink);
 }
 
+/* Folders listed only while a page is in hand — empty ones the panel normally
+   hides, kept reachable as somewhere to drop. Drawn faint and dashed so their
+   appearance reads as an offer, not as the library changing shape. */
+.section-group.drop-zone {
+  border-top-color: transparent;
+  outline: 1px dashed color-mix(in srgb, var(--muted) 40%, transparent);
+  outline-offset: -1px;
+}
+
+.section-group.drop-zone .section-label,
+.section-group.drop-zone .section-label strong {
+  color: var(--faint);
+}
+
+.section-group.drop-zone .section-label small {
+  background: transparent;
+  color: var(--faint);
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.section-group.drop-zone.drop-target {
+  outline-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.section-group.drop-zone.drop-target .section-label,
+.section-group.drop-zone.drop-target .section-label strong,
+.section-group.drop-zone.drop-target .section-label small {
+  color: var(--accent-ink);
+}
+
 .section-label {
   width: 100%;
   display: grid;
@@ -1408,6 +1439,66 @@ kbd {
 .page-row:hover { background: color-mix(in srgb, var(--paper) 70%, transparent); color: var(--ink-2); }
 .page-row.active { background: var(--paper); color: var(--ink); box-shadow: 0 1px 2px rgb(28 29 24 / 5%); }
 .page-row.dragging { opacity: .42; }
+
+/* Dragging a page is driven by pointer events, so the press that starts one
+   would otherwise select the text under it as the pointer travels. */
+body.dragging-page { cursor: grabbing; }
+body.dragging-page * { user-select: none; }
+body.dragging-page .page-row { cursor: grabbing; }
+
+/* Where the page would land. Painted over the edge of the row it would sit
+   against — an element of its own would take a grid row and shift the list
+   under the held page. The standalone .drop-line appears only inside a folder
+   with no rows, where there is nothing to paint on or to shift. */
+.page-entry.drop-before::before,
+.page-entry.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+  pointer-events: none;
+}
+
+/* Centered in the 2px grid gap between rows. */
+.page-entry.drop-before::before { top: -2px; }
+.page-entry.drop-after::after { bottom: -2px; }
+
+.drop-line {
+  height: 2px;
+  margin: -1px 0;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* The page itself, following the pointer. */
+.drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  display: none;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  padding: 5px 9px 5px 6px;
+  border-radius: 7px;
+  background: var(--paper);
+  box-shadow: 0 6px 18px rgb(28 29 24 / 18%), inset 0 0 0 1px var(--line);
+  color: var(--ink-2);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.drag-ghost.is-dragging { display: flex; }
+.drag-ghost svg { flex: 0 0 auto; color: var(--faint); }
+.drag-ghost span { overflow: hidden; text-overflow: ellipsis; }
 .page-spine { width: 2px; height: 18px; border-radius: 2px; background: transparent; }
 .page-row.active .page-spine { background: var(--accent); }
 

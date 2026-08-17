@@ -95,6 +95,20 @@ export function writeNote(
   return invokeNative("write_note", { path, content });
 }
 
+/**
+ * The library's recorded page order, as stored in `.folio/order.json`, or null
+ * when the library has never been reordered. Reading and writing move the file
+ * whole; its shape lives in `app/library-order.js`, which the browser build
+ * shares.
+ */
+export function readLibraryOrder(): Promise<string | null> {
+  return invokeNative("read_library_order");
+}
+
+export function writeLibraryOrder(contents: string): Promise<void> {
+  return invokeNative("write_library_order", { contents });
+}
+
 export function moveNote(
   fromPath: RelativePath,
   toPath: RelativePath,
@@ -162,6 +176,8 @@ export const nativeLibrary = Object.freeze({
   openLinked: openLinkedNote,
   createFolder,
   createNote,
+  readOrder: readLibraryOrder,
+  writeOrder: writeLibraryOrder,
   write: writeNote,
   move: moveNote,
   rename: renameEntry,

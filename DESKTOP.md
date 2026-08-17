@@ -53,6 +53,10 @@ folder picker again unless you choose **Change folder** or the saved folder is n
 longer available. Edits, newly created files, new folders, and drag-and-drop moves
 are written to disk automatically.
 
+Dragging pages into the order you want to read them writes only `.folio/order.json`
+inside the library — Folio never renames a file to record its position. Deleting
+that file returns the library to alphabetical order.
+
 macOS itself can still show a one-time privacy request for protected locations
 such as Documents, Desktop, removable drives, or network volumes. That operating
 system request cannot be bypassed safely. macOS normally remembers the choice for

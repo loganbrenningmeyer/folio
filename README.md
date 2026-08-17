@@ -109,7 +109,13 @@ opening it.
 The library panel handles files:
 
 - **New file** (⌘N) and **new folder** (⌘⇧N)
-- **Drag a page onto a folder** to move it — this moves the actual file on disk
+- **Drag a page** anywhere in the panel: a line shows where it will land, whether
+  that is a new position in its own folder or a place inside another one. Moving
+  it to another folder moves the actual file on disk; press Escape, or let go
+  outside the panel, to leave it where it was
+- A page's own order is remembered in `.folio/order.json` beside the library, so
+  nothing is renamed and links between pages keep working. Pages that file does
+  not mention — anything added outside Folio — stay in alphabetical order
 - A dot next to a page name means unsaved changes
 
 ## Running Python
