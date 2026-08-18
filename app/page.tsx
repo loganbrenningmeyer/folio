@@ -72,6 +72,18 @@ import {
   withFolderOrder,
 } from "@/app/library-order.js";
 import {
+  FOLDER_COLOR_IDS,
+  FOLDER_ICON_IDS,
+  type FolderIcon,
+  type FolderIcons,
+  ICONS_FILE_NAME,
+  parseFolderIcons,
+  prunedFolderIcons,
+  renamedFolderIcons,
+  serializeFolderIcons,
+  withFolderIcon,
+} from "@/app/folder-icons.js";
+import {
   editorFolding,
   rememberedFolds,
   rememberFolds,
@@ -103,30 +115,52 @@ import remarkMath from "remark-math";
 import {
   ArrowLeft,
   ArrowRight,
+  Atom,
   BookOpen,
+  Bookmark,
+  Briefcase,
+  Camera,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Coffee,
   Columns2,
   Command,
+  Compass,
   Download,
+  Feather,
   FileCode2,
   FilePlus2,
   FileText,
+  FlaskConical,
+  Folder,
   FolderPlus,
   FolderOpen,
   GripVertical,
+  Heart,
   ImageIcon,
   ImagePlus,
   Keyboard,
+  Leaf,
+  Library,
+  Lightbulb,
   Link2,
   ListTree,
   Lock,
   LockOpen,
+  type LucideIcon,
+  // Lucide's Map would shadow the Map constructor this file builds groups with.
+  Map as MapMark,
   Menu,
+  Microscope,
   Moon,
+  Mountain,
+  Music,
+  Newspaper,
+  Notebook,
   PenLine,
+  PenTool,
   Palette,
   PanelLeftClose,
   PanelLeftOpen,
@@ -134,12 +168,21 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Plus,
+  Quote,
   RefreshCw,
+  Rocket,
+  RotateCcw,
   Save,
   Search,
+  Sparkles,
+  Sprout,
+  Star,
   Sun,
   Table2,
+  Telescope,
+  Terminal,
   Trash2,
+  TreePine,
   X,
 } from "lucide-react";
 
@@ -1821,35 +1864,69 @@ async function readDirectory(
 }
 
 /**
- * The page order a library opened in the browser records for itself. A library
- * that has never been reordered has no file, which reads as no order at all.
+ * One of the files Folio keeps for a library opened in the browser. A library
+ * it has never written to has no file, which reads as nothing recorded.
  */
+async function readDirectoryFile(
+  root: DirectoryHandleLike,
+  name: string,
+): Promise<string | undefined> {
+  try {
+    const directory = await root.getDirectoryHandle(ORDER_DIRECTORY);
+    const handle = await directory.getFileHandle(name);
+    return await (await handle.getFile()).text();
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeDirectoryFile(
+  root: DirectoryHandleLike,
+  name: string,
+  contents: string,
+) {
+  const directory = await root.getDirectoryHandle(ORDER_DIRECTORY, {
+    create: true,
+  });
+  const handle = await directory.getFileHandle(name, { create: true });
+  const writable = await handle.createWritable?.();
+  if (!writable) throw new Error("This library folder is not writable.");
+  await writable.write(contents);
+  await writable.close();
+}
+
 async function readDirectoryOrder(
   root: DirectoryHandleLike,
 ): Promise<FolderOrder> {
-  try {
-    const directory = await root.getDirectoryHandle(ORDER_DIRECTORY);
-    const handle = await directory.getFileHandle(ORDER_FILE_NAME);
-    return parseFolderOrder(await (await handle.getFile()).text());
-  } catch {
-    return {};
-  }
+  return parseFolderOrder(await readDirectoryFile(root, ORDER_FILE_NAME));
 }
 
 async function writeDirectoryOrder(
   root: DirectoryHandleLike,
   order: FolderOrder,
 ) {
-  const directory = await root.getDirectoryHandle(ORDER_DIRECTORY, {
-    create: true,
-  });
-  const handle = await directory.getFileHandle(ORDER_FILE_NAME, {
-    create: true,
-  });
-  const writable = await handle.createWritable?.();
-  if (!writable) throw new Error("This library folder is not writable.");
-  await writable.write(serializeFolderOrder(order));
-  await writable.close();
+  await writeDirectoryFile(
+    root,
+    ORDER_FILE_NAME,
+    serializeFolderOrder(order),
+  );
+}
+
+async function readDirectoryIcons(
+  root: DirectoryHandleLike,
+): Promise<FolderIcons> {
+  return parseFolderIcons(await readDirectoryFile(root, ICONS_FILE_NAME));
+}
+
+async function writeDirectoryIcons(
+  root: DirectoryHandleLike,
+  icons: FolderIcons,
+) {
+  await writeDirectoryFile(
+    root,
+    ICONS_FILE_NAME,
+    serializeFolderIcons(icons),
+  );
 }
 
 // Read view's image renderer. Sizing and alignment arrive as Folio's title
@@ -2044,6 +2121,254 @@ function entryEditName(entry: LibraryEntry, path: string) {
  * Inline rename field, in the shape of the row it replaces. Enter or losing
  * focus commits, Escape abandons — the Finder behaviour.
  */
+/**
+ * The drawings behind the mark ids in `app/folder-icons.js`. The ids name the
+ * idea, so this map is the only place that knows which drawing stands for it.
+ */
+const FOLDER_MARKS: Record<string, LucideIcon> = {
+  folder: Folder,
+  book: BookOpen,
+  notebook: Notebook,
+  library: Library,
+  page: FileText,
+  news: Newspaper,
+  flask: FlaskConical,
+  microscope: Microscope,
+  atom: Atom,
+  telescope: Telescope,
+  idea: Lightbulb,
+  sparkle: Sparkles,
+  compass: Compass,
+  map: MapMark,
+  mountain: Mountain,
+  leaf: Leaf,
+  sprout: Sprout,
+  tree: TreePine,
+  feather: Feather,
+  pen: PenTool,
+  quote: Quote,
+  bookmark: Bookmark,
+  star: Star,
+  heart: Heart,
+  briefcase: Briefcase,
+  terminal: Terminal,
+  music: Music,
+  camera: Camera,
+  coffee: Coffee,
+  rocket: Rocket,
+};
+
+/** Readable names for the marks, so the picker is usable without seeing it. */
+const FOLDER_MARK_NAMES: Record<string, string> = {
+  folder: "Folder",
+  book: "Open book",
+  notebook: "Notebook",
+  library: "Library",
+  page: "Page",
+  news: "Newspaper",
+  flask: "Flask",
+  microscope: "Microscope",
+  atom: "Atom",
+  telescope: "Telescope",
+  idea: "Lightbulb",
+  sparkle: "Sparkles",
+  compass: "Compass",
+  map: "Map",
+  mountain: "Mountain",
+  leaf: "Leaf",
+  sprout: "Sprout",
+  tree: "Tree",
+  feather: "Feather",
+  pen: "Pen",
+  quote: "Quotation mark",
+  bookmark: "Bookmark",
+  star: "Star",
+  heart: "Heart",
+  briefcase: "Briefcase",
+  terminal: "Terminal",
+  music: "Music note",
+  camera: "Camera",
+  coffee: "Coffee",
+  rocket: "Rocket",
+};
+
+const FOLDER_COLOR_NAMES: Record<string, string> = {
+  default: "Default",
+  sage: "Sage",
+  ocean: "Ocean",
+  plum: "Plum",
+  rose: "Rose",
+  clay: "Clay",
+  amber: "Amber",
+  slate: "Slate",
+};
+
+/**
+ * How a folder is drawn: the picture its reader chose, the mark they picked,
+ * or — for a folder nobody has dressed — the plain folder it starts as.
+ */
+function FolderMark({ mark, size = 13 }: { mark?: FolderIcon; size?: number }) {
+  if (mark?.image) {
+    return <img className="folder-mark-image" src={mark.image} alt="" />;
+  }
+  const Mark = (mark?.icon && FOLDER_MARKS[mark.icon]) || Folder;
+  return <Mark size={size} aria-hidden="true" />;
+}
+
+/** The side of the square a chosen picture is cut down to, in pixels. */
+const FOLDER_ICON_IMAGE_SIZE = 128;
+
+/**
+ * Turns a picture into a mark: the middle square of it, at icon size, so what
+ * the library carries is a 24px drawing rather than a photograph. Anything the
+ * browser cannot decode is refused here rather than stored and drawn as a gap.
+ */
+async function folderMarkFromImage(source: string): Promise<string> {
+  const picture = new Image();
+  picture.src = source;
+  try {
+    await picture.decode();
+  } catch {
+    throw new Error("Folio could not read that picture.");
+  }
+  const side = Math.min(picture.naturalWidth, picture.naturalHeight);
+  const canvas = document.createElement("canvas");
+  canvas.width = FOLDER_ICON_IMAGE_SIZE;
+  canvas.height = FOLDER_ICON_IMAGE_SIZE;
+  const context = side ? canvas.getContext("2d") : null;
+  if (!context) throw new Error("Folio could not read that picture.");
+  context.drawImage(
+    picture,
+    (picture.naturalWidth - side) / 2,
+    (picture.naturalHeight - side) / 2,
+    side,
+    side,
+    0,
+    0,
+    FOLDER_ICON_IMAGE_SIZE,
+    FOLDER_ICON_IMAGE_SIZE,
+  );
+  return canvas.toDataURL("image/png");
+}
+
+/** Roughly what the picker measures, for keeping it on screen when it opens. */
+const FOLDER_ICON_MENU_WIDTH = 246;
+const FOLDER_ICON_MENU_HEIGHT = 300;
+
+/**
+ * What sits behind a folder's mark: the drawings Folio can make, the inks it
+ * makes them in, and a way in for a picture of the reader's own.
+ *
+ * A picture and a drawing are alternatives — choosing either puts the other
+ * away — and ink describes a drawing, so while a folder wears a picture there
+ * is no ink to choose and the row says so rather than doing nothing.
+ */
+function FolderIconPicker({
+  name,
+  mark,
+  at,
+  onChoose,
+  onChoosePicture,
+}: {
+  name: string;
+  mark: FolderIcon | undefined;
+  at: { x: number; y: number };
+  onChoose: (mark: FolderIcon | undefined) => void;
+  onChoosePicture: () => void;
+}) {
+  const picture = Boolean(mark?.image);
+  return (
+    <div
+      className="folder-icon-menu"
+      role="dialog"
+      tabIndex={-1}
+      aria-label={`Icon for ${name}`}
+      style={{ left: at.x, top: at.y }}
+    >
+      <div className="folder-icon-head">
+        <span data-color={mark?.color}>
+          <FolderMark mark={mark} size={12} />
+          <strong>{name}</strong>
+        </span>
+        <button
+          type="button"
+          className="folder-icon-reset"
+          onClick={() => onChoose(undefined)}
+          disabled={!mark}
+          title="Go back to the plain folder"
+        >
+          <RotateCcw size={11} aria-hidden="true" />
+          <span>Reset</span>
+        </button>
+      </div>
+
+      <div className="folder-icon-grid" role="group" aria-label="Icons">
+        {FOLDER_ICON_IDS.map((id) => {
+          const Mark = FOLDER_MARKS[id];
+          const chosen = !picture && mark?.icon === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              className={chosen ? "chosen" : ""}
+              data-color={mark?.color}
+              aria-label={FOLDER_MARK_NAMES[id] ?? id}
+              aria-pressed={chosen}
+              title={FOLDER_MARK_NAMES[id] ?? id}
+              onClick={() => onChoose({ color: mark?.color, icon: id })}
+            >
+              <Mark size={14} aria-hidden="true" />
+            </button>
+          );
+        })}
+      </div>
+
+      <div
+        className="folder-icon-colors"
+        role="group"
+        aria-label={picture ? "Colours — a picture is not tinted" : "Colours"}
+      >
+        {FOLDER_COLOR_IDS.map((id) => {
+          const chosen = !picture && (mark?.color ?? "default") === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              className={chosen ? "chosen" : ""}
+              data-color={id}
+              disabled={picture}
+              aria-label={FOLDER_COLOR_NAMES[id] ?? id}
+              aria-pressed={chosen}
+              title={
+                picture
+                  ? "A picture is not tinted — choose an icon to use a colour"
+                  : (FOLDER_COLOR_NAMES[id] ?? id)
+              }
+              onClick={() =>
+                onChoose({
+                  icon: mark?.icon,
+                  color: id === "default" ? undefined : id,
+                })
+              }
+            />
+          );
+        })}
+      </div>
+
+      <button
+        type="button"
+        className="folder-icon-browse"
+        onClick={onChoosePicture}
+      >
+        <ImagePlus size={13} aria-hidden="true" />
+        <span>
+          {picture ? "Choose another picture…" : "Choose a picture…"}
+        </span>
+      </button>
+    </div>
+  );
+}
+
 function EntryRenameField({
   className,
   initial,
@@ -2258,6 +2583,12 @@ export default function Home() {
   const [entryMenu, setEntryMenu] = useState<
     (LibraryEntry & { x: number; y: number }) | undefined
   >();
+  // How each folder is drawn, and the folder whose picker is open. Both are
+  // keyed by folder path, with the library root under the empty string.
+  const [folderIcons, setFolderIcons] = useState<FolderIcons>({});
+  const [folderIconMenu, setFolderIconMenu] = useState<
+    { folder: string; x: number; y: number } | undefined
+  >();
   const [notice, setNotice] = useState<string>();
   const folderInput = useRef<HTMLInputElement>(null);
   const createNameInput = useRef<HTMLInputElement>(null);
@@ -2289,6 +2620,10 @@ export default function Home() {
   const dragScrollArmed = useRef(false);
   const dragEnded = useRef(false);
   const noteOrderRequest = useRef(0);
+  const folderIconsRequest = useRef(0);
+  const folderIconInput = useRef<HTMLInputElement>(null);
+  /** The folder a picture is being chosen for, while the picker is open. */
+  const folderIconTarget = useRef<string | undefined>(undefined);
   const nativeSaveTimers = useRef<Map<string, number>>(new Map());
   const nativePendingSaves = useRef<
     Map<string, { path: string; content: string }>
@@ -2518,6 +2853,25 @@ export default function Home() {
     [desktopMode],
   );
 
+  /** Re-reads how a library says its folders look, whenever one opens. */
+  const loadFolderIcons = useCallback(
+    async (root?: DirectoryHandleLike) => {
+      const request = (folderIconsRequest.current += 1);
+      let icons: FolderIcons = {};
+      try {
+        if (desktopMode) {
+          icons = parseFolderIcons(await nativeLibrary.readIcons());
+        } else if (root) icons = await readDirectoryIcons(root);
+      } catch {
+        // An unreadable icons file is not worth interrupting a reader over:
+        // the folders simply wear the plain folder mark.
+        icons = {};
+      }
+      if (folderIconsRequest.current === request) setFolderIcons(icons);
+    },
+    [desktopMode],
+  );
+
   const applyNativeLibrary = useCallback(
     (snapshot: LibrarySnapshot, preferredPath?: string) => {
       setNotes(snapshot.notes);
@@ -2540,9 +2894,10 @@ export default function Home() {
       // a link can reroot it — so its order comes from the folder now open, and
       // the page to reopen at belongs to whichever library is in front of us.
       void loadNoteOrder();
+      void loadFolderIcons();
       openNoteWritten.current = undefined;
     },
-    [loadNoteOrder],
+    [loadFolderIcons, loadNoteOrder],
   );
 
   useEffect(() => {
@@ -3030,6 +3385,127 @@ export default function Home() {
     }
   }, [active.id, active.path, desktopMode, nativeLibraryOpen, showNotice]);
 
+  /**
+   * Records how the folders look. The look belongs to the library, so it is
+   * written beside the pages — a sample library has no folder on disk to
+   * write to, and there a mark is simply how this session's panel looks.
+   */
+  const saveFolderIcons = useCallback(
+    async (icons: FolderIcons) => {
+      folderIconsRequest.current += 1;
+      setFolderIcons(icons);
+      try {
+        if (desktopMode) {
+          if (!nativeLibraryOpen) return;
+          await nativeLibrary.writeIcons(serializeFolderIcons(icons));
+        } else if (rootDirectory) {
+          await writeDirectoryIcons(rootDirectory, icons);
+        }
+      } catch {
+        showNotice("Folio could not save this icon to the library folder.");
+      }
+    },
+    [desktopMode, nativeLibraryOpen, rootDirectory, showNotice],
+  );
+
+  /** Gives a folder a mark, or — given nothing to give — takes one off. */
+  const setFolderIcon = useCallback(
+    (folder: string, mark: FolderIcon | undefined) => {
+      void saveFolderIcons(withFolderIcon(folderIcons, folder, mark));
+    },
+    [folderIcons, saveFolderIcons],
+  );
+
+  /**
+   * The Choose-a-picture button: native runtimes read the file through the
+   * system picker; elsewhere a hidden file input reads the selection. Either
+   * way only the scaled-down mark is kept, never the file itself.
+   */
+  const chooseFolderPicture = useCallback(
+    async (folder: string) => {
+      if (desktopMode) {
+        try {
+          const picked = await nativeLibrary.pickIconImage();
+          if (!picked) return;
+          setFolderIcon(folder, { image: await folderMarkFromImage(picked) });
+        } catch (error) {
+          showNotice(error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+      folderIconTarget.current = folder;
+      folderIconInput.current?.click();
+    },
+    [desktopMode, setFolderIcon, showNotice],
+  );
+
+  const handleFolderPicturePick = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0];
+    const folder = folderIconTarget.current;
+    event.target.value = "";
+    folderIconTarget.current = undefined;
+    if (!file || folder === undefined) return;
+    const source = URL.createObjectURL(file);
+    try {
+      setFolderIcon(folder, { image: await folderMarkFromImage(source) });
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      URL.revokeObjectURL(source);
+    }
+  };
+
+  /**
+   * Opens the picker under the mark it belongs to, folded up onto it when
+   * there is no room below — a folder near the bottom of a long library still
+   * gets a picker a reader can see all of.
+   */
+  const openFolderIconMenu = (event: React.MouseEvent, folder: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setEntryMenu(undefined);
+    const mark = event.currentTarget.getBoundingClientRect();
+    const below = mark.bottom + 6;
+    setFolderIconMenu({
+      folder,
+      x: Math.max(
+        8,
+        Math.min(mark.left, window.innerWidth - FOLDER_ICON_MENU_WIDTH - 8),
+      ),
+      y:
+        below + FOLDER_ICON_MENU_HEIGHT > window.innerHeight
+          ? Math.max(8, mark.top - 6 - FOLDER_ICON_MENU_HEIGHT)
+          : below,
+    });
+  };
+
+  // The icon picker dismisses like the entry menu, and for the same reason:
+  // it describes one folder, and a panel that has scrolled or a click
+  // elsewhere means the reader has moved on to something else.
+  useEffect(() => {
+    if (!folderIconMenu) return undefined;
+    const close = () => setFolderIconMenu(undefined);
+    // Anything happening inside the picker is the reader using it.
+    const closeFromOutside = (event: Event) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.(".folder-icon-menu")) return;
+      close();
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("mousedown", closeFromOutside);
+    document.addEventListener("scroll", closeFromOutside, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("mousedown", closeFromOutside);
+      document.removeEventListener("scroll", closeFromOutside, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [folderIconMenu]);
+
   // Finder's keys for the selected library entry. Bound at the document
   // rather than the panel because opening a page moves focus out of the
   // library, which would leave a panel-level handler unreachable. Typing
@@ -3038,6 +3514,7 @@ export default function Home() {
     if (!selectedEntry || renamingEntry) return undefined;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (fontPanelOpen || searchOpen || createKind || entryMenu) return;
+      if (folderIconMenu) return;
       const target = event.target as HTMLElement | null;
       if (
         target?.closest?.(
@@ -3067,6 +3544,7 @@ export default function Home() {
   }, [
     createKind,
     entryMenu,
+    folderIconMenu,
     fontPanelOpen,
     renamingEntry,
     searchOpen,
@@ -3912,6 +4390,14 @@ export default function Home() {
           });
           return next;
         });
+        // A folder under a new name is the same folder, so it keeps its mark.
+        const marks = prunedFolderIcons(
+          renamedFolderIcons(folderIcons, entry.path, destination),
+          snapshot.folders,
+        );
+        if (serializeFolderIcons(marks) !== serializeFolderIcons(folderIcons)) {
+          void saveFolderIcons(marks);
+        }
       }
       // A renamed page keeps the place it was dragged to, rather than dropping
       // to the end of its folder under a name the order file does not know.
@@ -4013,8 +4499,9 @@ export default function Home() {
       setFolders(snapshot.folders);
       setLibraryName(snapshot.name);
       setDirty(new Set());
-      // A refresh picks up an order file edited or replaced outside Folio too.
+      // A refresh picks up an order or icons file edited outside Folio too.
       await loadNoteOrder();
+      await loadFolderIcons();
       setRevealedFolders(
         (current) =>
           new Set(snapshot.folders.filter((folder) => current.has(folder))),
@@ -4082,6 +4569,15 @@ export default function Home() {
         );
         applyNativeLibrary(snapshot, stillOpen ? active.path : undefined);
         setSelectedEntry(undefined);
+        // Nothing is left behind describing a folder that has gone.
+        if (entry.kind === "folder") {
+          const marks = prunedFolderIcons(folderIcons, snapshot.folders);
+          if (
+            serializeFolderIcons(marks) !== serializeFolderIcons(folderIcons)
+          ) {
+            void saveFolderIcons(marks);
+          }
+        }
       showNotice(`Moved ${name} to the ${TRASH_NAME}.`);
     } catch (error) {
       showNotice(error instanceof Error ? error.message : String(error));
@@ -4383,6 +4879,7 @@ export default function Home() {
       setNotes(loaded.notes);
       setFolders(loaded.folders);
       applyNoteOrder(await readDirectoryOrder(directory));
+      void loadFolderIcons(directory);
       setRootDirectory(directory);
       setActiveId(loaded.notes[0]?.id ?? "");
       setLibraryName(directory.name);
@@ -4399,6 +4896,7 @@ export default function Home() {
     applyNoteOrder,
     desktopMode,
     flushAllNativeSaves,
+    loadFolderIcons,
     showNotice,
   ]);
 
@@ -4546,9 +5044,10 @@ export default function Home() {
         a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
       ),
     );
-    // An imported copy has no order file of its own, and the last library's
-    // order says nothing about these pages.
+    // An imported copy has no files of Folio's own, and the last library's
+    // order and folder marks say nothing about these pages.
     applyNoteOrder({});
+    setFolderIcons({});
     setRootDirectory(undefined);
     setActiveId(loaded[0].id);
     setRevealedFolders(new Set());
@@ -5378,7 +5877,7 @@ export default function Home() {
                 No Markdown files here yet. Create one to start this library.
               </p>
             )}
-            {listedGroups.map(([group, groupNotes], groupIndex) => {
+            {listedGroups.map(([group, groupNotes]) => {
               const collapsed = collapsedGroups.has(group);
               // The row a drop would take in this folder, drawn as a line
               // between pages. Only the folder under the pointer draws one.
@@ -5403,49 +5902,71 @@ export default function Home() {
                   key={group || "__root__"}
                   data-folder-path={group}
                 >
-                  {renamingEntry?.kind === "folder" &&
-                  renamingEntry.path === group ? (
-                    <EntryRenameField
-                      className="section-label renaming"
-                      initial={entryEditName(renamingEntry, group)}
-                      onCommit={(value) =>
-                        void renameEntry(renamingEntry, value)
-                      }
-                      onCancel={() => setRenamingEntry(undefined)}
-                    />
-                  ) : (
+                  {/* The mark sits outside the folder's own button so it can
+                      be a button itself: a click on the folder opens it, a
+                      click on its mark asks how it should look. */}
+                  <div className="section-head">
                     <button
-                      className={`section-label ${
-                        sameEntry(selectedEntry, {
-                          kind: "folder",
-                          path: group,
-                        })
-                          ? "selected-entry"
-                          : ""
-                      }`}
-                      onClick={() => {
-                        setSelectedEntry({ kind: "folder", path: group });
-                        setCollapsedGroups((current) => {
-                          const next = new Set(current);
-                          if (next.has(group)) next.delete(group);
-                          else next.add(group);
-                          return next;
-                        });
-                      }}
+                      type="button"
+                      className="section-icon"
+                      data-color={folderIcons[group]?.color}
+                      aria-label={`Icon for ${displayGroup(group)}`}
+                      aria-haspopup="dialog"
+                      aria-expanded={folderIconMenu?.folder === group}
+                      title="Choose an icon for this folder"
+                      onClick={(event) => openFolderIconMenu(event, group)}
                       onContextMenu={(event) =>
                         group &&
                         openEntryMenu(event, { kind: "folder", path: group })
                       }
                     >
-                      <span>{String(groupIndex + 1).padStart(2, "0")}</span>
-                      <strong>{displayGroup(group)}</strong>
-                      <small>{dropZone ? "drop here" : groupNotes.length}</small>
-                      <ChevronDown
-                        size={14}
-                        className={collapsed ? "rotated" : ""}
-                      />
+                      <FolderMark mark={folderIcons[group]} />
                     </button>
-                  )}
+                    {renamingEntry?.kind === "folder" &&
+                    renamingEntry.path === group ? (
+                      <EntryRenameField
+                        className="section-label renaming"
+                        initial={entryEditName(renamingEntry, group)}
+                        onCommit={(value) =>
+                          void renameEntry(renamingEntry, value)
+                        }
+                        onCancel={() => setRenamingEntry(undefined)}
+                      />
+                    ) : (
+                      <button
+                        className={`section-label ${
+                          sameEntry(selectedEntry, {
+                            kind: "folder",
+                            path: group,
+                          })
+                            ? "selected-entry"
+                            : ""
+                        }`}
+                        onClick={() => {
+                          setSelectedEntry({ kind: "folder", path: group });
+                          setCollapsedGroups((current) => {
+                            const next = new Set(current);
+                            if (next.has(group)) next.delete(group);
+                            else next.add(group);
+                            return next;
+                          });
+                        }}
+                        onContextMenu={(event) =>
+                          group &&
+                          openEntryMenu(event, { kind: "folder", path: group })
+                        }
+                      >
+                        <strong>{displayGroup(group)}</strong>
+                        <small>
+                          {dropZone ? "drop here" : groupNotes.length}
+                        </small>
+                        <ChevronDown
+                          size={14}
+                          className={collapsed ? "rotated" : ""}
+                        />
+                      </button>
+                    )}
+                  </div>
                   {!collapsed && (
                     <div className="page-list">
                       {groupNotes.map((note, noteIndex) => {
@@ -5671,18 +6192,16 @@ export default function Home() {
 
         <section className="document-area">
           <div className="document-toolbar">
-            {/* Where the reader is, counted within the folder they are reading:
-                a page's neighbours are the pages beside it in its own folder,
-                and a number out of the whole library answers a question nobody
-                mid-page is asking. Kept quiet on purpose — it is a glance, not
-                a headline, and it sits above the page's own title. */}
+            {/* Where the reader is, counted within the folder they are
+                reading: a page's neighbours are the pages beside it in its own
+                folder. Each folder stands on its own, so nothing here numbers
+                it against the others. Kept quiet on purpose — it is a glance,
+                not a headline, and it sits above the page's own title. */}
             <div
               className="document-position"
               aria-label={`Page ${activeFileIndex + 1} of ${
                 activeSectionNotes.length
-              } in ${displayGroup(activeGroupPath)}, section ${
-                activeSectionIndex + 1
-              } of ${grouped.length}`}
+              } in ${displayGroup(activeGroupPath)}`}
             >
               <span className="position-page">
                 <span>Page</span>
@@ -5691,16 +6210,10 @@ export default function Home() {
                   / {String(activeSectionNotes.length).padStart(2, "0")}
                 </small>
               </span>
-              <span className="position-copy">
-                <span className="position-overline">
-                  Section {String(activeSectionIndex + 1).padStart(2, "0")} of{" "}
-                  {String(grouped.length).padStart(2, "0")}
-                </span>
-                <span className="position-path">
-                  <strong>{displayGroup(activeGroupPath)}</strong>
-                  <ChevronRight size={12} aria-hidden="true" />
-                  <span>{active.title}</span>
-                </span>
+              <span className="position-path">
+                <strong>{displayGroup(activeGroupPath)}</strong>
+                <ChevronRight size={12} aria-hidden="true" />
+                <span>{active.title}</span>
               </span>
             </div>
 
@@ -6284,6 +6797,28 @@ export default function Home() {
           </button>
         </div>
       )}
+
+      {folderIconMenu && (
+        <FolderIconPicker
+          name={displayGroup(folderIconMenu.folder)}
+          mark={folderIcons[folderIconMenu.folder]}
+          at={folderIconMenu}
+          onChoose={(mark) => setFolderIcon(folderIconMenu.folder, mark)}
+          onChoosePicture={() => {
+            const folder = folderIconMenu.folder;
+            setFolderIconMenu(undefined);
+            void chooseFolderPicture(folder);
+          }}
+        />
+      )}
+
+      <input
+        ref={folderIconInput}
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp"
+        hidden
+        onChange={handleFolderPicturePick}
+      />
 
       {notice && (
         <div className="notice-toast" role="status">
