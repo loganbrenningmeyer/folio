@@ -18,6 +18,12 @@ const PREFERENCES_FILE: &str = "library.json";
 /// out of the way of the Markdown it describes. See `app/library-order.js`.
 const LIBRARY_DIRECTORY: &str = ".folio";
 const ORDER_FILE: &str = "order.json";
+/// How the library's folders should be drawn. See `app/folder-icons.js`.
+const ICONS_FILE: &str = "icons.json";
+/// A folder mark is a 24px drawing, and the renderer scales a picture down to
+/// icon size before storing it, so the file handed over is only ever a source.
+/// The cap keeps a photo library's worth of pixels from crossing the bridge.
+const MAX_ICON_SOURCE_BYTES: u64 = 24 * 1024 * 1024;
 const MAIN_WINDOW: &str = "main";
 /// How long Folio waits for the frontend to report a painted first frame
 /// before showing its window anyway. Long enough for a large library to be
@@ -468,23 +474,110 @@ async fn write_library_order(
     write_order_file(&root, &contents)
 }
 
-fn read_order_file(root: &Path) -> Result<Option<String>, String> {
-    let source = root.join(LIBRARY_DIRECTORY).join(ORDER_FILE);
-    match fs::read_to_string(&source) {
-        Ok(contents) => Ok(Some(contents)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(io_error("read the page order", &source, error)),
+#[tauri::command]
+async fn read_library_icons(state: State<'_, LibraryState>) -> Result<Option<String>, String> {
+    let _operation = state.lock_operation()?;
+    let Some(root) = state.get()? else {
+        return Ok(None);
+    };
+    read_library_file(&root, ICONS_FILE, "read the folder icons")
+}
+
+#[tauri::command]
+async fn write_library_icons(
+    contents: String,
+    state: State<'_, LibraryState>,
+) -> Result<(), String> {
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    write_library_file(&root, ICONS_FILE, &contents, "save the folder icons")
+}
+
+/// A picture for a folder's mark, as a data URI. The library root is not
+/// consulted: a folder can be given a look before its library is one Folio
+/// can write to, and nothing is stored here in any case.
+#[tauri::command]
+async fn pick_icon_image(app: AppHandle) -> Result<Option<String>, String> {
+    // Like choose_library, the blocking picker must run on an async command.
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_title("Choose a folder icon")
+        .add_filter("Images", &ICON_IMAGE_EXTENSIONS)
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .map_err(|_| "That picture is not available as a local file.".to_string())?;
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let Some(mime) = icon_image_mime(&extension) else {
+        return Err(
+            "Folio can use a PNG, JPEG, GIF, or WebP picture as a folder icon.".to_string(),
+        );
+    };
+    let size = fs::metadata(&path)
+        .map_err(|error| io_error("read the selected picture", &path, error))?
+        .len();
+    if size > MAX_ICON_SOURCE_BYTES {
+        return Err(format!(
+            "That picture is {} MB. Choose one under {} MB.",
+            size / (1024 * 1024),
+            MAX_ICON_SOURCE_BYTES / (1024 * 1024)
+        ));
+    }
+    let bytes =
+        fs::read(&path).map_err(|error| io_error("read the selected picture", &path, error))?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(Some(format!("data:{mime};base64,{encoded}")))
+}
+
+/// The picture formats a webview can draw into a canvas to scale down. SVG is
+/// left out on purpose: it is a document, and one that can carry script.
+const ICON_IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+
+fn icon_image_mime(extension: &str) -> Option<&'static str> {
+    match extension {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
     }
 }
 
+fn read_order_file(root: &Path) -> Result<Option<String>, String> {
+    read_library_file(root, ORDER_FILE, "read the page order")
+}
+
 fn write_order_file(root: &Path, contents: &str) -> Result<(), String> {
+    write_library_file(root, ORDER_FILE, contents, "save the page order")
+}
+
+/// One of Folio's own files inside a library. A file that was never written
+/// reads as nothing recorded, which is how a library it has not touched opens.
+fn read_library_file(root: &Path, name: &str, action: &str) -> Result<Option<String>, String> {
+    let source = root.join(LIBRARY_DIRECTORY).join(name);
+    match fs::read_to_string(&source) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io_error(action, &source, error)),
+    }
+}
+
+fn write_library_file(root: &Path, name: &str, contents: &str, action: &str) -> Result<(), String> {
     let directory = root.join(LIBRARY_DIRECTORY);
     fs::create_dir_all(&directory)
         .map_err(|error| io_error("create Folio's library folder", &directory, error))?;
 
-    let destination = directory.join(ORDER_FILE);
+    let destination = directory.join(name);
     atomic_write(&destination, contents.as_bytes(), None, true)
-        .map_err(|error| io_error("save the page order", &destination, error))
+        .map_err(|error| io_error(action, &destination, error))
 }
 
 #[tauri::command]
@@ -592,12 +685,7 @@ async fn rename_entry(
 
 /// The filesystem half of `rename_entry`, split out so it can be tested
 /// against a real directory without a Tauri state handle.
-fn rename_in_library(
-    root: &Path,
-    path: &str,
-    name: &str,
-    kind: PathKind,
-) -> Result<(), String> {
+fn rename_in_library(root: &Path, path: &str, name: &str, kind: PathKind) -> Result<(), String> {
     let folder = matches!(kind, PathKind::Folder);
     let relative = validate_relative_path(path, kind)?;
     let new_name = validate_entry_name(name, kind)?;
@@ -607,10 +695,8 @@ fn rename_in_library(
     } else {
         resolve_existing_file(root, &relative)?
     };
-    let parent = resolve_existing_directory(
-        root,
-        relative.parent().unwrap_or_else(|| Path::new("")),
-    )?;
+    let parent =
+        resolve_existing_directory(root, relative.parent().unwrap_or_else(|| Path::new("")))?;
     let destination = parent.join(&new_name);
 
     if destination == source {
@@ -1532,6 +1618,9 @@ pub fn run() {
             show_window,
             read_library_order,
             write_library_order,
+            read_library_icons,
+            write_library_icons,
+            pick_icon_image,
             write_note,
             move_note,
             rename_entry,
@@ -1672,6 +1761,63 @@ mod tests {
         );
 
         fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn folio_keeps_its_page_order_and_folder_icons_in_separate_files() {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "folio-library-files-test-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create test root");
+
+        // A library Folio has not written to has recorded nothing, which is
+        // read as nothing rather than as a failure to open it.
+        assert_eq!(read_order_file(&root), Ok(None));
+        assert_eq!(
+            read_library_file(&root, ICONS_FILE, "read the folder icons"),
+            Ok(None)
+        );
+
+        // The dot folder is made on demand, by whichever file is written first.
+        write_library_file(
+            &root,
+            ICONS_FILE,
+            "{\"version\":1,\"folders\":{\"guides\":{\"icon\":\"compass\"}}}",
+            "save the folder icons",
+        )
+        .expect("write icons");
+        write_order_file(&root, "{\"version\":1,\"folders\":{}}").expect("write order");
+
+        // Each file keeps its own contents: a reorder cannot disturb a mark,
+        // and a mark cannot disturb the order.
+        assert_eq!(
+            read_library_file(&root, ICONS_FILE, "read the folder icons"),
+            Ok(Some(
+                "{\"version\":1,\"folders\":{\"guides\":{\"icon\":\"compass\"}}}".to_string()
+            ))
+        );
+        assert_eq!(
+            read_order_file(&root),
+            Ok(Some("{\"version\":1,\"folders\":{}}".to_string()))
+        );
+        assert!(root.join(LIBRARY_DIRECTORY).join(ICONS_FILE).is_file());
+        assert!(root.join(LIBRARY_DIRECTORY).join(ORDER_FILE).is_file());
+
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn only_pictures_a_webview_can_draw_are_offered_as_folder_icons() {
+        assert_eq!(icon_image_mime("png"), Some("image/png"));
+        assert_eq!(icon_image_mime("jpg"), Some("image/jpeg"));
+        assert_eq!(icon_image_mime("jpeg"), Some("image/jpeg"));
+        assert_eq!(icon_image_mime("webp"), Some("image/webp"));
+        // An SVG is a document that can carry script, and a PDF is not a mark.
+        assert_eq!(icon_image_mime("svg"), None);
+        assert_eq!(icon_image_mime("pdf"), None);
+        assert_eq!(icon_image_mime(""), None);
     }
 
     #[test]
@@ -1844,8 +1990,13 @@ mod tests {
         fs::write(root.join("Research/Taken.md"), "other").expect("write other note");
 
         // A page rename keeps the contents and adds the extension for you.
-        rename_in_library(&root, "Research/Idea.md", "Better idea", PathKind::MarkdownFile)
-            .expect("rename note");
+        rename_in_library(
+            &root,
+            "Research/Idea.md",
+            "Better idea",
+            PathKind::MarkdownFile,
+        )
+        .expect("rename note");
         assert!(!root.join("Research/Idea.md").exists());
         assert_eq!(
             fs::read_to_string(root.join("Research/Better idea.md")).expect("read renamed"),
@@ -1877,9 +2028,7 @@ mod tests {
 
         // Escaping the library is refused.
         assert!(rename_in_library(&root, "../outside", "x", PathKind::Folder).is_err());
-        assert!(
-            rename_in_library(&root, "Field notes", "../escape", PathKind::Folder).is_err()
-        );
+        assert!(rename_in_library(&root, "Field notes", "../escape", PathKind::Folder).is_err());
 
         fs::remove_dir_all(&root).expect("remove test root");
     }
@@ -2014,7 +2163,10 @@ mod tests {
             open_note: Some("guides/setup.md".to_string()),
         })
         .expect("encode settings");
-        assert!(written.contains(r#""openNote":"guides/setup.md""#), "{written}");
+        assert!(
+            written.contains(r#""openNote":"guides/setup.md""#),
+            "{written}"
+        );
         let read_back: Preferences = serde_json::from_str(&written).expect("read settings");
         assert_eq!(read_back.open_note.as_deref(), Some("guides/setup.md"));
     }

@@ -132,6 +132,29 @@ export function writeLibraryOrder(contents: string): Promise<void> {
   return invokeNative("write_library_order", { contents });
 }
 
+/**
+ * How the library's folders should be drawn, as stored in `.folio/icons.json`,
+ * or null when no folder has been given a look. Read and written whole beside
+ * the page order; its shape lives in `app/folder-icons.js`.
+ */
+export function readLibraryIcons(): Promise<string | null> {
+  return invokeNative("read_library_icons");
+}
+
+export function writeLibraryIcons(contents: string): Promise<void> {
+  return invokeNative("write_library_icons", { contents });
+}
+
+/**
+ * Native image picker for a folder's icon, returning the chosen picture as a
+ * data URI. Nothing is copied into the library: the renderer scales the
+ * picture down to icon size and the small result is what gets stored. Resolves
+ * to null when the picker is dismissed.
+ */
+export function pickIconImage(): Promise<string | null> {
+  return invokeNative("pick_icon_image");
+}
+
 export function moveNote(
   fromPath: RelativePath,
   toPath: RelativePath,
@@ -203,6 +226,9 @@ export const nativeLibrary = Object.freeze({
   createNote,
   readOrder: readLibraryOrder,
   writeOrder: writeLibraryOrder,
+  readIcons: readLibraryIcons,
+  writeIcons: writeLibraryIcons,
+  pickIconImage,
   write: writeNote,
   move: moveNote,
   rename: renameEntry,
