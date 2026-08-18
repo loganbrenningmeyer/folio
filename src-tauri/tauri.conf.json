@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Folio",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "identifier": "com.loganbrenningmeyer.folio",
   "build": {
     "beforeDevCommand": "npm run desktop:renderer:dev",
