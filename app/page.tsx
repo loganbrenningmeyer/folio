@@ -2404,8 +2404,10 @@ export default function Home() {
     0,
     activeSectionNotes.findIndex((note) => note.id === active.id),
   );
-  const pageProgress = notes.length
-    ? ((activeIndex + 1) / notes.length) * 100
+  // The bar under the toolbar is the page counter drawn wide, so it fills
+  // across the folder in hand rather than the whole library.
+  const pageProgress = activeSectionNotes.length
+    ? ((activeFileIndex + 1) / activeSectionNotes.length) * 100
     : 0;
 
   const pageHeadings = useMemo(
@@ -5647,26 +5649,30 @@ export default function Home() {
 
         <section className="document-area">
           <div className="document-toolbar">
+            {/* Where the reader is, counted within the folder they are reading:
+                a page's neighbours are the pages beside it in its own folder,
+                and a number out of the whole library answers a question nobody
+                mid-page is asking. Kept quiet on purpose — it is a glance, not
+                a headline, and it sits above the page's own title. */}
             <div
               className="document-position"
-              aria-label={`Page ${activeIndex + 1} of ${notes.length}, section ${
-                activeSectionIndex + 1
-              } of ${grouped.length}, file ${activeFileIndex + 1} of ${
+              aria-label={`Page ${activeFileIndex + 1} of ${
                 activeSectionNotes.length
-              }`}
+              } in ${displayGroup(activeGroupPath)}, section ${
+                activeSectionIndex + 1
+              } of ${grouped.length}`}
             >
               <span className="position-page">
                 <span>Page</span>
-                <strong>{String(activeIndex + 1).padStart(2, "0")}</strong>
-                <small>/ {String(notes.length).padStart(2, "0")}</small>
+                <strong>{String(activeFileIndex + 1).padStart(2, "0")}</strong>
+                <small>
+                  / {String(activeSectionNotes.length).padStart(2, "0")}
+                </small>
               </span>
               <span className="position-copy">
                 <span className="position-overline">
                   Section {String(activeSectionIndex + 1).padStart(2, "0")} of{" "}
                   {String(grouped.length).padStart(2, "0")}
-                  <i aria-hidden="true">•</i>
-                  File {String(activeFileIndex + 1).padStart(2, "0")} of{" "}
-                  {String(activeSectionNotes.length).padStart(2, "0")}
                 </span>
                 <span className="position-path">
                   <strong>{displayGroup(activeGroupPath)}</strong>
@@ -6279,7 +6285,8 @@ export default function Home() {
           <ArrowLeft size={17} />
         </button>
         <span>
-          {notes.length ? activeIndex + 1 : 0} / {notes.length}
+          {activeSectionNotes.length ? activeFileIndex + 1 : 0} /{" "}
+          {activeSectionNotes.length}
         </span>
         <button
           onClick={() =>
