@@ -2,6 +2,22 @@ import { access, cp, mkdir, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
+// Installing in place is a macOS idea: the build is a self-contained bundle
+// that only has to be moved into an Applications folder. Windows installs
+// through the generated setup program instead, so say that rather than failing
+// later on a path that was never going to exist.
+if (process.platform !== "darwin") {
+  console.error(
+    "npm run desktop:install installs the macOS app bundle and only runs on macOS.",
+  );
+  console.error(
+    process.platform === "win32"
+      ? "On Windows run npm run desktop:exe, then run the installer it writes to src-tauri/target/release/bundle/nsis/."
+      : "See DESKTOP.md for the platforms Folio builds for.",
+  );
+  process.exit(1);
+}
+
 const projectRoot = resolve(import.meta.dirname, "..");
 const source = join(
   projectRoot,

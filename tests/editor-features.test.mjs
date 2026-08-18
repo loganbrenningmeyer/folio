@@ -5,7 +5,8 @@ import { EditorState } from "@codemirror/state";
 import {
   alignScrollAnchors,
   extractSearchExcerpts,
-  formatShortcut,
+  formatShortcutForPlatform,
+  resolveShortcutForPlatform,
   isCommandShortcut,
   isRecordedShortcut,
   markdownBlockCompletion,
@@ -58,7 +59,7 @@ test("records the unshifted physical key for snippet shortcuts", () => {
   });
 
   assert.equal(shortcut, "Ctrl-Shift-\\");
-  assert.equal(formatShortcut(shortcut), "⌃⇧\\");
+  assert.equal(formatShortcutForPlatform(shortcut, true), "⌃⇧\\");
   assert.equal(isRecordedShortcut(shortcut), true);
   assert.equal(
     shortcutFromEvent({
@@ -109,7 +110,7 @@ test("records Meta plus Arrow exactly and formats the canonical shortcut", () =>
   );
 
   assert.equal(metaArrow, "Meta-ArrowLeft");
-  assert.equal(formatShortcut(metaArrow), "⌘←");
+  assert.equal(formatShortcutForPlatform(metaArrow, true), "⌘←");
   assert.equal(isCommandShortcut(metaArrow), true);
   assert.notEqual(metaArrow, bareArrow);
   assert.equal(shortcutMatches("Meta-ArrowLeft", metaArrow), true);
@@ -738,12 +739,60 @@ test("link kinds separate pages from anchors and the outside world", () => {
 });
 
 test("shortcuts render as macOS symbols in canonical modifier order", () => {
+  const mac = (shortcut) => formatShortcutForPlatform(shortcut, true);
   // Recorded in a different order than macOS displays them.
-  assert.equal(formatShortcut("Meta-Shift-Ctrl-Alt-k"), "⌃⌥⇧⌘K");
-  assert.equal(formatShortcut("Ctrl-Shift-e"), "⌃⇧E");
-  assert.equal(formatShortcut("Meta-ArrowRight"), "⌘→");
-  assert.equal(formatShortcut("Meta-Backspace"), "⌘⌫");
-  assert.equal(formatShortcut("Shift-F2"), "⇧F2");
-  assert.equal(formatShortcut("Meta-Space"), "⌘␣");
-  assert.equal(formatShortcut(""), "Press shortcut");
+  assert.equal(mac("Meta-Shift-Ctrl-Alt-k"), "⌃⌥⇧⌘K");
+  assert.equal(mac("Ctrl-Shift-e"), "⌃⇧E");
+  assert.equal(mac("Meta-ArrowRight"), "⌘→");
+  assert.equal(mac("Meta-Backspace"), "⌘⌫");
+  assert.equal(mac("Shift-F2"), "⇧F2");
+  assert.equal(mac("Meta-Space"), "⌘␣");
+  assert.equal(mac(""), "Press shortcut");
+});
+
+test("shortcuts render as Windows key names in the same order", () => {
+  const windows = (shortcut) => formatShortcutForPlatform(shortcut, false);
+  assert.equal(windows("Meta-Shift-Ctrl-Alt-k"), "Ctrl+Alt+Shift+Win+K");
+  assert.equal(windows("Ctrl-Shift-e"), "Ctrl+Shift+E");
+  assert.equal(windows("Alt-Shift-\\"), "Alt+Shift+\\");
+  assert.equal(windows("Ctrl-ArrowRight"), "Ctrl+Right");
+  assert.equal(windows("Ctrl-Backspace"), "Ctrl+Backspace");
+  assert.equal(windows("Shift-F2"), "Shift+F2");
+  assert.equal(windows("Ctrl-Space"), "Ctrl+Space");
+  assert.equal(windows(""), "Press shortcut");
+});
+
+test("default shortcuts land on each platform's own modifier", () => {
+  // The app commands. Command on macOS; Ctrl on Windows, where the Meta key
+  // belongs to the operating system.
+  assert.equal(resolveShortcutForPlatform("Mod-k", true), "Meta-k");
+  assert.equal(resolveShortcutForPlatform("Mod-k", false), "Ctrl-k");
+  assert.equal(
+    resolveShortcutForPlatform("Mod-Shift-e", false),
+    "Ctrl-Shift-e",
+  );
+
+  // Snippets take a second chord, which must not collide with the app command
+  // one. Ctrl is free on macOS; on Windows it is not, so snippets use Alt.
+  assert.equal(resolveShortcutForPlatform("Snippet-e", true), "Ctrl-Shift-e");
+  assert.equal(resolveShortcutForPlatform("Snippet-e", false), "Alt-Shift-e");
+  assert.notEqual(
+    resolveShortcutForPlatform("Snippet-e", false),
+    resolveShortcutForPlatform("Mod-Shift-e", false),
+  );
+
+  // A shortcut a reader recorded already names its modifiers.
+  assert.equal(resolveShortcutForPlatform("Ctrl-Shift-p", false), "Ctrl-Shift-p");
+  assert.equal(resolveShortcutForPlatform("", false), "");
+
+  // Every resolved default has to be a shortcut the recorder would accept.
+  for (const platform of [true, false]) {
+    for (const placeholder of ["Mod-k", "Mod-ArrowLeft", "Snippet-\\"]) {
+      assert.equal(
+        isCommandShortcut(resolveShortcutForPlatform(placeholder, platform)),
+        true,
+        `${placeholder} on ${platform ? "macOS" : "Windows"}`,
+      );
+    }
+  }
 });
