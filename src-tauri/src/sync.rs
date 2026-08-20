@@ -826,6 +826,50 @@ mod tests {
         fs::read_to_string(root.join(relative)).expect("read file")
     }
 
+    /// The regression guard for a silent build-configuration failure: git2
+    /// 0.21 defaults to no features, which yields a libgit2 that cannot speak
+    /// https or ssh — every remote fails with "there is no TLS stream
+    /// available", and nothing in a local-remote test suite notices. Needs no
+    /// network, so it runs everywhere the crate is built.
+    #[test]
+    fn libgit2_is_built_able_to_reach_real_remotes() {
+        let version = git2::Version::get();
+        assert!(
+            version.https(),
+            "libgit2 was built without https; sync cannot reach any https remote"
+        );
+        assert!(
+            version.ssh(),
+            "libgit2 was built without ssh; sync cannot use an ssh remote or agent"
+        );
+    }
+
+    /// Proves the TLS path end to end against a real host, which local bare
+    /// remotes never exercise. Ignored by default: it needs the network, and
+    /// CI should not fail because GitHub is unreachable. Run on demand with
+    /// `cargo test --lib -- --ignored reaches_a_real_https_remote`.
+    #[test]
+    #[ignore = "requires network access to github.com"]
+    fn reaches_a_real_https_remote() {
+        let base = test_dir("https-reach");
+        let repo = Repository::init(&base).expect("init repo");
+        // A public repository, read-only and unauthenticated: this is checking
+        // that the handshake happens at all, not that credentials work.
+        let mut remote = repo
+            .remote("probe", "https://github.com/rust-lang/log.git")
+            .expect("add remote");
+        remote
+            .connect_auth(Direction::Fetch, Some(callbacks(None)), None)
+            .expect("connect over https");
+        let heads = remote.list().expect("list refs");
+        assert!(!heads.is_empty(), "a real remote should advertise refs");
+        let _ = remote.disconnect();
+
+        drop(remote);
+        drop(repo);
+        fs::remove_dir_all(base).expect("remove test directory");
+    }
+
     #[test]
     fn bookkeeping_merges_folder_by_folder() {
         let ancestor =
