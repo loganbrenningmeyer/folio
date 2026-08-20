@@ -1127,6 +1127,22 @@ function joinPath(parent: string, name: string) {
   return normalizePath(parent ? `${parent}/${name}` : name);
 }
 
+/**
+ * The folders of a library just opened, all closed but for the one holding the
+ * page it opens on. A library of any size reads as a short list of folders,
+ * with the reader's own place in it already open.
+ */
+function foldersClosedAround(
+  notes: { path: string }[],
+  folders: string[],
+  openPath: string | undefined,
+) {
+  const closed = new Set<string>(["", ...folders]);
+  for (const note of notes) closed.add(parentPath(note.path));
+  closed.delete(parentPath(openPath ?? ""));
+  return closed;
+}
+
 function freshDefaultTextSnippets() {
   return DEFAULT_TEXT_SNIPPETS.map((snippet) => ({
     ...snippet,
@@ -2563,8 +2579,14 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [navOpen, setNavOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
-    new Set(),
+  // In a browser the sample library is what is on screen from the first paint,
+  // so it opens the way any library does: folded up around the page in front
+  // of the reader. The desktop app starts empty and folds its own library up
+  // when that arrives.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() =>
+    isNativeRuntime()
+      ? new Set()
+      : foldersClosedAround(SAMPLE_NOTES, SAMPLE_FOLDERS, SAMPLE_NOTES[0].path),
   );
   // The panel only lists folders that hold Markdown, so a folder created here
   // would vanish before anything is in it. Those stay listed for the session.
@@ -2889,18 +2911,39 @@ export default function Home() {
   );
 
   const applyNativeLibrary = useCallback(
-    (snapshot: LibrarySnapshot, preferredPath?: string) => {
+    (
+      snapshot: LibrarySnapshot,
+      preferredPath?: string,
+      // A library being opened, rather than the one in front of the reader
+      // changing under them. Only an opening folds the panel up.
+      freshLibrary = false,
+    ) => {
       setNotes(snapshot.notes);
       setFolders(snapshot.folders);
       setRootDirectory(undefined);
       const preferred = preferredPath
         ? snapshot.notes.find((note) => note.path === preferredPath)
         : undefined;
-      setActiveId(preferred?.id ?? snapshot.notes[0]?.id ?? "");
+      const opened = preferred ?? snapshot.notes[0];
+      setActiveId(opened?.id ?? "");
       setLibraryName(snapshot.name);
       setNativeLibraryOpen(true);
       setDirty(new Set());
-      setCollapsedGroups(new Set());
+      setCollapsedGroups((current) => {
+        // Anything short of an opening is this library changing — a page
+        // created, moved, renamed, removed — so what the reader closed stays
+        // closed, minus folders that have gone. Either way the folder holding
+        // the page now in front of them is open.
+        const closed = freshLibrary
+          ? foldersClosedAround(snapshot.notes, snapshot.folders, opened?.path)
+          : new Set(
+              [...current].filter(
+                (folder) => !folder || snapshot.folders.includes(folder),
+              ),
+            );
+        closed.delete(parentPath(opened?.path ?? ""));
+        return closed;
+      });
       setRevealedFolders((current) =>
         current.size
           ? new Set(snapshot.folders.filter((folder) => current.has(folder)))
@@ -3293,6 +3336,9 @@ export default function Home() {
     setNotes(SAMPLE_NOTES);
     setFolders(SAMPLE_FOLDERS);
     setActiveId(SAMPLE_NOTES[0].id);
+    setCollapsedGroups(
+      foldersClosedAround(SAMPLE_NOTES, SAMPLE_FOLDERS, SAMPLE_NOTES[0].path),
+    );
     setLibraryName("The Folio Field Guide");
   }, []);
 
@@ -3306,7 +3352,11 @@ export default function Home() {
         if (!cancelled && restored) {
           // Reopen at the page this library was left on, when it is still
           // there; applyNativeLibrary falls back to the first page otherwise.
-          applyNativeLibrary(restored.snapshot, restored.openNote ?? undefined);
+          applyNativeLibrary(
+            restored.snapshot,
+            restored.openNote ?? undefined,
+            true,
+          );
         } else if (!cancelled) {
           // Nothing to reopen: this is a first launch, and Folio's own guide is
           // what there is to read until a folder is chosen. It is put in place
@@ -5073,7 +5123,7 @@ export default function Home() {
         await flushAllNativeSaves();
         const snapshot = await nativeLibrary.choose();
         if (!snapshot) return;
-        applyNativeLibrary(snapshot);
+        applyNativeLibrary(snapshot, undefined, true);
         setView("preview");
       } catch (error) {
         showNotice(
@@ -5102,7 +5152,13 @@ export default function Home() {
       setActiveId(loaded.notes[0]?.id ?? "");
       setLibraryName(directory.name);
       setDirty(new Set());
-      setCollapsedGroups(new Set());
+      setCollapsedGroups(
+        foldersClosedAround(
+          loaded.notes,
+          loaded.folders,
+          loaded.notes[0]?.path,
+        ),
+      );
       setRevealedFolders(new Set());
       setView("preview");
     } catch (error) {
@@ -5279,6 +5335,9 @@ export default function Home() {
     setFolderIcons({});
     setRootDirectory(undefined);
     setActiveId(loaded[0].id);
+    setCollapsedGroups(
+      foldersClosedAround(loaded, [...importedFolders], loaded[0].path),
+    );
     setRevealedFolders(new Set());
     setLibraryName(files[0].webkitRelativePath.split("/")[0] || "My notes");
     event.target.value = "";
