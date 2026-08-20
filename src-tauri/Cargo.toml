@@ -20,10 +20,14 @@ notify = "8"
 # through libgit2 so no git binary is required on the machine.
 #
 # The features are not optional and not defaults: as of 0.21 git2 ships with
-# none, which builds a libgit2 that cannot speak https or ssh at all. TLS comes
-# from the platform — SecureTransport on macOS, WinHTTP on Windows — so neither
-# target needs OpenSSL; git2 gates those crates to non-macOS Unix.
-git2 = { version = "0.21", features = ["https", "ssh"] }
+# none, which builds a libgit2 that cannot speak https or ssh at all. https
+# rides the platform's TLS — SecureTransport on macOS, WinHTTP on Windows —
+# but ssh brings in libssh2, whose crypto is OpenSSL on macOS. vendored-openssl
+# builds that OpenSSL in and links it statically: linked dynamically it binds
+# to Homebrew's copy, which exists only on machines that installed it and is
+# rejected by the hardened runtime everywhere, so the app dies at launch.
+# On Windows libssh2 uses WinCNG and no OpenSSL enters the build at all.
+git2 = { version = "0.21", features = ["https", "ssh", "vendored-openssl"] }
 serde = { version = "1", features = ["derive"] }
 # Deletes go to the Finder trash rather than unlinking, so they stay undoable.
 trash = "5"
