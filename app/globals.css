@@ -626,6 +626,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   backdrop-filter: blur(16px);
 }
 
+/* While a preference panel is open its scrim covers the window, which would
+   otherwise swallow the click that closes the panel from the button that
+   opened it — or swaps it for the other panel. The toolbar rises above the
+   scrim for as long as one is open, and stays below every layer that must
+   cover it: the command palette, menus, toasts, and the quit prompt. */
+.topbar.panel-open { z-index: 90; }
+
 .brand-zone, .top-actions, .document-actions, .breadcrumb, .page-count, .aside-label {
   display: flex;
   align-items: center;
@@ -715,6 +722,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   animation: command-in 150ms ease-out;
 }
 
+/* Each panel hangs under the button that opens it: Configure keeps the
+   toolbar's own anchor, and Appearance sits one button to the left. */
+.appearance-popover { right: 121px; }
+
 .font-popover-head {
   display: flex;
   align-items: center;
@@ -741,37 +752,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   color: var(--ink);
   font-family: var(--font-reading);
   font-size: 18px;
-}
-
-.preference-tabs {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px;
-  margin: -3px 0 16px;
-  padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--panel);
-}
-
-.preference-tabs button {
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.preference-tabs button.selected {
-  background: var(--paper);
-  color: var(--ink);
-  box-shadow: 0 1px 3px rgb(31 31 26 / 9%);
 }
 
 .preference-pane { min-width: 0; }
