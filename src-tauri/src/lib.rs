@@ -696,6 +696,75 @@ fn approve_close(app: AppHandle) {
     app.exit(0);
 }
 
+/// The id of Folio's own Quit item. macOS's standard one terminates the
+/// process outright — the application never sees an exit it could hold — so
+/// Folio installs a Quit of its own to ask its question first.
+#[cfg(target_os = "macos")]
+const QUIT_MENU_ID: &str = "folio-quit";
+
+/// Folio's menu bar. Replacing the default one costs the standard items, so
+/// they are all rebuilt here: an editor without Copy and Paste on their usual
+/// keys would be a poor trade for a quit prompt.
+#[cfg(target_os = "macos")]
+fn build_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+
+    let quit = MenuItem::with_id(app, QUIT_MENU_ID, "Quit Folio", true, Some("CmdOrCtrl+Q"))?;
+    let folio = Submenu::with_items(
+        app,
+        "Folio",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+    let edit = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    let window = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::fullscreen(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+    Menu::with_items(app, &[&folio, &edit, &window])
+}
+
+/// Starts the closing ritual, or lets the close through when it has already
+/// run. Both ways out — the window's close button and Quit — arrive here.
+fn request_close(app: &AppHandle) -> bool {
+    if CLOSE_APPROVED.load(AtomicOrdering::Relaxed) {
+        return true;
+    }
+    let _ = app.emit("close-requested", ());
+    false
+}
+
 /// The watcher on the open library, held so it can be dropped — which stops
 /// its thread — whenever the library root changes or closes.
 #[derive(Default)]
@@ -1941,18 +2010,33 @@ pub fn run() {
         .manage(LibraryState::default())
         .manage(WatcherState::default())
         // Closing goes through the frontend first: uncommitted work in a
-        // synced library earns one question before the window goes. Both
-        // routes out — the window's close button and the application quit —
-        // funnel into the same "close-requested" event.
+        // synced library earns one question before the window goes. Both ways
+        // out — the window's close button and Quit — raise the same event.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if !CLOSE_APPROVED.load(AtomicOrdering::Relaxed) {
+                if !request_close(&window.app_handle().clone()) {
                     api.prevent_close();
-                    let _ = window.emit("close-requested", ());
                 }
             }
         })
         .setup(|app| {
+            // macOS keeps the application alive when its last window closes,
+            // and its own Quit item bypasses the app entirely, so the menu is
+            // rebuilt with a Quit that Folio can answer for.
+            #[cfg(target_os = "macos")]
+            {
+                let menu = build_menu(app.handle())?;
+                app.set_menu(menu)?;
+                app.on_menu_event(|app, event| {
+                    if event.id() == QUIT_MENU_ID {
+                        let app = app.clone();
+                        if request_close(&app) {
+                            app.exit(0);
+                        }
+                    }
+                });
+            }
+
             // Folio's window waits for the frontend to say it has something
             // worth looking at. This is the backstop: a frontend that fails to
             // load must still end up with a window, rather than an app that
@@ -1995,14 +2079,14 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building Folio")
-        .run(|app, event| {
-            // Cmd+Q and its kin arrive as an exit request rather than a
-            // window close; it gets the same one question.
-            if let tauri::RunEvent::ExitRequested { api, code, .. } = &event {
-                if code.is_none() && !CLOSE_APPROVED.load(AtomicOrdering::Relaxed) {
-                    api.prevent_exit();
-                    let _ = app.emit("close-requested", ());
-                }
+        .run(|_app, event| {
+            // Clicking the dock icon of a running app raises this rather than
+            // starting a second one. Folio holds its window open across a
+            // cancelled quit, so the window is there — it just needs bringing
+            // back to the front, and without this nothing appears to happen.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = &event {
+                show_main_window(_app);
             }
         });
 }
