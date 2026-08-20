@@ -251,7 +251,7 @@ type LibraryLink = Exclude<NoteLink, { kind: "external" | "fragment" }>;
 type ViewMode = "preview" | "editor" | "split";
 type Theme = "light" | "dark";
 type CreateKind = "file" | "folder";
-type PreferenceTab = "appearance" | "shortcuts" | "snippets" | "sync";
+type PreferenceTab = "appearance" | "configure";
 type TextSnippet = {
   id: string;
   name: string;
@@ -735,7 +735,7 @@ Folio turns a folder of Markdown files into a calm, connected reading space. You
 - Open a folder using the button in the sidebar.
 - Move between pages with the page controls or your configured keyboard shortcuts.
 - Switch between **Read**, **Write**, and **Split** views.
-- Open **Preferences → Keyboard shortcuts** to personalize navigation, file, folder, and view commands.
+- Open **Preferences → Configure** to personalize navigation, file, folder, and view commands.
 
 ## Make connections
 
@@ -5718,33 +5718,13 @@ export default function Home() {
               </button>
               <button
                 type="button"
-                className={preferenceTab === "shortcuts" ? "selected" : ""}
-                onClick={() => setPreferenceTab("shortcuts")}
+                className={preferenceTab === "configure" ? "selected" : ""}
+                onClick={() => setPreferenceTab("configure")}
                 role="tab"
-                aria-selected={preferenceTab === "shortcuts"}
-                aria-label="Keyboard shortcuts"
+                aria-selected={preferenceTab === "configure"}
+                aria-label="Configure shortcuts, snippets, and sync"
               >
-                <Command size={14} /> Shortcuts
-              </button>
-              {desktopMode && (
-                <button
-                  type="button"
-                  className={preferenceTab === "sync" ? "selected" : ""}
-                  onClick={() => setPreferenceTab("sync")}
-                  role="tab"
-                  aria-selected={preferenceTab === "sync"}
-                >
-                  <GitBranch size={14} /> Sync
-                </button>
-              )}
-              <button
-                type="button"
-                className={preferenceTab === "snippets" ? "selected" : ""}
-                onClick={() => setPreferenceTab("snippets")}
-                role="tab"
-                aria-selected={preferenceTab === "snippets"}
-              >
-                <Keyboard size={14} /> Text snippets
+                <Command size={14} /> Configure
               </button>
             </div>
 
@@ -5890,370 +5870,373 @@ export default function Home() {
               </div>
             )}
 
-            {preferenceTab === "shortcuts" && (
-              <div
-                className="preference-pane shortcut-preferences"
-                role="tabpanel"
-              >
-                <p className="shortcut-help">
-                  Focus a shortcut field and press the keys you want. Backspace
-                  clears a binding. Bare navigation and function keys are
-                  allowed; printable keys need Ctrl, Command, or Alt. Modified
-                  shortcuts also work while writing.
-                </p>
-                <div className="app-shortcut-groups">
-                  {(["General", "Navigation", "Files", "View"] as const).map(
-                    (group) => (
-                      <fieldset className="app-shortcut-group" key={group}>
-                        <legend>{group}</legend>
-                        {APP_SHORTCUT_COMMANDS.filter(
-                          (command) => command.group === group,
-                        ).map((command) => {
-                          const issue = appShortcutIssue(
-                            command.id,
-                            appShortcuts,
-                            textSnippets,
-                          );
-                          return (
-                            <label
-                              className="app-shortcut-row"
-                              key={command.id}
-                            >
-                              <span>{command.label}</span>
-                              <input
-                                className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
-                                // Symbols are set large, so the unbound state
-                                // uses a short placeholder rather than a label
-                                // that would not fit.
-                                value={
-                                  appShortcuts[command.id]
-                                    ? formatShortcut(appShortcuts[command.id])
-                                    : ""
-                                }
-                                placeholder="Not set"
-                                onKeyDown={(event) =>
-                                  recordAppShortcut(event, command.id)
-                                }
-                                onFocus={(event) =>
-                                  event.currentTarget.select()
-                                }
-                                readOnly
-                                aria-label={`Record shortcut for ${command.label}`}
-                                aria-invalid={Boolean(issue)}
-                                title="Focus, then press the shortcut. Backspace clears it."
-                              />
-                              {issue && (
-                                <small className="shortcut-issue">
-                                  {issue}
-                                </small>
-                              )}
-                            </label>
-                          );
-                        })}
-                      </fieldset>
-                    ),
-                  )}
-                </div>
-                <div className="snippet-actions shortcut-actions">
-                  <button type="button" onClick={restoreDefaultAppShortcuts}>
-                    Restore defaults
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {preferenceTab === "sync" && (
-              <div className="preference-pane sync-preferences" role="tabpanel">
-                {!syncInfo?.configured ? (
-                  <>
-                    <p className="sync-help">
-                      Sync this library through a Git repository you own.
-                      Folio commits when you ask, pulls what your other
-                      devices pushed, and merges page edits line by line —
-                      always into one file, never a conflicted copy.
-                    </p>
-                    <label className="sync-field">
-                      <span>Remote URL</span>
-                      <input
-                        type="text"
-                        value={syncRemoteDraft}
-                        onChange={(event) =>
-                          setSyncRemoteDraft(event.target.value)
-                        }
-                        placeholder="https://github.com/you/notes.git"
-                        spellCheck={false}
-                      />
-                    </label>
-                    <label className="sync-field">
-                      <span>Access token</span>
-                      <input
-                        type="password"
-                        value={syncTokenDraft}
-                        onChange={(event) =>
-                          setSyncTokenDraft(event.target.value)
-                        }
-                        placeholder="For https remotes — ssh uses your agent"
-                        spellCheck={false}
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      className="sync-action"
-                      disabled={syncBusy || !syncRemoteDraft.trim()}
-                      onClick={() =>
-                        void (async () => {
-                          if (!nativeLibraryOpen) {
-                            showNotice("Open a folder to sync it.");
-                            return;
-                          }
-                          setSyncBusy(true);
-                          try {
-                            await flushAllNativeSaves();
-                            const outcome = await nativeLibrary.syncConnect(
-                              syncRemoteDraft.trim(),
-                              syncTokenDraft.trim(),
+            {preferenceTab === "configure" && (
+              <div className="preference-pane" role="tabpanel">
+                <section className="preference-group shortcut-preferences">
+                  <h3>
+                    <Command size={13} aria-hidden="true" /> Keyboard shortcuts
+                  </h3>
+                  <p className="shortcut-help">
+                    Focus a shortcut field and press the keys you want. Backspace
+                    clears a binding. Bare navigation and function keys are
+                    allowed; printable keys need Ctrl, Command, or Alt. Modified
+                    shortcuts also work while writing.
+                  </p>
+                  <div className="app-shortcut-groups">
+                    {(["General", "Navigation", "Files", "View"] as const).map(
+                      (group) => (
+                        <fieldset className="app-shortcut-group" key={group}>
+                          <legend>{group}</legend>
+                          {APP_SHORTCUT_COMMANDS.filter(
+                            (command) => command.group === group,
+                          ).map((command) => {
+                            const issue = appShortcutIssue(
+                              command.id,
+                              appShortcuts,
+                              textSnippets,
                             );
-                            setSyncTokenDraft("");
-                            setSyncError(undefined);
-                            showNotice(outcome.summary);
-                          } catch (error) {
-                            showNotice(
-                              error instanceof Error
-                                ? error.message
-                                : String(error),
+                            return (
+                              <label
+                                className="app-shortcut-row"
+                                key={command.id}
+                              >
+                                <span>{command.label}</span>
+                                <input
+                                  className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
+                                  // Symbols are set large, so the unbound state
+                                  // uses a short placeholder rather than a label
+                                  // that would not fit.
+                                  value={
+                                    appShortcuts[command.id]
+                                      ? formatShortcut(appShortcuts[command.id])
+                                      : ""
+                                  }
+                                  placeholder="Not set"
+                                  onKeyDown={(event) =>
+                                    recordAppShortcut(event, command.id)
+                                  }
+                                  onFocus={(event) =>
+                                    event.currentTarget.select()
+                                  }
+                                  readOnly
+                                  aria-label={`Record shortcut for ${command.label}`}
+                                  aria-invalid={Boolean(issue)}
+                                  title="Focus, then press the shortcut. Backspace clears it."
+                                />
+                                {issue && (
+                                  <small className="shortcut-issue">
+                                    {issue}
+                                  </small>
+                                )}
+                              </label>
                             );
-                          } finally {
-                            setSyncBusy(false);
-                            void refreshSyncStatus();
-                          }
-                        })()
-                      }
-                    >
-                      {syncBusy ? "Connecting…" : "Connect & sync"}
+                          })}
+                        </fieldset>
+                      ),
+                    )}
+                  </div>
+                  <div className="snippet-actions shortcut-actions">
+                    <button type="button" onClick={restoreDefaultAppShortcuts}>
+                      Restore defaults
                     </button>
-                    <p className="font-footnote">
-                      The token stays on this device, outside the library, so
-                      it is never committed. An empty remote receives this
-                      library; a remote with pages brings them down.
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <p className="sync-remote-line">
-                      Connected to <strong>{syncInfo.remote}</strong>
-                      {syncInfo.branch ? ` on ${syncInfo.branch}` : ""}.
-                    </p>
-                    <p className="sync-help">
-                      {syncInfo.changedFiles > 0
-                        ? `${syncInfo.changedFiles} change${
-                            syncInfo.changedFiles === 1 ? "" : "s"
-                          } waiting for a commit.`
-                        : "Everything on disk is committed."}{" "}
-                      Commit &amp; sync any time with{" "}
-                      <kbd>{formatShortcut(appShortcuts["sync-commit"])}</kbd>,
-                      when quitting, and when Folio opens.
-                    </p>
-                    {/* A connected library still needs a way in for a
-                        token: they expire, and a first sync that failed
-                        before saving one leaves a remote with no credential
-                        to reach it with. */}
-                    <label className="sync-field">
-                      <span>Access token</span>
-                      <input
-                        type="password"
-                        value={syncTokenDraft}
-                        onChange={(event) =>
-                          setSyncTokenDraft(event.target.value)
-                        }
-                        placeholder="Replace the stored token"
-                        spellCheck={false}
-                      />
-                    </label>
-                    <div className="sync-actions">
-                      <button
-                        type="button"
-                        className="sync-action"
-                        disabled={syncBusy || !syncTokenDraft.trim()}
-                        onClick={() =>
-                          void (async () => {
-                            try {
-                              await nativeLibrary.syncSetToken(
-                                syncTokenDraft.trim(),
-                              );
-                              setSyncTokenDraft("");
-                              showNotice("Access token saved.");
-                            } catch (error) {
-                              showNotice(
-                                error instanceof Error
-                                  ? error.message
-                                  : String(error),
-                              );
-                            }
-                          })()
-                        }
-                      >
-                        Save token
-                      </button>
-                      <button
-                        type="button"
-                        className="sync-action"
-                        disabled={syncBusy}
-                        onClick={() => void commitAndSync()}
-                      >
-                        {syncBusy ? "Syncing…" : "Sync now"}
-                      </button>
-                      <button
-                        type="button"
-                        className="sync-action sync-disconnect"
-                        disabled={syncBusy}
-                        onClick={() =>
-                          void (async () => {
-                            try {
-                              await nativeLibrary.syncDisconnect();
-                              showNotice(
-                                "Sync disconnected. History stays in the library.",
-                              );
-                            } catch (error) {
-                              showNotice(
-                                error instanceof Error
-                                  ? error.message
-                                  : String(error),
-                              );
-                            } finally {
-                              void refreshSyncStatus();
-                            }
-                          })()
-                        }
-                      >
-                        Disconnect
-                      </button>
-                    </div>
-                    <p className="font-footnote">
-                      History lives in .git inside the library folder.
-                      Disconnecting keeps it; only the remote and this
-                      device&apos;s token are forgotten.
-                    </p>
-                  </>
-                )}
-              </div>
-            )}
+                  </div>
+                </section>
 
-            {preferenceTab === "snippets" && (
-              <div
-                className="preference-pane snippet-preferences"
-                role="tabpanel"
-              >
-                <p className="snippet-help">
-                  Record a shortcut, then enter the text it should insert. Use{" "}
-                  <code>$1</code>, <code>$2</code>, and so on for Tab stops;{" "}
-                  <code>$0</code> is the final cursor. Write <code>\$1</code>{" "}
-                  for literal text.
-                </p>
-                <div className="snippet-list">
-                  {textSnippets.map((textSnippet) => {
-                    const issue = snippetShortcutIssue(
-                      textSnippet,
-                      textSnippets,
-                      appShortcuts,
-                    );
-                    const label = textSnippet.name || "snippet";
-                    return (
-                      <article
-                        className={`snippet-card ${textSnippet.enabled ? "" : "disabled"}`}
-                        key={textSnippet.id}
-                      >
-                        <div className="snippet-card-head">
-                          <input
-                            type="checkbox"
-                            className="snippet-enabled"
-                            checked={textSnippet.enabled}
+                <section className="preference-group snippet-preferences">
+                  <h3>
+                    <Keyboard size={13} aria-hidden="true" /> Text snippets
+                  </h3>
+                  <p className="snippet-help">
+                    Record a shortcut, then enter the text it should insert. Use{" "}
+                    <code>$1</code>, <code>$2</code>, and so on for Tab stops;{" "}
+                    <code>$0</code> is the final cursor. Write <code>\$1</code>{" "}
+                    for literal text.
+                  </p>
+                  <div className="snippet-list">
+                    {textSnippets.map((textSnippet) => {
+                      const issue = snippetShortcutIssue(
+                        textSnippet,
+                        textSnippets,
+                        appShortcuts,
+                      );
+                      const label = textSnippet.name || "snippet";
+                      return (
+                        <article
+                          className={`snippet-card ${textSnippet.enabled ? "" : "disabled"}`}
+                          key={textSnippet.id}
+                        >
+                          <div className="snippet-card-head">
+                            <input
+                              type="checkbox"
+                              className="snippet-enabled"
+                              checked={textSnippet.enabled}
+                              onChange={(event) =>
+                                updateTextSnippet(textSnippet.id, {
+                                  enabled: event.target.checked,
+                                })
+                              }
+                              aria-label={`Enable ${label}`}
+                              title={textSnippet.enabled ? "Enabled" : "Disabled"}
+                            />
+                            <input
+                              className="snippet-name"
+                              value={textSnippet.name}
+                              onChange={(event) =>
+                                updateTextSnippet(textSnippet.id, {
+                                  name: event.target.value,
+                                })
+                              }
+                              placeholder="Snippet name"
+                              aria-label="Snippet name"
+                            />
+                            <input
+                              className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
+                              // The compact box has no room for the long empty
+                              // label the shortcut list above uses.
+                              value={
+                                textSnippet.shortcut
+                                  ? formatShortcut(textSnippet.shortcut)
+                                  : ""
+                              }
+                              placeholder="Set"
+                              onKeyDown={(event) =>
+                                recordSnippetShortcut(event, textSnippet.id)
+                              }
+                              onFocus={(event) => event.currentTarget.select()}
+                              readOnly
+                              aria-label={`Record shortcut for ${label}`}
+                              aria-invalid={Boolean(issue)}
+                              title="Focus, then press the shortcut. Backspace clears it."
+                            />
+                            <button
+                              type="button"
+                              className="subtle-icon"
+                              onClick={() =>
+                                setTextSnippets((current) =>
+                                  current.filter(
+                                    (candidate) =>
+                                      candidate.id !== textSnippet.id,
+                                  ),
+                                )
+                              }
+                              aria-label={`Delete ${label}`}
+                              title="Delete snippet"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                          {issue && (
+                            <small className="snippet-issue">{issue}</small>
+                          )}
+                          <textarea
+                            className="snippet-template"
+                            value={textSnippet.template}
                             onChange={(event) =>
                               updateTextSnippet(textSnippet.id, {
-                                enabled: event.target.checked,
+                                template: event.target.value,
                               })
                             }
-                            aria-label={`Enable ${label}`}
-                            title={textSnippet.enabled ? "Enabled" : "Disabled"}
+                            placeholder="Text to insert…"
+                            spellCheck={false}
+                            aria-label={`Text inserted by ${label}`}
                           />
+                        </article>
+                      );
+                    })}
+                    {!textSnippets.length && (
+                      <p className="snippet-empty">
+                        No snippets yet. Add one to get started.
+                      </p>
+                    )}
+                  </div>
+                  <div className="snippet-actions">
+                    <button type="button" onClick={addTextSnippet}>
+                      <Plus size={14} /> Add snippet
+                    </button>
+                    <button type="button" onClick={restoreDefaultTextSnippets}>
+                      Restore defaults
+                    </button>
+                  </div>
+                </section>
+
+                {desktopMode && (
+                  <section className="preference-group sync-preferences">
+                    <h3>
+                      <GitBranch size={13} aria-hidden="true" /> Sync
+                    </h3>
+                    {!syncInfo?.configured ? (
+                      <>
+                        <p className="sync-help">
+                          Sync this library through a Git repository you own.
+                          Folio commits when you ask, pulls what your other
+                          devices pushed, and merges page edits line by line —
+                          always into one file, never a conflicted copy.
+                        </p>
+                        <label className="sync-field">
+                          <span>Remote URL</span>
                           <input
-                            className="snippet-name"
-                            value={textSnippet.name}
+                            type="text"
+                            value={syncRemoteDraft}
                             onChange={(event) =>
-                              updateTextSnippet(textSnippet.id, {
-                                name: event.target.value,
-                              })
+                              setSyncRemoteDraft(event.target.value)
                             }
-                            placeholder="Snippet name"
-                            aria-label="Snippet name"
+                            placeholder="https://github.com/you/notes.git"
+                            spellCheck={false}
                           />
+                        </label>
+                        <label className="sync-field">
+                          <span>Access token</span>
                           <input
-                            className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
-                            // The compact box has no room for the long empty
-                            // label the Shortcuts tab uses.
-                            value={
-                              textSnippet.shortcut
-                                ? formatShortcut(textSnippet.shortcut)
-                                : ""
+                            type="password"
+                            value={syncTokenDraft}
+                            onChange={(event) =>
+                              setSyncTokenDraft(event.target.value)
                             }
-                            placeholder="Set"
-                            onKeyDown={(event) =>
-                              recordSnippetShortcut(event, textSnippet.id)
-                            }
-                            onFocus={(event) => event.currentTarget.select()}
-                            readOnly
-                            aria-label={`Record shortcut for ${label}`}
-                            aria-invalid={Boolean(issue)}
-                            title="Focus, then press the shortcut. Backspace clears it."
+                            placeholder="For https remotes — ssh uses your agent"
+                            spellCheck={false}
                           />
+                        </label>
+                        <button
+                          type="button"
+                          className="sync-action"
+                          disabled={syncBusy || !syncRemoteDraft.trim()}
+                          onClick={() =>
+                            void (async () => {
+                              if (!nativeLibraryOpen) {
+                                showNotice("Open a folder to sync it.");
+                                return;
+                              }
+                              setSyncBusy(true);
+                              try {
+                                await flushAllNativeSaves();
+                                const outcome = await nativeLibrary.syncConnect(
+                                  syncRemoteDraft.trim(),
+                                  syncTokenDraft.trim(),
+                                );
+                                setSyncTokenDraft("");
+                                setSyncError(undefined);
+                                showNotice(outcome.summary);
+                              } catch (error) {
+                                showNotice(
+                                  error instanceof Error
+                                    ? error.message
+                                    : String(error),
+                                );
+                              } finally {
+                                setSyncBusy(false);
+                                void refreshSyncStatus();
+                              }
+                            })()
+                          }
+                        >
+                          {syncBusy ? "Connecting…" : "Connect & sync"}
+                        </button>
+                        <p className="font-footnote">
+                          The token stays on this device, outside the library, so
+                          it is never committed. An empty remote receives this
+                          library; a remote with pages brings them down.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="sync-remote-line">
+                          Connected to <strong>{syncInfo.remote}</strong>
+                          {syncInfo.branch ? ` on ${syncInfo.branch}` : ""}.
+                        </p>
+                        <p className="sync-help">
+                          {syncInfo.changedFiles > 0
+                            ? `${syncInfo.changedFiles} change${
+                                syncInfo.changedFiles === 1 ? "" : "s"
+                              } waiting for a commit.`
+                            : "Everything on disk is committed."}{" "}
+                          Commit &amp; sync any time with{" "}
+                          <kbd>{formatShortcut(appShortcuts["sync-commit"])}</kbd>,
+                          when quitting, and when Folio opens.
+                        </p>
+                        {/* A connected library still needs a way in for a
+                            token: they expire, and a first sync that failed
+                            before saving one leaves a remote with no credential
+                            to reach it with. */}
+                        <label className="sync-field">
+                          <span>Access token</span>
+                          <input
+                            type="password"
+                            value={syncTokenDraft}
+                            onChange={(event) =>
+                              setSyncTokenDraft(event.target.value)
+                            }
+                            placeholder="Replace the stored token"
+                            spellCheck={false}
+                          />
+                        </label>
+                        <div className="sync-actions">
                           <button
                             type="button"
-                            className="subtle-icon"
+                            className="sync-action"
+                            disabled={syncBusy || !syncTokenDraft.trim()}
                             onClick={() =>
-                              setTextSnippets((current) =>
-                                current.filter(
-                                  (candidate) =>
-                                    candidate.id !== textSnippet.id,
-                                ),
-                              )
+                              void (async () => {
+                                try {
+                                  await nativeLibrary.syncSetToken(
+                                    syncTokenDraft.trim(),
+                                  );
+                                  setSyncTokenDraft("");
+                                  showNotice("Access token saved.");
+                                } catch (error) {
+                                  showNotice(
+                                    error instanceof Error
+                                      ? error.message
+                                      : String(error),
+                                  );
+                                }
+                              })()
                             }
-                            aria-label={`Delete ${label}`}
-                            title="Delete snippet"
                           >
-                            <Trash2 size={13} />
+                            Save token
+                          </button>
+                          <button
+                            type="button"
+                            className="sync-action"
+                            disabled={syncBusy}
+                            onClick={() => void commitAndSync()}
+                          >
+                            {syncBusy ? "Syncing…" : "Sync now"}
+                          </button>
+                          <button
+                            type="button"
+                            className="sync-action sync-disconnect"
+                            disabled={syncBusy}
+                            onClick={() =>
+                              void (async () => {
+                                try {
+                                  await nativeLibrary.syncDisconnect();
+                                  showNotice(
+                                    "Sync disconnected. History stays in the library.",
+                                  );
+                                } catch (error) {
+                                  showNotice(
+                                    error instanceof Error
+                                      ? error.message
+                                      : String(error),
+                                  );
+                                } finally {
+                                  void refreshSyncStatus();
+                                }
+                              })()
+                            }
+                          >
+                            Disconnect
                           </button>
                         </div>
-                        {issue && (
-                          <small className="snippet-issue">{issue}</small>
-                        )}
-                        <textarea
-                          className="snippet-template"
-                          value={textSnippet.template}
-                          onChange={(event) =>
-                            updateTextSnippet(textSnippet.id, {
-                              template: event.target.value,
-                            })
-                          }
-                          placeholder="Text to insert…"
-                          spellCheck={false}
-                          aria-label={`Text inserted by ${label}`}
-                        />
-                      </article>
-                    );
-                  })}
-                  {!textSnippets.length && (
-                    <p className="snippet-empty">
-                      No snippets yet. Add one to get started.
-                    </p>
-                  )}
-                </div>
-                <div className="snippet-actions">
-                  <button type="button" onClick={addTextSnippet}>
-                    <Plus size={14} /> Add snippet
-                  </button>
-                  <button type="button" onClick={restoreDefaultTextSnippets}>
-                    Restore defaults
-                  </button>
-                </div>
+                        <p className="font-footnote">
+                          History lives in .git inside the library folder.
+                          Disconnecting keeps it; only the remote and this
+                          device&apos;s token are forgotten.
+                        </p>
+                      </>
+                    )}
+                  </section>
+                )}
               </div>
             )}
           </dialog>
