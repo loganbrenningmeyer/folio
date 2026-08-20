@@ -21,7 +21,12 @@ dunce = "1"
 notify = "8"
 # Git-backed sync: the library folder is the repository, committed and merged
 # through libgit2 so no git binary is required on the machine.
-git2 = "0.21"
+#
+# The features are not optional and not defaults: as of 0.21 git2 ships with
+# none, which builds a libgit2 that cannot speak https or ssh at all. TLS comes
+# from the platform — SecureTransport on macOS, WinHTTP on Windows — so neither
+# target needs OpenSSL; git2 gates those crates to non-macOS Unix.
+git2 = { version = "0.21", features = ["https", "ssh"] }
 serde = { version = "1", features = ["derive"] }
 # Deletes go to the system trash rather than unlinking, so they stay undoable:
 # the Finder trash on macOS, the Recycle Bin on Windows.
