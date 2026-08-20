@@ -145,11 +145,11 @@ a page that could not be copied to Windows under the same name.
 ## Sync between devices
 
 Folio can sync a library through a Git repository you own. Open
-**Preferences → Sync**, paste the remote URL (an empty private repository
-works — Folio pushes the library into it), and for an https remote a
-personal access token with repository write access; ssh remotes use your
-ssh-agent. On another machine, open an empty folder as the library and
-connect it to the same remote: the pages come down.
+**Preferences → Configure → Sync**, paste the remote URL (an empty private
+repository works — Folio pushes the library into it), and for an https
+remote a personal access token with repository write access; ssh remotes
+use your ssh-agent. On another machine, open an empty folder as the
+library and connect it to the same remote: the pages come down.
 
 Saving stays local and constant. Committing is a chosen moment: press
 Ctrl+Shift+S (⌘⇧S on macOS) to commit and sync, answer the prompt that
