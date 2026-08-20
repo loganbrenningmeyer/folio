@@ -101,6 +101,7 @@ import {
   isNativeRuntime,
   nativeLibrary,
   type LibrarySnapshot,
+  type SyncStatus,
 } from "@/desktop/native";
 import {
   PythonCodeBlock,
@@ -137,6 +138,7 @@ import {
   Folder,
   FolderPlus,
   FolderOpen,
+  GitBranch,
   GripVertical,
   Heart,
   ImageIcon,
@@ -251,7 +253,7 @@ type LibraryLink = Exclude<NoteLink, { kind: "external" | "fragment" }>;
 type ViewMode = "preview" | "editor" | "split";
 type Theme = "light" | "dark";
 type CreateKind = "file" | "folder";
-type PreferenceTab = "appearance" | "shortcuts" | "snippets";
+type PreferenceTab = "appearance" | "shortcuts" | "snippets" | "sync";
 type TextSnippet = {
   id: string;
   name: string;
@@ -364,6 +366,12 @@ const APP_SHORTCUT_COMMANDS = [
     label: "Save now",
     group: "General",
     defaultShortcut: "Mod-s",
+  },
+  {
+    id: "sync-commit",
+    label: "Commit & sync",
+    group: "General",
+    defaultShortcut: "Mod-Shift-s",
   },
   {
     id: "previous-page",
@@ -2589,6 +2597,14 @@ export default function Home() {
   const [folderIconMenu, setFolderIconMenu] = useState<
     { folder: string; x: number; y: number } | undefined
   >();
+  // Sync: how the library stands against its remote, whether a sync is in
+  // flight, and the quit prompt (holding how many changes it is asking about).
+  const [syncInfo, setSyncInfo] = useState<SyncStatus>();
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncError, setSyncError] = useState<string>();
+  const [closePrompt, setClosePrompt] = useState<number>();
+  const [syncRemoteDraft, setSyncRemoteDraft] = useState("");
+  const [syncTokenDraft, setSyncTokenDraft] = useState("");
   const [notice, setNotice] = useState<string>();
   const folderInput = useRef<HTMLInputElement>(null);
   const createNameInput = useRef<HTMLInputElement>(null);
@@ -4575,6 +4591,164 @@ export default function Home() {
     };
   }, [desktopMode, nativeLibraryOpen]);
 
+  const refreshSyncStatus = useCallback(async () => {
+    if (!desktopMode || !nativeLibraryOpen) {
+      setSyncInfo(undefined);
+      return;
+    }
+    try {
+      setSyncInfo(await nativeLibrary.syncStatus());
+    } catch {
+      // An unreadable status is not worth a toast; the footer simply
+      // keeps its last word until a sync or a poll gets through.
+    }
+  }, [desktopMode, nativeLibraryOpen]);
+
+  /**
+   * One beat of sync: pending edits are flushed to disk, then the backend
+   * commits them, pulls what other devices pushed, merges, and pushes back.
+   * The quiet flags let the launch sweep run without narrating a no-op.
+   */
+  const commitAndSync = useCallback(
+    async (options?: { quietWhenClean?: boolean; quietOnError?: boolean }) => {
+      if (!desktopMode || !nativeLibraryOpen) {
+        showNotice("Open a folder to sync it.");
+        return;
+      }
+      setSyncBusy(true);
+      try {
+        await flushAllNativeSaves();
+        const outcome = await nativeLibrary.syncNow();
+        setSyncError(undefined);
+        const idle = !outcome.committed && !outcome.pulled && !outcome.pushed;
+        if (!idle || !options?.quietWhenClean) showNotice(outcome.summary);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setSyncError(message);
+        if (!options?.quietOnError) showNotice(message);
+      } finally {
+        setSyncBusy(false);
+        void refreshSyncStatus();
+      }
+    },
+    [
+      desktopMode,
+      flushAllNativeSaves,
+      nativeLibraryOpen,
+      refreshSyncStatus,
+      showNotice,
+    ],
+  );
+
+  // The footer's word on sync stays current: on open, twice a minute, and
+  // whenever the window comes back into focus.
+  useEffect(() => {
+    if (!desktopMode || !nativeLibraryOpen) return undefined;
+    const first = window.setTimeout(() => void refreshSyncStatus(), 0);
+    const timer = window.setInterval(() => void refreshSyncStatus(), 30000);
+    const onFocus = () => void refreshSyncStatus();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.clearTimeout(first);
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [desktopMode, nativeLibraryOpen, refreshSyncStatus]);
+
+  // The launch sweep: changes from a session that ended without a commit — a
+  // force quit, a crash — are committed now, and remote work is pulled in.
+  // Quiet when there is nothing to say, and about being offline at launch.
+  const launchSyncRan = useRef(false);
+  useEffect(() => {
+    if (!desktopMode || !nativeLibraryOpen || launchSyncRan.current) {
+      return;
+    }
+    launchSyncRan.current = true;
+    void (async () => {
+      try {
+        const status = await nativeLibrary.syncStatus();
+        setSyncInfo(status);
+        if (!status.configured) return;
+        await commitAndSync({ quietWhenClean: true, quietOnError: true });
+      } catch {
+        // A library that cannot even report sync status simply stays local.
+      }
+    })();
+  }, [commitAndSync, desktopMode, nativeLibraryOpen]);
+
+  // Closing asks one question, and only when it is worth asking: with sync
+  // configured and uncommitted changes on disk, the quit prompt opens.
+  // Everything else — no sync, a clean tree, any error along the way — lets
+  // the close through; quitting must never be the thing that breaks.
+  const closeRef = useRef({
+    flush: async () => undefined as void,
+    nativeOpen: false,
+    prompted: false,
+  });
+  useEffect(() => {
+    closeRef.current.flush = flushAllNativeSaves;
+    closeRef.current.nativeOpen = desktopMode && nativeLibraryOpen;
+  });
+  useEffect(() => {
+    if (!desktopMode) return undefined;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const handler = async () => {
+      if (closeRef.current.prompted) return;
+      closeRef.current.prompted = true;
+      try {
+        await closeRef.current.flush();
+        if (!closeRef.current.nativeOpen) {
+          await nativeLibrary.approveClose();
+          return;
+        }
+        const status = await nativeLibrary.syncStatus();
+        if (!status.configured || status.changedFiles === 0) {
+          await nativeLibrary.approveClose();
+          return;
+        }
+        setClosePrompt(status.changedFiles);
+      } catch {
+        await nativeLibrary.approveClose();
+      }
+    };
+    void nativeLibrary.onCloseRequested(() => void handler()).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [desktopMode]);
+
+  // Escape answers the quit prompt with "stay", like dismissing any dialog.
+  useEffect(() => {
+    if (closePrompt === undefined) return undefined;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      closeRef.current.prompted = false;
+      setClosePrompt(undefined);
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [closePrompt]);
+
+  /** The quit prompt's yes: commit and sync, then close whatever happens. */
+  const commitAndQuit = useCallback(async () => {
+    setClosePrompt(undefined);
+    setSyncBusy(true);
+    try {
+      await flushAllNativeSaves();
+      await nativeLibrary.syncNow();
+    } catch {
+      // The pages themselves are saved; a failed commit or push is caught up
+      // by the launch sweep next time. Quitting still proceeds.
+    }
+    await nativeLibrary.approveClose();
+  }, [flushAllNativeSaves]);
+
   const deleteEntry = async (entry: LibraryEntry) => {
     setEntryMenu(undefined);
       const label = entry.kind === "folder" ? "folder" : "page";
@@ -4953,6 +5127,9 @@ export default function Home() {
         case "save":
           void saveActive();
           return;
+        case "sync-commit":
+          void commitAndSync();
+          return;
         case "previous-page":
           if (activeIndex > 0) selectNote(notes[activeIndex - 1].id);
           return;
@@ -5002,7 +5179,15 @@ export default function Home() {
           }
       }
     },
-    [activeIndex, beginCreate, notes, openFolder, saveActive, selectNote],
+    [
+      activeIndex,
+      beginCreate,
+      commitAndSync,
+      notes,
+      openFolder,
+      saveActive,
+      selectNote,
+    ],
   );
 
   useEffect(() => {
@@ -5504,6 +5689,17 @@ export default function Home() {
               >
                 <Command size={14} /> Shortcuts
               </button>
+              {desktopMode && (
+                <button
+                  type="button"
+                  className={preferenceTab === "sync" ? "selected" : ""}
+                  onClick={() => setPreferenceTab("sync")}
+                  role="tab"
+                  aria-selected={preferenceTab === "sync"}
+                >
+                  <GitBranch size={14} /> Sync
+                </button>
+              )}
               <button
                 type="button"
                 className={preferenceTab === "snippets" ? "selected" : ""}
@@ -5726,6 +5922,142 @@ export default function Home() {
                     Restore defaults
                   </button>
                 </div>
+              </div>
+            )}
+
+            {preferenceTab === "sync" && (
+              <div className="preference-pane sync-preferences" role="tabpanel">
+                {!syncInfo?.configured ? (
+                  <>
+                    <p className="sync-help">
+                      Sync this library through a Git repository you own.
+                      Folio commits when you ask, pulls what your other
+                      devices pushed, and merges page edits line by line —
+                      always into one file, never a conflicted copy.
+                    </p>
+                    <label className="sync-field">
+                      <span>Remote URL</span>
+                      <input
+                        type="text"
+                        value={syncRemoteDraft}
+                        onChange={(event) =>
+                          setSyncRemoteDraft(event.target.value)
+                        }
+                        placeholder="https://github.com/you/notes.git"
+                        spellCheck={false}
+                      />
+                    </label>
+                    <label className="sync-field">
+                      <span>Access token</span>
+                      <input
+                        type="password"
+                        value={syncTokenDraft}
+                        onChange={(event) =>
+                          setSyncTokenDraft(event.target.value)
+                        }
+                        placeholder="For https remotes — ssh uses your agent"
+                        spellCheck={false}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="sync-action"
+                      disabled={syncBusy || !syncRemoteDraft.trim()}
+                      onClick={() =>
+                        void (async () => {
+                          if (!nativeLibraryOpen) {
+                            showNotice("Open a folder to sync it.");
+                            return;
+                          }
+                          setSyncBusy(true);
+                          try {
+                            await flushAllNativeSaves();
+                            const outcome = await nativeLibrary.syncConnect(
+                              syncRemoteDraft.trim(),
+                              syncTokenDraft.trim(),
+                            );
+                            setSyncTokenDraft("");
+                            setSyncError(undefined);
+                            showNotice(outcome.summary);
+                          } catch (error) {
+                            showNotice(
+                              error instanceof Error
+                                ? error.message
+                                : String(error),
+                            );
+                          } finally {
+                            setSyncBusy(false);
+                            void refreshSyncStatus();
+                          }
+                        })()
+                      }
+                    >
+                      {syncBusy ? "Connecting…" : "Connect & sync"}
+                    </button>
+                    <p className="font-footnote">
+                      The token stays on this device, outside the library, so
+                      it is never committed. An empty remote receives this
+                      library; a remote with pages brings them down.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="sync-remote-line">
+                      Connected to <strong>{syncInfo.remote}</strong>
+                      {syncInfo.branch ? ` on ${syncInfo.branch}` : ""}.
+                    </p>
+                    <p className="sync-help">
+                      {syncInfo.changedFiles > 0
+                        ? `${syncInfo.changedFiles} change${
+                            syncInfo.changedFiles === 1 ? "" : "s"
+                          } waiting for a commit.`
+                        : "Everything on disk is committed."}{" "}
+                      Commit &amp; sync any time with{" "}
+                      <kbd>{formatShortcut(appShortcuts["sync-commit"])}</kbd>,
+                      when quitting, and when Folio opens.
+                    </p>
+                    <div className="sync-actions">
+                      <button
+                        type="button"
+                        className="sync-action"
+                        disabled={syncBusy}
+                        onClick={() => void commitAndSync()}
+                      >
+                        {syncBusy ? "Syncing…" : "Sync now"}
+                      </button>
+                      <button
+                        type="button"
+                        className="sync-action sync-disconnect"
+                        disabled={syncBusy}
+                        onClick={() =>
+                          void (async () => {
+                            try {
+                              await nativeLibrary.syncDisconnect();
+                              showNotice(
+                                "Sync disconnected. History stays in the library.",
+                              );
+                            } catch (error) {
+                              showNotice(
+                                error instanceof Error
+                                  ? error.message
+                                  : String(error),
+                              );
+                            } finally {
+                              void refreshSyncStatus();
+                            }
+                          })()
+                        }
+                      >
+                        Disconnect
+                      </button>
+                    </div>
+                    <p className="font-footnote">
+                      History lives in .git inside the library folder.
+                      Disconnecting keeps it; only the remote and this
+                      device&apos;s token are forgotten.
+                    </p>
+                  </>
+                )}
               </div>
             )}
 
@@ -6225,6 +6557,26 @@ export default function Home() {
               <BookOpen size={16} />
               <span>{notes.length} pages</span>
             </div>
+            {desktopMode && nativeLibraryOpen && syncInfo?.configured && (
+              <div
+                className="sync-state"
+                title={syncInfo.remote ?? undefined}
+                aria-live="polite"
+              >
+                <GitBranch size={11} aria-hidden="true" />
+                <span>
+                  {syncBusy
+                    ? "Syncing…"
+                    : syncError
+                      ? "Sync offline"
+                      : syncInfo.changedFiles > 0
+                        ? `${syncInfo.changedFiles} uncommitted change${
+                            syncInfo.changedFiles === 1 ? "" : "s"
+                          }`
+                        : "Synced"}
+                </span>
+              </div>
+            )}
             <button className="mini-open" onClick={openFolder}>
               <FolderOpen size={15} />
               {desktopMode && nativeLibraryOpen
@@ -6863,6 +7215,53 @@ export default function Home() {
         hidden
         onChange={handleFolderPicturePick}
       />
+
+      {closePrompt !== undefined && (
+        <>
+          <div className="close-prompt-scrim" aria-hidden="true" />
+          <div
+            className="close-prompt"
+            role="alertdialog"
+            aria-modal="true"
+            aria-label="Commit before quitting"
+          >
+            <strong>Commit before quitting?</strong>
+            <p>
+              {closePrompt} change{closePrompt === 1 ? "" : "s"} on this
+              device {closePrompt === 1 ? "hasn't" : "haven't"} been committed
+              to your sync repository. Folio can commit and sync{" "}
+              {closePrompt === 1 ? "it" : "them"} now.
+            </p>
+            <div className="close-prompt-actions">
+              <button
+                type="button"
+                className="close-prompt-stay"
+                onClick={() => {
+                  closeRef.current.prompted = false;
+                  setClosePrompt(undefined);
+                }}
+              >
+                Stay
+              </button>
+              <button
+                type="button"
+                className="close-prompt-skip"
+                onClick={() => void nativeLibrary.approveClose()}
+              >
+                Quit without committing
+              </button>
+              <button
+                type="button"
+                className="close-prompt-commit"
+                ref={(button) => button?.focus()}
+                onClick={() => void commitAndQuit()}
+              >
+                Commit &amp; quit
+              </button>
+            </div>
+          </div>
+        </>
+      )}
 
       {notice && (
         <div className="notice-toast" role="status">

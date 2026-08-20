@@ -1,3 +1,5 @@
+mod sync;
+
 use base64::Engine as _;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
@@ -8,7 +10,7 @@ use std::{
     io::{self, Write},
     path::{Component, Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering as AtomicOrdering},
+        atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
         mpsc, LazyLock, Mutex, MutexGuard,
     },
     time::{Duration, Instant},
@@ -33,6 +35,10 @@ const MAIN_WINDOW: &str = "main";
 /// read from disk, short enough that a broken frontend is not a hang.
 const WINDOW_REVEAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// Set once the frontend has finished its closing ritual — the quit prompt
+/// answered, or nothing worth asking about — after which close and exit
+/// requests pass instead of being turned into a "close-requested" event.
+static CLOSE_APPROVED: AtomicBool = AtomicBool::new(false);
 
 /// How long one of Folio's own writes stays recognisable to the library
 /// watcher. Long enough to cover the lag between a write and the filesystem
@@ -78,6 +84,11 @@ struct Preferences {
     /// opened, and ignored when it no longer names a page in the library.
     #[serde(default)]
     open_note: Option<String>,
+    /// The access token for an https sync remote. It lives here, outside the
+    /// library, so it can never be committed and synced along with the pages.
+    /// Plain text, like the git credential files it stands in for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sync_token: Option<String>,
 }
 
 /// A library reopened from Folio's settings, with the page to open in it.
@@ -604,6 +615,69 @@ fn write_library_file(root: &Path, name: &str, contents: &str, action: &str) -> 
     let destination = directory.join(name);
     atomic_write(&destination, contents.as_bytes(), None, true)
         .map_err(|error| io_error(action, &destination, error))
+}
+
+/// How the library stands against its sync remote. Cheap and offline: no
+/// network is touched, so the footer and the quit prompt can ask freely.
+#[tauri::command]
+async fn sync_status(state: State<'_, LibraryState>) -> Result<sync::SyncStatus, String> {
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    sync::status(&root)
+}
+
+/// Connects the open library to a git remote and runs the first sync. The
+/// token is kept in Folio's own settings, never inside the library.
+#[tauri::command]
+async fn sync_connect(
+    app: AppHandle,
+    remote_url: String,
+    token: Option<String>,
+    state: State<'_, LibraryState>,
+) -> Result<sync::SyncOutcome, String> {
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    let token = token
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty());
+
+    let outcome = sync::connect(&root, &remote_url, token.as_deref())?;
+    let mut preferences = load_preferences(&app)?;
+    preferences.sync_token = token;
+    write_preferences(&app, preferences)?;
+    Ok(outcome)
+}
+
+/// One beat of sync: commit whatever changed, pull, merge, push.
+#[tauri::command]
+async fn sync_now(
+    app: AppHandle,
+    state: State<'_, LibraryState>,
+) -> Result<sync::SyncOutcome, String> {
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    let token = load_preferences(&app)?.sync_token;
+    sync::synchronize(&root, token.as_deref())
+}
+
+/// Forgets the sync remote and the stored token. History stays in the
+/// library's `.git`; Folio just stops using it.
+#[tauri::command]
+async fn sync_disconnect(app: AppHandle, state: State<'_, LibraryState>) -> Result<(), String> {
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    sync::disconnect(&root)?;
+    let mut preferences = load_preferences(&app)?;
+    preferences.sync_token = None;
+    write_preferences(&app, preferences)
+}
+
+/// The frontend's word that closing may proceed — the quit prompt was
+/// answered, or there was nothing to ask.
+#[tauri::command]
+fn approve_close(app: AppHandle) {
+    CLOSE_APPROVED.store(true, AtomicOrdering::Relaxed);
+    app.exit(0);
 }
 
 /// The watcher on the open library, held so it can be dropped — which stops
@@ -1385,11 +1459,15 @@ fn load_preferences(app: &AppHandle) -> Result<Preferences, String> {
 /// library was open, so pointing Folio at another folder forgets it; the page
 /// opened there is recorded a moment later, once it is on screen.
 fn save_preferences(app: &AppHandle, root: Option<&Path>) -> Result<(), String> {
+    // The open page belongs to the library being left behind; the sync token
+    // belongs to the reader's account and follows them to the next one.
+    let sync_token = load_preferences(app)?.sync_token;
     write_preferences(
         app,
         Preferences {
             library_root: root.map(Path::to_path_buf),
             open_note: None,
+            sync_token,
         },
     )
 }
@@ -1846,6 +1924,18 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(LibraryState::default())
         .manage(WatcherState::default())
+        // Closing goes through the frontend first: uncommitted work in a
+        // synced library earns one question before the window goes. Both
+        // routes out — the window's close button and the application quit —
+        // funnel into the same "close-requested" event.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if !CLOSE_APPROVED.load(AtomicOrdering::Relaxed) {
+                    api.prevent_close();
+                    let _ = window.emit("close-requested", ());
+                }
+            }
+        })
         .setup(|app| {
             // Folio's window waits for the frontend to say it has something
             // worth looking at. This is the backstop: a frontend that fails to
@@ -1872,6 +1962,11 @@ pub fn run() {
             read_library_icons,
             write_library_icons,
             pick_icon_image,
+            sync_status,
+            sync_connect,
+            sync_now,
+            sync_disconnect,
+            approve_close,
             write_note,
             move_note,
             rename_entry,
@@ -1881,8 +1976,18 @@ pub fn run() {
             read_asset,
             rename_asset
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Folio");
+        .build(tauri::generate_context!())
+        .expect("error while building Folio")
+        .run(|app, event| {
+            // Cmd+Q and its kin arrive as an exit request rather than a
+            // window close; it gets the same one question.
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = &event {
+                if code.is_none() && !CLOSE_APPROVED.load(AtomicOrdering::Relaxed) {
+                    api.prevent_exit();
+                    let _ = app.emit("close-requested", ());
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -2521,8 +2626,11 @@ mod tests {
         let written = serde_json::to_string(&Preferences {
             library_root: Some(PathBuf::from("/tmp/pages")),
             open_note: Some("guides/setup.md".to_string()),
+            sync_token: None,
         })
         .expect("encode settings");
+        // An absent token stays absent on disk rather than appearing as null.
+        assert!(!written.contains("syncToken"), "{written}");
         assert!(
             written.contains(r#""openNote":"guides/setup.md""#),
             "{written}"
