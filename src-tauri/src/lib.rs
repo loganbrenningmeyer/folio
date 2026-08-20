@@ -829,9 +829,10 @@ fn recently_self_written(
 }
 
 /// True when the event describes a change someone other than Folio made to
-/// something the library actually shows. Reads and metadata-only changes are
-/// not: every write Folio makes also bumps its parent folder's timestamps,
-/// which the platform reports as changes to the folder — an echo, not news.
+/// something the library actually shows. A read is not, and neither is a
+/// folder's own clock moving: every write Folio makes also bumps its parent
+/// folder's timestamps, which the platform reports as a change to the folder
+/// — an echo, not news, whichever kind the platform files it under.
 fn event_is_external(root: &Path, event: &notify::Event) -> bool {
     use notify::{event::ModifyKind, EventKind};
     if matches!(
@@ -840,6 +841,18 @@ fn event_is_external(root: &Path, event: &notify::Event) -> bool {
     ) {
         return false;
     }
+    // The same folder echo reaches Windows wearing different clothes: a page
+    // saved inside a folder bumps that folder's clock, and
+    // ReadDirectoryChangesW reports it as a plain modification of the folder
+    // rather than as the metadata change macOS calls it. A folder's own
+    // timestamps are never news — what the folder holds is, and every one of
+    // those changes carries its own event for the entry that changed. Folders
+    // arriving, going, and being renamed keep their own kinds, which this
+    // leaves alone.
+    let folder_clock = matches!(
+        event.kind,
+        EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_))
+    );
     let writes = match RECENT_SELF_WRITES.lock() {
         Ok(writes) => writes,
         Err(poisoned) => poisoned.into_inner(),
@@ -853,7 +866,10 @@ fn event_is_external(root: &Path, event: &notify::Event) -> bool {
         if relative.as_os_str().is_empty() {
             return false;
         }
-        !hidden_relative_path(relative) && !recently_self_written(&writes, root, path, now)
+        if hidden_relative_path(relative) || recently_self_written(&writes, root, path, now) {
+            return false;
+        }
+        !(folder_clock && path.is_dir())
     })
 }
 
@@ -2282,6 +2298,47 @@ mod tests {
     }
 
     #[test]
+    fn a_folders_own_clock_is_not_news_but_the_folder_itself_can_be() {
+        use notify::event::{CreateKind, RenameMode};
+        use notify::{event::ModifyKind, Event, EventKind};
+
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "folio-folder-clock-test-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create test root");
+        let root = canonical_library_root(&root).expect("canonicalize root");
+        let folder = root.join("notes");
+        fs::create_dir(&folder).expect("create test folder");
+        let page = folder.join("Idea.md");
+        fs::write(&page, "a page\n").expect("write page");
+
+        // What Windows calls a save inside a folder: the folder was touched,
+        // because the page it holds was written.
+        assert!(!event_is_external(
+            &root,
+            &Event::new(EventKind::Modify(ModifyKind::Any)).add_path(folder.clone())
+        ));
+        // The page's own event, arriving in the same burst, is the news.
+        assert!(event_is_external(
+            &root,
+            &Event::new(EventKind::Modify(ModifyKind::Any)).add_path(page)
+        ));
+        // A folder appearing or being renamed is news about the folder itself.
+        assert!(event_is_external(
+            &root,
+            &Event::new(EventKind::Create(CreateKind::Any)).add_path(folder.clone())
+        ));
+        assert!(event_is_external(
+            &root,
+            &Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::To))).add_path(folder)
+        ));
+
+        fs::remove_dir_all(&root).expect("remove test root");
+    }
+
+    #[test]
     fn external_writes_wake_the_watcher_and_folios_own_do_not() {
         let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
         let root = std::env::temp_dir().join(format!(
@@ -2292,6 +2349,18 @@ mod tests {
         // The production watcher sees the canonical root, so the test must
         // too, or event paths would not strip against it.
         let root = canonical_library_root(&root).expect("canonicalize root");
+        // Most pages live in folders, and a folder is where the platforms
+        // disagree about what a save looks like — so the test keeps one, made
+        // before the watcher arms so its own arrival is not what wakes it.
+        let folder = root.join("notes");
+        fs::create_dir(&folder).expect("create test folder");
+        let page = folder.join("Idea.md");
+        fs::write(&page, "first line\n").expect("seed page");
+        // The external write below lands on a page of its own: a page Folio
+        // saved moments ago is deliberately unrecognisable as external for a
+        // few seconds, and that is not what is under test here.
+        let other_page = folder.join("Other.md");
+        fs::write(&other_page, "first line\n").expect("seed second page");
 
         let changes = std::sync::Arc::new(AtomicU64::new(0));
         let seen = changes.clone();
@@ -2321,6 +2390,32 @@ mod tests {
             changes.load(AtomicOrdering::Relaxed),
             1,
             "Folio's own write should not wake the watcher"
+        );
+
+        // Saving a page inside a folder is the same own write, and must read
+        // the same way. Windows reports it three times over as a plain
+        // modification of the folder holding the page, which is the shape a
+        // save has when a reader is typing: every keystroke woke the watcher,
+        // and the refresh that followed pulled the page back from disk.
+        atomic_write(&page, b"first line\nsecond line\n", None, true).expect("own write in folder");
+        std::thread::sleep(Duration::from_secs(3));
+        assert_eq!(
+            changes.load(AtomicOrdering::Relaxed),
+            1,
+            "Folio's own save inside a folder should not wake the watcher"
+        );
+
+        // A page inside a folder changing from outside is still news, so the
+        // folder's silence above must not have cost the page its voice.
+        fs::write(&other_page, "from another device\n").expect("external write in folder");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while changes.load(AtomicOrdering::Relaxed) < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(
+            changes.load(AtomicOrdering::Relaxed),
+            2,
+            "an external write inside a folder should wake the watcher once"
         );
 
         // The watcher holds a handle on the folder; on Windows that handle
