@@ -4463,9 +4463,9 @@ export default function Home() {
 
   // Re-reads the folder from disk to pick up changes made outside Folio.
   // Pending edits are flushed first, so a refresh can never discard them.
-  const refreshLibrary = async () => {
+  const refreshLibrary = async (quiet = false) => {
     if (!desktopMode || !nativeLibraryOpen) {
-      showNotice("Open a folder to refresh it.");
+      if (!quiet) showNotice("Open a folder to refresh it.");
       return;
     }
     setRefreshing(true);
@@ -4497,17 +4497,61 @@ export default function Home() {
             : snapshot.notes.some((note) => note.path === current.path);
         return exists ? current : undefined;
       });
-      showNotice(
-        `Refreshed — ${snapshot.notes.length} page${
-          snapshot.notes.length === 1 ? "" : "s"
-        }.`,
-      );
+      if (!quiet) {
+        showNotice(
+          `Refreshed — ${snapshot.notes.length} page${
+            snapshot.notes.length === 1 ? "" : "s"
+          }.`,
+        );
+      }
     } catch (error) {
       showNotice(error instanceof Error ? error.message : String(error));
     } finally {
       setRefreshing(false);
     }
   };
+
+  // The watcher's handler outlives many renders, so it reads the pieces that
+  // change — is the panel mid-gesture, and how to refresh — through a ref.
+  const externalRefreshRef = useRef<{
+    busy: boolean;
+    refresh: () => Promise<void>;
+  }>({ busy: false, refresh: async () => undefined });
+  useEffect(() => {
+    externalRefreshRef.current = {
+      busy: Boolean(draggedNoteId || renamingEntry || createKind || refreshing),
+      refresh: () => refreshLibrary(true),
+    };
+  });
+
+  // External changes appear on their own: the backend watches the library
+  // folder, filters out Folio's own saves, and says so once a burst of
+  // changes has settled. Refreshing mid-gesture would pull rows out from
+  // under the pointer, so a change landing during one waits for the hand to
+  // lift, retrying until the panel is at rest.
+  useEffect(() => {
+    if (!desktopMode || !nativeLibraryOpen) return undefined;
+    let disposed = false;
+    let retry: number | undefined;
+    let unlisten: (() => void) | undefined;
+    const refresh = () => {
+      window.clearTimeout(retry);
+      if (externalRefreshRef.current.busy) {
+        retry = window.setTimeout(refresh, 1000);
+        return;
+      }
+      void externalRefreshRef.current.refresh();
+    };
+    void nativeLibrary.onChange(refresh).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      window.clearTimeout(retry);
+      unlisten?.();
+    };
+  }, [desktopMode, nativeLibraryOpen]);
 
   const deleteEntry = async (entry: LibraryEntry) => {
     setEntryMenu(undefined);

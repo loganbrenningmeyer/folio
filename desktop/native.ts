@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 export type RelativePath = string;
 
@@ -146,6 +147,20 @@ export function writeLibraryIcons(contents: string): Promise<void> {
 }
 
 /**
+ * Runs `handler` whenever something outside Folio changes the open library on
+ * disk — a sync landing, another editor saving, a file added in the Finder.
+ * The backend watches the library folder, filters out Folio's own writes, and
+ * reports once per settled burst of changes. Resolves to an unsubscribe
+ * function; outside the native runtime nothing ever fires.
+ */
+export async function onLibraryChanged(
+  handler: () => void,
+): Promise<() => void> {
+  if (!isNativeRuntime()) return () => undefined;
+  return listen("library-changed", () => handler());
+}
+
+/**
  * Native image picker for a folder's icon, returning the chosen picture as a
  * data URI. Nothing is copied into the library: the renderer scales the
  * picture down to icon size and the small result is what gets stored. Resolves
@@ -228,6 +243,7 @@ export const nativeLibrary = Object.freeze({
   writeOrder: writeLibraryOrder,
   readIcons: readLibraryIcons,
   writeIcons: writeLibraryIcons,
+  onChange: onLibraryChanged,
   pickIconImage,
   write: writeNote,
   move: moveNote,
