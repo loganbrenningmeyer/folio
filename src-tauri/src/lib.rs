@@ -1,16 +1,19 @@
 use base64::Engine as _;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
+    collections::HashMap,
     fs::{self, File, OpenOptions, Permissions},
     io::{self, Write},
     path::{Component, Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering as AtomicOrdering},
-        Mutex, MutexGuard,
+        mpsc, LazyLock, Mutex, MutexGuard,
     },
+    time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 const PREFERENCES_FILE: &str = "library.json";
@@ -30,6 +33,24 @@ const MAIN_WINDOW: &str = "main";
 /// read from disk, short enough that a broken frontend is not a hang.
 const WINDOW_REVEAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// How long one of Folio's own writes stays recognisable to the library
+/// watcher. Long enough to cover the lag between a write and the filesystem
+/// reporting it, short enough that a sync overwriting the same file moments
+/// later still reads as the external change it is.
+const SELF_WRITE_TTL: Duration = Duration::from_secs(5);
+/// Quiet time before a burst of filesystem events becomes one refresh: a sync
+/// landing twenty pages should read as one change, not twenty.
+const WATCH_DEBOUNCE: Duration = Duration::from_millis(600);
+/// The longest a continuous stream of events may hold the refresh back, so a
+/// large sync starts appearing while it is still arriving.
+const WATCH_DEBOUNCE_CAP: Duration = Duration::from_secs(2);
+
+/// Paths Folio itself wrote just now, so the watcher can tell its own saves
+/// from changes arriving from outside. Recorded where the writes happen — a
+/// static, because the write helpers are plain functions shared with tests.
+static RECENT_SELF_WRITES: LazyLock<Mutex<HashMap<PathBuf, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,11 +126,13 @@ async fn restore_library(
     let preferences = load_preferences(&app)?;
     let Some(stored_root) = preferences.library_root else {
         state.set(None)?;
+        watch_library(&app, None);
         return Ok(None);
     };
 
     let root = canonical_library_root(&stored_root)?;
     let snapshot = scan_library_root(&root)?;
+    watch_library(&app, Some(&root));
     state.set(Some(root))?;
 
     // A page renamed, moved, or deleted outside Folio is no longer somewhere to
@@ -189,6 +212,7 @@ async fn choose_library(
     // Persist only after a complete scan succeeds, so a cancelled or unreadable
     // selection cannot replace the last working library.
     save_preferences(&app, Some(&root))?;
+    watch_library(&app, Some(&root));
     state.set(Some(root))?;
     Ok(Some(snapshot))
 }
@@ -243,6 +267,7 @@ async fn open_linked_note(
         // Persist only after the scan succeeds, matching choose_library: a
         // folder Folio could not read must not replace the working library.
         save_preferences(&app, Some(&new_root))?;
+        watch_library(&app, Some(&new_root));
         state.set(Some(new_root))?;
     }
     Ok(Some(linked))
@@ -420,6 +445,7 @@ async fn create_folder(
     );
 
     ensure_destination_absent(&destination)?;
+    note_self_write(&destination);
     fs::create_dir(&destination)
         .map_err(|error| io_error("create the folder", &destination, error))?;
 
@@ -580,6 +606,164 @@ fn write_library_file(root: &Path, name: &str, contents: &str, action: &str) -> 
         .map_err(|error| io_error(action, &destination, error))
 }
 
+/// The watcher on the open library, held so it can be dropped — which stops
+/// its thread — whenever the library root changes or closes.
+#[derive(Default)]
+struct WatcherState {
+    watcher: Mutex<Option<RecommendedWatcher>>,
+}
+
+/// Records that Folio itself is writing `path`, so the filesystem event that
+/// write causes is not mistaken for a change arriving from outside. Recording
+/// a folder covers everything inside it: renaming one reports events for each
+/// page it carries along.
+fn note_self_write(path: &Path) {
+    let mut writes = match RECENT_SELF_WRITES.lock() {
+        Ok(writes) => writes,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let now = Instant::now();
+    writes.retain(|_, written| now.duration_since(*written) <= SELF_WRITE_TTL);
+    writes.insert(path.to_path_buf(), now);
+}
+
+/// True for library paths the watcher has no business reacting to: anything
+/// inside a dot entry, which is where sync engines and Folio alike keep their
+/// machinery — except Folio's own bookkeeping files, whose arrival from
+/// another device is exactly the kind of change worth showing.
+fn hidden_relative_path(relative: &Path) -> bool {
+    let bookkeeping = relative.parent() == Some(Path::new(LIBRARY_DIRECTORY))
+        && relative
+            .file_name()
+            .is_some_and(|name| name == ORDER_FILE || name == ICONS_FILE);
+    if bookkeeping {
+        return false;
+    }
+    relative.components().any(|component| match component {
+        Component::Normal(name) => name.to_string_lossy().starts_with('.'),
+        _ => false,
+    })
+}
+
+/// True when `path` — or a folder it sits in — is one Folio wrote within the
+/// last few seconds, which makes the event an echo of Folio's own work.
+fn recently_self_written(
+    writes: &HashMap<PathBuf, Instant>,
+    root: &Path,
+    path: &Path,
+    now: Instant,
+) -> bool {
+    let mut candidate = Some(path);
+    while let Some(current) = candidate {
+        if writes
+            .get(current)
+            .is_some_and(|written| now.duration_since(*written) <= SELF_WRITE_TTL)
+        {
+            return true;
+        }
+        if current == root {
+            break;
+        }
+        candidate = current.parent();
+    }
+    false
+}
+
+/// True when the event describes a change someone other than Folio made to
+/// something the library actually shows. Reads and metadata-only changes are
+/// not: every write Folio makes also bumps its parent folder's timestamps,
+/// which the platform reports as changes to the folder — an echo, not news.
+fn event_is_external(root: &Path, event: &notify::Event) -> bool {
+    use notify::{event::ModifyKind, EventKind};
+    if matches!(
+        event.kind,
+        EventKind::Access(_) | EventKind::Modify(ModifyKind::Metadata(_))
+    ) {
+        return false;
+    }
+    let writes = match RECENT_SELF_WRITES.lock() {
+        Ok(writes) => writes,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let now = Instant::now();
+    event.paths.iter().any(|path| {
+        let Ok(relative) = path.strip_prefix(root) else {
+            return false;
+        };
+        // The root itself changing says nothing its children's events do not.
+        if relative.as_os_str().is_empty() {
+            return false;
+        }
+        !hidden_relative_path(relative) && !recently_self_written(&writes, root, path, now)
+    })
+}
+
+/// Watches `root` and calls `on_change` once per settled burst of external
+/// changes. The returned watcher owns the subscription: dropping it closes the
+/// event channel, which ends the debounce thread.
+fn start_watcher(
+    root: PathBuf,
+    on_change: impl Fn() + Send + 'static,
+) -> notify::Result<RecommendedWatcher> {
+    let (sender, receiver) = mpsc::channel::<notify::Event>();
+    let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+        if let Ok(event) = result {
+            let _ = sender.send(event);
+        }
+    })?;
+    watcher.watch(&root, RecursiveMode::Recursive)?;
+
+    std::thread::spawn(move || {
+        while let Ok(first) = receiver.recv() {
+            let mut relevant = event_is_external(&root, &first);
+            let deadline = Instant::now() + WATCH_DEBOUNCE_CAP;
+            loop {
+                match receiver.recv_timeout(WATCH_DEBOUNCE) {
+                    Ok(event) => {
+                        relevant = relevant || event_is_external(&root, &event);
+                        if Instant::now() >= deadline {
+                            break;
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        if relevant {
+                            on_change();
+                        }
+                        return;
+                    }
+                }
+            }
+            if relevant {
+                on_change();
+            }
+        }
+    });
+    Ok(watcher)
+}
+
+/// Points the library watcher at `root`, or turns it off. A watcher that
+/// cannot start is not worth failing the open over: the library still works,
+/// with external changes behind the Refresh button as before.
+fn watch_library(app: &AppHandle, root: Option<&Path>) {
+    let state = app.state::<WatcherState>();
+    let mut slot = match state.watcher.lock() {
+        Ok(slot) => slot,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *slot = None;
+    let Some(root) = root else {
+        return;
+    };
+    let handle = app.clone();
+    match start_watcher(root.to_path_buf(), move || {
+        let _ = handle.emit("library-changed", ());
+    }) {
+        Ok(watcher) => *slot = Some(watcher),
+        Err(error) => eprintln!("Folio could not watch the library folder: {error}"),
+    }
+}
+
 #[tauri::command]
 async fn write_note(
     path: String,
@@ -645,6 +829,8 @@ async fn move_note(
     };
 
     let source_parent = source.parent().map(Path::to_path_buf);
+    note_self_write(&source);
+    note_self_write(&destination);
     let move_result = if destination_is_source {
         // Case-only renames on case-insensitive volumes already refer to this
         // inode, so a normal rename cannot clobber a different file.
@@ -703,6 +889,8 @@ fn rename_in_library(root: &Path, path: &str, name: &str, kind: PathKind) -> Res
         return Ok(());
     }
 
+    note_self_write(&source);
+    note_self_write(&destination);
     // A case-only rename on a case-insensitive volume resolves to the same
     // entry and is safe; any other existing destination is left untouched.
     let same_entry = canonical_path(&destination)
@@ -753,6 +941,7 @@ async fn delete_entry(
     }
 
     let parent = target.parent().map(Path::to_path_buf);
+    note_self_write(&target);
     trash::delete(&target).map_err(|error| {
         format!(
             "Folio could not move {} to the trash: {error}",
@@ -828,7 +1017,10 @@ const WINDOWS_RESERVED_STEMS: [&str; 22] = [
 /// Compiled on every platform so the rule stays testable from a Mac, and so a
 /// change here cannot break the Windows build unnoticed.
 fn unusable_windows_name_reason(name: &str) -> Option<String> {
-    if let Some(character) = name.chars().find(|c| WINDOWS_RESERVED_CHARACTERS.contains(c)) {
+    if let Some(character) = name
+        .chars()
+        .find(|c| WINDOWS_RESERVED_CHARACTERS.contains(c))
+    {
         return Some(format!("Names on Windows cannot contain {character}."));
     }
     // Windows silently drops a trailing dot or space, so the file would not
@@ -1495,6 +1687,7 @@ fn atomic_write(
         .and_then(|name| name.to_str())
         .unwrap_or("folio");
 
+    note_self_write(destination);
     let (temporary_path, mut temporary_file) = (0..64)
         .find_map(|_| {
             let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
@@ -1652,6 +1845,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(LibraryState::default())
+        .manage(WatcherState::default())
         .setup(|app| {
             // Folio's window waits for the frontend to say it has something
             // worth looking at. This is the backstop: a frontend that fails to
@@ -1818,6 +2012,115 @@ mod tests {
         );
 
         fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn the_watcher_ignores_hidden_entries_but_not_folios_bookkeeping() {
+        // Sync engines and Folio alike keep their machinery in dot entries,
+        // including Folio's own atomic-save temporary files.
+        assert!(hidden_relative_path(Path::new(".DS_Store")));
+        assert!(hidden_relative_path(Path::new(".git/objects/ab/cdef")));
+        assert!(hidden_relative_path(Path::new(".stfolder/marker")));
+        assert!(hidden_relative_path(Path::new(
+            "notes/.Idea.md.folio-save-42-7.tmp"
+        )));
+        // The bookkeeping files are the exception: an order or icons file
+        // arriving from another device is a change worth showing.
+        assert!(!hidden_relative_path(Path::new(".folio/order.json")));
+        assert!(!hidden_relative_path(Path::new(".folio/icons.json")));
+        assert!(hidden_relative_path(Path::new(".folio/anything-else.json")));
+        assert!(hidden_relative_path(Path::new(
+            ".folio/.order.json.folio-save-1-1.tmp"
+        )));
+        assert!(!hidden_relative_path(Path::new("notes/Idea.md")));
+    }
+
+    #[test]
+    fn the_watcher_recognises_folios_own_writes_and_forgets_them() {
+        let root = Path::new("/library");
+        let now = Instant::now();
+        let mut writes = HashMap::new();
+        writes.insert(PathBuf::from("/library/notes/Idea.md"), now);
+        writes.insert(PathBuf::from("/library/archive"), now);
+
+        assert!(recently_self_written(
+            &writes,
+            root,
+            Path::new("/library/notes/Idea.md"),
+            now
+        ));
+        // A renamed folder reports events for the pages it carries along, so
+        // recording the folder covers everything inside it.
+        assert!(recently_self_written(
+            &writes,
+            root,
+            Path::new("/library/archive/deep/Page.md"),
+            now
+        ));
+        assert!(!recently_self_written(
+            &writes,
+            root,
+            Path::new("/library/notes/Other.md"),
+            now
+        ));
+
+        // A write is only recognisable for a moment; the same path changing
+        // later is an external change again.
+        let later = now + SELF_WRITE_TTL + Duration::from_secs(1);
+        assert!(!recently_self_written(
+            &writes,
+            root,
+            Path::new("/library/notes/Idea.md"),
+            later
+        ));
+    }
+
+    #[test]
+    fn external_writes_wake_the_watcher_and_folios_own_do_not() {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "folio-watcher-test-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create test root");
+        // The production watcher sees the canonical root, so the test must
+        // too, or event paths would not strip against it.
+        let root = canonical_library_root(&root).expect("canonicalize root");
+
+        let changes = std::sync::Arc::new(AtomicU64::new(0));
+        let seen = changes.clone();
+        let watcher = start_watcher(root.clone(), move || {
+            seen.fetch_add(1, AtomicOrdering::Relaxed);
+        })
+        .expect("start watcher");
+        // Give the platform watcher a beat to arm before the first write.
+        std::thread::sleep(Duration::from_millis(400));
+
+        fs::write(root.join("Arrived.md"), "from another device").expect("write page");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while changes.load(AtomicOrdering::Relaxed) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(
+            changes.load(AtomicOrdering::Relaxed),
+            1,
+            "an external write should wake the watcher once"
+        );
+
+        // Folio's own save runs through atomic_write, which records itself;
+        // the events it causes must not read as an external change.
+        atomic_write(&root.join("Own.md"), b"saved by Folio", None, false).expect("own write");
+        std::thread::sleep(Duration::from_secs(3));
+        assert_eq!(
+            changes.load(AtomicOrdering::Relaxed),
+            1,
+            "Folio's own write should not wake the watcher"
+        );
+
+        // The watcher holds a handle on the folder; on Windows that handle
+        // would make removing the watched folder racy, so it goes first.
+        drop(watcher);
+        fs::remove_dir_all(&root).expect("remove test directory");
     }
 
     #[test]

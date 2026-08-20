@@ -16,6 +16,9 @@ base64 = "0.22"
 # Keeps canonical paths in the plain `C:\…` form on Windows rather than the
 # verbatim `\\?\C:\…` one. A no-op passthrough on macOS.
 dunce = "1"
+# Watches the open library so changes made outside Folio — a sync landing, an
+# editor saving over a page — appear on their own rather than behind Refresh.
+notify = "8"
 serde = { version = "1", features = ["derive"] }
 # Deletes go to the system trash rather than unlinking, so they stay undoable:
 # the Finder trash on macOS, the Recycle Bin on Windows.
