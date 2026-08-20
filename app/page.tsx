@@ -6418,7 +6418,9 @@ export default function Home() {
                             : ""
                         }`}
                         onClick={() => {
-                          setSelectedEntry({ kind: "folder", path: group });
+                          // A click only opens or closes the folder — the
+                          // accent outline is reserved for the row a right
+                          // click or the entry menu actually selected.
                           setCollapsedGroups((current) => {
                             const next = new Set(current);
                             if (next.has(group)) next.delete(group);
@@ -6497,10 +6499,18 @@ export default function Home() {
                                   dragEnded.current = false;
                                   return;
                                 }
-                                setSelectedEntry({
-                                  kind: "note",
-                                  path: note.path,
-                                });
+                                // A click on a page that is already open is
+                                // the second click on it: that one selects the
+                                // row — the accent outline, and the keys that
+                                // rename or delete it. A click that opens a
+                                // page only opens it, so a reader moving
+                                // through their library never has a rename a
+                                // stray Enter away.
+                                setSelectedEntry(
+                                  note.id === active.id
+                                    ? { kind: "note", path: note.path }
+                                    : undefined,
+                                );
                                 selectNote(note.id);
                               }}
                               onContextMenu={(event) =>
