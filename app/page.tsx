@@ -176,6 +176,7 @@ import {
   RotateCcw,
   Save,
   Search,
+  SlidersVertical,
   Sparkles,
   Sprout,
   Star,
@@ -253,7 +254,8 @@ type LibraryLink = Exclude<NoteLink, { kind: "external" | "fragment" }>;
 type ViewMode = "preview" | "editor" | "split";
 type Theme = "light" | "dark";
 type CreateKind = "file" | "folder";
-type PreferenceTab = "appearance" | "configure";
+/** The two preference panels, each opened by its own button in the toolbar. */
+type PreferencePanel = "appearance" | "configure";
 type TextSnippet = {
   id: string;
   name: string;
@@ -754,7 +756,7 @@ Folio turns a folder of Markdown files into a calm, connected reading space. You
 - Open a folder using the button in the sidebar.
 - Move between pages with the page controls or your configured keyboard shortcuts.
 - Switch between **Read**, **Write**, and **Split** views.
-- Open **Preferences → Configure** to personalize navigation, file, folder, and view commands.
+- Open **Configure** to personalize navigation, file, folder, and view commands.
 
 ## Make connections
 
@@ -2552,8 +2554,6 @@ export default function Home() {
   const [readerWidth, setReaderWidth] = useState(DEFAULT_READER_WIDTH_INDEX);
   const [appearancePreferencesLoaded, setAppearancePreferencesLoaded] =
     useState(false);
-  const [preferenceTab, setPreferenceTab] =
-    useState<PreferenceTab>("appearance");
   const [textSnippets, setTextSnippets] = useState<TextSnippet[]>(
     freshDefaultTextSnippets,
   );
@@ -2572,7 +2572,9 @@ export default function Home() {
   const [librarySettled, setLibrarySettled] = useState(false);
   const [desktopMode] = useState(() => isNativeRuntime());
   const [nativeLibraryOpen, setNativeLibraryOpen] = useState(false);
-  const [fontPanelOpen, setFontPanelOpen] = useState(false);
+  // Which preference panel is open, if either. Appearance is what Folio looks
+  // like; Configure is what it does — keys, snippets, and sync.
+  const [preferencePanel, setPreferencePanel] = useState<PreferencePanel>();
   const [dirty, setDirty] = useState<Set<string>>(new Set());
   const [saved, setSaved] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -2631,7 +2633,8 @@ export default function Home() {
   const folderInput = useRef<HTMLInputElement>(null);
   const createNameInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
-  const preferencesTrigger = useRef<HTMLButtonElement>(null);
+  const appearanceTrigger = useRef<HTMLButtonElement>(null);
+  const configureTrigger = useRef<HTMLButtonElement>(null);
   const preferencesDialog = useRef<HTMLElement>(null);
   const previewScrollRef = useRef<HTMLElement>(null);
   const markdownBodyRef = useRef<HTMLDivElement>(null);
@@ -3178,21 +3181,24 @@ export default function Home() {
   }, [searchOpen]);
 
   useEffect(() => {
-    if (!fontPanelOpen) return;
+    if (!preferencePanel) return;
+    const trigger =
+      preferencePanel === "appearance" ? appearanceTrigger : configureTrigger;
     const previouslyFocused =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
-        : preferencesTrigger.current;
-    const frame = window.requestAnimationFrame(() => {
-      preferencesDialog.current
-        ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
-        ?.focus();
-    });
+        : trigger.current;
+    // The panel itself takes focus: there is no tab strip to land on now that
+    // each panel is opened by its own button, and the trap below keeps Tab
+    // inside from here.
+    const frame = window.requestAnimationFrame(() =>
+      preferencesDialog.current?.focus(),
+    );
     return () => {
       window.cancelAnimationFrame(frame);
       previouslyFocused?.focus();
     };
-  }, [fontPanelOpen]);
+  }, [preferencePanel]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -3579,7 +3585,7 @@ export default function Home() {
   useEffect(() => {
     if (!selectedEntry || renamingEntry) return undefined;
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (fontPanelOpen || searchOpen || createKind || entryMenu) return;
+      if (preferencePanel || searchOpen || createKind || entryMenu) return;
       if (folderIconMenu) return;
       const target = event.target as HTMLElement | null;
       if (
@@ -3611,7 +3617,7 @@ export default function Home() {
     createKind,
     entryMenu,
     folderIconMenu,
-    fontPanelOpen,
+    preferencePanel,
     renamingEntry,
     searchOpen,
     selectedEntry,
@@ -5256,7 +5262,7 @@ export default function Home() {
         setSearchOpen(false);
         setNavOpen(false);
         setOutlineOpen(false);
-        setFontPanelOpen(false);
+        setPreferencePanel(undefined);
         setCreateKind(undefined);
         return;
       }
@@ -5585,7 +5591,7 @@ export default function Home() {
 
   return (
     <main className="app-shell">
-      <header className="topbar">
+      <header className={`topbar ${preferencePanel ? "panel-open" : ""}`}>
         <div className="brand-zone">
           <button
             className="icon-button mobile-only"
@@ -5635,14 +5641,32 @@ export default function Home() {
             )}
           </button>
           <button
-            ref={preferencesTrigger}
-            className={`icon-button ${fontPanelOpen ? "active" : ""}`}
-            onClick={() => setFontPanelOpen((open) => !open)}
-            aria-label="Open preferences"
-            aria-expanded={fontPanelOpen}
-            title="Preferences"
+            ref={appearanceTrigger}
+            className={`icon-button ${preferencePanel === "appearance" ? "active" : ""}`}
+            onClick={() =>
+              setPreferencePanel((open) =>
+                open === "appearance" ? undefined : "appearance",
+              )
+            }
+            aria-label="Open appearance"
+            aria-expanded={preferencePanel === "appearance"}
+            title="Appearance"
           >
             <Palette size={17} />
+          </button>
+          <button
+            ref={configureTrigger}
+            className={`icon-button ${preferencePanel === "configure" ? "active" : ""}`}
+            onClick={() =>
+              setPreferencePanel((open) =>
+                open === "configure" ? undefined : "configure",
+              )
+            }
+            aria-label="Open configure"
+            aria-expanded={preferencePanel === "configure"}
+            title="Configure"
+          >
+            <SlidersVertical size={17} />
           </button>
           <button
             className="icon-button"
@@ -5694,64 +5718,44 @@ export default function Home() {
         </div>
       </header>
 
-      {fontPanelOpen && (
+      {preferencePanel && (
         <>
           <button
             className="font-popover-scrim"
-            onClick={() => setFontPanelOpen(false)}
-            aria-label="Close preferences"
+            onClick={() => setPreferencePanel(undefined)}
+            aria-label={`Close ${preferencePanel}`}
           />
           <dialog
             ref={preferencesDialog}
-            className="font-popover"
+            className={`font-popover ${preferencePanel}-popover`}
             open
             aria-modal="true"
-            aria-label="Preferences"
+            aria-label={
+              preferencePanel === "appearance" ? "Appearance" : "Configure"
+            }
             tabIndex={-1}
             onKeyDown={trapPreferencesFocus}
           >
             <div className="font-popover-head">
               <span>
                 <small>Folio</small>
-                <strong>Preferences</strong>
+                <strong>
+                  {preferencePanel === "appearance"
+                    ? "Appearance"
+                    : "Configure"}
+                </strong>
               </span>
               <button
                 className="subtle-icon"
-                onClick={() => setFontPanelOpen(false)}
-                aria-label="Close preferences"
+                onClick={() => setPreferencePanel(undefined)}
+                aria-label={`Close ${preferencePanel}`}
               >
                 <X size={16} />
               </button>
             </div>
 
-            <div
-              className="preference-tabs"
-              role="tablist"
-              aria-label="Preferences sections"
-            >
-              <button
-                type="button"
-                className={preferenceTab === "appearance" ? "selected" : ""}
-                onClick={() => setPreferenceTab("appearance")}
-                role="tab"
-                aria-selected={preferenceTab === "appearance"}
-              >
-                <Palette size={14} /> Appearance
-              </button>
-              <button
-                type="button"
-                className={preferenceTab === "configure" ? "selected" : ""}
-                onClick={() => setPreferenceTab("configure")}
-                role="tab"
-                aria-selected={preferenceTab === "configure"}
-                aria-label="Configure shortcuts, snippets, and sync"
-              >
-                <Command size={14} /> Configure
-              </button>
-            </div>
-
-            {preferenceTab === "appearance" && (
-              <div className="preference-pane" role="tabpanel">
+            {preferencePanel === "appearance" && (
+              <div className="preference-pane">
                 <fieldset className="palette-control">
                   <legend>
                     Color scheme
@@ -5892,17 +5896,17 @@ export default function Home() {
               </div>
             )}
 
-            {preferenceTab === "configure" && (
-              <div className="preference-pane" role="tabpanel">
+            {preferencePanel === "configure" && (
+              <div className="preference-pane">
                 <section className="preference-group shortcut-preferences">
                   <h3>
                     <Command size={13} aria-hidden="true" /> Keyboard shortcuts
                   </h3>
                   <p className="shortcut-help">
-                    Focus a shortcut field and press the keys you want. Backspace
-                    clears a binding. Bare navigation and function keys are
-                    allowed; printable keys need Ctrl, Command, or Alt. Modified
-                    shortcuts also work while writing.
+                    Focus a shortcut field and press the keys you want.
+                    Backspace clears a binding. Bare navigation and function
+                    keys are allowed; printable keys need Ctrl, Command, or
+                    Alt. Modified shortcuts also work while writing.
                   </p>
                   <div className="app-shortcut-groups">
                     {(["General", "Navigation", "Files", "View"] as const).map(

@@ -64,7 +64,7 @@ fn git_error(action: &str) -> impl Fn(git2::Error) -> String + '_ {
 }
 
 const NOT_CONFIGURED: &str =
-    "Sync is not set up for this library. Connect a repository in Preferences → Sync.";
+    "Sync is not set up for this library. Connect a repository in Configure → Sync.";
 
 /// The library's repository, when the library itself is one. `open` does not
 /// search parent folders, so a library that merely sits inside some other
@@ -147,7 +147,7 @@ fn callbacks(token: Option<&str>) -> RemoteCallbacks<'_> {
             let Some(token) = token else {
                 return Err(git2::Error::from_str(
                     "This remote needs an access token. Add one in \
-                     Preferences → Sync.",
+                     Configure → Sync.",
                 ));
             };
             // Being asked twice means the first answer was refused.
