@@ -6016,7 +6016,47 @@ export default function Home() {
                       <kbd>{formatShortcut(appShortcuts["sync-commit"])}</kbd>,
                       when quitting, and when Folio opens.
                     </p>
+                    {/* A connected library still needs a way in for a
+                        token: they expire, and a first sync that failed
+                        before saving one leaves a remote with no credential
+                        to reach it with. */}
+                    <label className="sync-field">
+                      <span>Access token</span>
+                      <input
+                        type="password"
+                        value={syncTokenDraft}
+                        onChange={(event) =>
+                          setSyncTokenDraft(event.target.value)
+                        }
+                        placeholder="Replace the stored token"
+                        spellCheck={false}
+                      />
+                    </label>
                     <div className="sync-actions">
+                      <button
+                        type="button"
+                        className="sync-action"
+                        disabled={syncBusy || !syncTokenDraft.trim()}
+                        onClick={() =>
+                          void (async () => {
+                            try {
+                              await nativeLibrary.syncSetToken(
+                                syncTokenDraft.trim(),
+                              );
+                              setSyncTokenDraft("");
+                              showNotice("Access token saved.");
+                            } catch (error) {
+                              showNotice(
+                                error instanceof Error
+                                  ? error.message
+                                  : String(error),
+                              );
+                            }
+                          })()
+                        }
+                      >
+                        Save token
+                      </button>
                       <button
                         type="button"
                         className="sync-action"

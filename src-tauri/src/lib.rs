@@ -641,11 +641,27 @@ async fn sync_connect(
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty());
 
-    let outcome = sync::connect(&root, &remote_url, token.as_deref())?;
+    // The token is recorded before the first sync runs, not after it succeeds.
+    // A first sync can fail for reasons that have nothing to do with the token
+    // — offline, a typo in the URL — and saving it afterwards would leave the
+    // library with a remote configured and no credential to reach it with,
+    // which reads later as a mysterious refusal.
     let mut preferences = load_preferences(&app)?;
-    preferences.sync_token = token;
+    preferences.sync_token = token.clone();
     write_preferences(&app, preferences)?;
-    Ok(outcome)
+
+    sync::connect(&root, &remote_url, token.as_deref())
+}
+
+/// Replaces the stored token for a library that is already connected — one
+/// that has expired, or one that was never recorded because an early sync
+/// failed before it could be saved.
+#[tauri::command]
+async fn sync_set_token(app: AppHandle, token: String) -> Result<(), String> {
+    let token = token.trim().to_string();
+    let mut preferences = load_preferences(&app)?;
+    preferences.sync_token = (!token.is_empty()).then_some(token);
+    write_preferences(&app, preferences)
 }
 
 /// One beat of sync: commit whatever changed, pull, merge, push.
@@ -1964,6 +1980,7 @@ pub fn run() {
             pick_icon_image,
             sync_status,
             sync_connect,
+            sync_set_token,
             sync_now,
             sync_disconnect,
             approve_close,
