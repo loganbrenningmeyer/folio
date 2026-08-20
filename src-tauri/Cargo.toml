@@ -16,6 +16,9 @@ base64 = "0.22"
 # Watches the open library so changes made outside Folio — a sync landing, an
 # editor saving over a page — appear on their own rather than behind Refresh.
 notify = "8"
+# Git-backed sync: the library folder is the repository, committed and merged
+# through libgit2 so no git binary is required on the machine.
+git2 = "0.21"
 serde = { version = "1", features = ["derive"] }
 # Deletes go to the Finder trash rather than unlinking, so they stay undoable.
 trash = "5"

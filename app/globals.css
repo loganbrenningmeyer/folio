@@ -3749,6 +3749,145 @@ body.dragging-page .page-row { cursor: grabbing; }
 
 .folder-icon-browse:hover { background: var(--panel); }
 
+/* Sync: the footer's word on where the library stands, the preferences pane
+   that connects it, and the one question asked on the way out. */
+
+.sync-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.sync-preferences { display: grid; gap: 12px; }
+
+.sync-help,
+.sync-remote-line {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sync-remote-line strong {
+  overflow-wrap: anywhere;
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.sync-help kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--paper-deep);
+  color: var(--ink-2);
+  font: 10px var(--font-code);
+}
+
+.sync-field { display: grid; gap: 5px; }
+
+.sync-field span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.sync-field input {
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  outline: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 12px var(--font-ui);
+}
+
+.sync-field input:focus { border-color: var(--accent); }
+
+.sync-actions { display: flex; gap: 8px; }
+
+.sync-action {
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink-2);
+  cursor: pointer;
+  font: 500 11px var(--font-ui);
+}
+
+.sync-action:hover:not(:disabled) { background: var(--panel); }
+.sync-action:disabled { cursor: default; opacity: .5; }
+
+.sync-disconnect:hover:not(:disabled) {
+  background: color-mix(in srgb, #b6574f 12%, var(--paper));
+  border-color: color-mix(in srgb, #b6574f 40%, var(--line-strong));
+  color: #a04943;
+}
+
+.close-prompt-scrim {
+  position: fixed;
+  z-index: 140;
+  inset: 0;
+  background: color-mix(in srgb, var(--code-bg) 42%, transparent);
+}
+
+.close-prompt {
+  position: fixed;
+  z-index: 141;
+  top: 50%;
+  left: 50%;
+  width: min(430px, calc(100vw - 40px));
+  padding: 18px 18px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--paper);
+  box-shadow: var(--shadow);
+  transform: translate(-50%, -50%);
+}
+
+.close-prompt strong { color: var(--ink); font-size: 14px; }
+
+.close-prompt p {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.close-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.close-prompt-actions button {
+  padding: 7px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink-2);
+  cursor: pointer;
+  font: 500 11px var(--font-ui);
+}
+
+.close-prompt-actions button:hover { background: var(--panel); }
+
+.close-prompt-commit {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong)) !important;
+  background: var(--accent-soft) !important;
+  color: var(--accent-ink) !important;
+}
+
+.close-prompt-commit:hover {
+  background: color-mix(in srgb, var(--accent) 24%, var(--accent-soft)) !important;
+}
+
 .library-create-actions .subtle-icon:disabled { cursor: default; opacity: .5; }
 
 .library-create-actions .spinning { animation: folio-spin .8s linear infinite; }

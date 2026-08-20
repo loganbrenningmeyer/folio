@@ -70,6 +70,28 @@ such as Documents, Desktop, removable drives, or network volumes. That operating
 system request cannot be bypassed safely. macOS normally remembers the choice for
 the installed build.
 
+## Sync between devices
+
+Folio can sync a library through a Git repository you own. Open
+**Preferences → Sync**, paste the remote URL (an empty private repository
+works — Folio pushes the library into it), and for an https remote a
+personal access token with repository write access; ssh remotes use your
+ssh-agent. On another machine, open an empty folder as the library and
+connect it to the same remote: the pages come down.
+
+Saving stays local and constant. Committing is a chosen moment: press
+⌘⇧S (Ctrl+Shift+S on Windows) to commit and sync, answer the prompt that
+appears if you quit with uncommitted changes, and Folio sweeps up anything
+a force-quit left behind the next time it opens — then pulls what your
+other devices pushed. Changes landing from a sync appear on their own.
+
+Merges always resolve to one file. Page edits merge line by line; when both
+devices changed the very same line, the merged page keeps both versions in
+sequence for you to tidy — nothing is lost and no conflicted copies appear.
+Folio's own page order and folder icons merge folder by folder. History
+lives in a `.git` folder inside the library; the access token lives in
+Folio's settings on each device, never in the repository.
+
 ## Sharing the app with other Macs
 
 This local build is suitable for this Mac and is ad-hoc signed. A rebuilt ad-hoc

@@ -30,6 +30,27 @@ export type LinkedNote = {
   rerooted: boolean;
 };
 
+/** How the open library stands against its sync remote. */
+export type SyncStatus = {
+  configured: boolean;
+  remote: string | null;
+  branch: string | null;
+  /** Files changed since the last commit. */
+  changedFiles: number;
+  /** Commits waiting to be pushed. */
+  ahead: number;
+  /** Commits fetched but not yet merged. */
+  behind: number;
+};
+
+/** What one beat of sync actually did, with a sentence saying so. */
+export type SyncOutcome = {
+  committed: boolean;
+  pulled: boolean;
+  pushed: boolean;
+  summary: string;
+};
+
 export class NativeRuntimeUnavailableError extends Error {
   constructor() {
     super("Folio's native library bridge is unavailable in this runtime.");
@@ -147,6 +168,55 @@ export function writeLibraryIcons(contents: string): Promise<void> {
 }
 
 /**
+ * How the library stands against its sync remote — no network is touched, so
+ * the footer and the quit prompt can ask freely.
+ */
+export function syncStatus(): Promise<SyncStatus> {
+  return invokeNative("sync_status");
+}
+
+/**
+ * Connects the open library to a git remote and runs the first sync. The
+ * token, when one is given, stays in Folio's settings on this device.
+ */
+export function syncConnect(
+  remoteUrl: string,
+  token: string,
+): Promise<SyncOutcome> {
+  return invokeNative("sync_connect", { remoteUrl, token: token || null });
+}
+
+/** One beat of sync: commit whatever changed, pull, merge, push. */
+export function syncNow(): Promise<SyncOutcome> {
+  return invokeNative("sync_now");
+}
+
+/** Forgets the sync remote and stored token; history stays in the library. */
+export function syncDisconnect(): Promise<void> {
+  return invokeNative("sync_disconnect");
+}
+
+/**
+ * Tells the backend the closing ritual is done — the quit prompt was
+ * answered, or there was nothing to ask — and the app may exit.
+ */
+export function approveClose(): Promise<void> {
+  return invokeNative("approve_close");
+}
+
+/**
+ * Runs `handler` when the reader asks to close Folio — the window button or
+ * the application quit, both funnel here. The close is already held; the
+ * handler must end with `approveClose` or leave the app open on purpose.
+ */
+export async function onCloseRequested(
+  handler: () => void,
+): Promise<() => void> {
+  if (!isNativeRuntime()) return () => undefined;
+  return listen("close-requested", () => handler());
+}
+
+/**
  * Runs `handler` whenever something outside Folio changes the open library on
  * disk — a sync landing, another editor saving, a file added in the Finder.
  * The backend watches the library folder, filters out Folio's own writes, and
@@ -244,6 +314,12 @@ export const nativeLibrary = Object.freeze({
   readIcons: readLibraryIcons,
   writeIcons: writeLibraryIcons,
   onChange: onLibraryChanged,
+  syncStatus,
+  syncConnect,
+  syncNow,
+  syncDisconnect,
+  approveClose,
+  onCloseRequested,
   pickIconImage,
   write: writeNote,
   move: moveNote,
