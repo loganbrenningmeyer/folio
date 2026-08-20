@@ -2673,6 +2673,13 @@ export default function Home() {
     Map<string, { path: string; content: string }>
   >(new Map());
   const nativeSavesInFlight = useRef<Map<string, Promise<void>>>(new Map());
+  /**
+   * How many edits each page has taken this session. A refresh reads the
+   * library from disk while the reader keeps typing, so this is how the
+   * snapshot it comes back with can tell a page that has since moved on from
+   * one it may safely replace.
+   */
+  const contentEdits = useRef<Map<string, number>>(new Map());
   const nativeSavedTimer = useRef<number | undefined>(undefined);
   const nativeWindowClosing = useRef(false);
   const windowShown = useRef(false);
@@ -4060,6 +4067,10 @@ export default function Home() {
   const updateContent = useCallback(
     (content: string) => {
       if (active.id === EMPTY_NOTE.id) return;
+      contentEdits.current.set(
+        active.id,
+        (contentEdits.current.get(active.id) ?? 0) + 1,
+      );
       setNotes((current) =>
         current.map((note) =>
           note.id === active.id ? { ...note, content } : note,
@@ -4571,12 +4582,34 @@ export default function Home() {
     setRefreshing(true);
     try {
       await flushAllNativeSaves();
+      // Every edit in memory is on disk now, so the scan below reads the
+      // pages as the reader last left them — but reading a library takes long
+      // enough to type a few words into it, and those words are newer than
+      // anything the snapshot can know. Which pages moved on is the
+      // difference between these counts and the ones the snapshot arrives to.
+      const editsAtScan = new Map(contentEdits.current);
       const snapshot = await nativeLibrary.scan();
       if (!snapshot) return;
-      setNotes(snapshot.notes);
+      const typedDuringScan = (noteId: string) =>
+        contentEdits.current.get(noteId) !== editsAtScan.get(noteId);
+      setNotes((current) =>
+        snapshot.notes.map((note) => {
+          if (!typedDuringScan(note.id)) return note;
+          const live = current.find((candidate) => candidate.id === note.id);
+          return live ? { ...note, content: live.content } : note;
+        }),
+      );
       setFolders(snapshot.folders);
       setLibraryName(snapshot.name);
-      setDirty(new Set());
+      // A page typed into during the scan has its own save on the way, so it
+      // is still waiting on disk however clean the rest of the library is.
+      setDirty(
+        new Set(
+          snapshot.notes
+            .filter((note) => typedDuringScan(note.id))
+            .map((note) => note.id),
+        ),
+      );
       // A refresh picks up an order or icons file edited outside Folio too.
       await loadNoteOrder();
       await loadFolderIcons();
