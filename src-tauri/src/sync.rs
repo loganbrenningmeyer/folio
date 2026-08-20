@@ -844,6 +844,39 @@ mod tests {
         );
     }
 
+    /// The other half of shipping a binary that can sync: everything it
+    /// links must exist on every Mac. A dependency picked up dynamically from
+    /// Homebrew — as libssh2's OpenSSL once was — exists only on machines
+    /// that installed it, and the hardened runtime rejects it even there, so
+    /// the app dies at launch with "Library not loaded". This test binary
+    /// links the same crates the app does, so its own dynamic-library list is
+    /// the evidence: system paths only.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn everything_dynamically_linked_ships_with_the_operating_system() {
+        let binary = std::env::current_exe().expect("locate this test binary");
+        let listing = std::process::Command::new("otool")
+            .arg("-L")
+            .arg(&binary)
+            .output()
+            .expect("run otool");
+        let listing = String::from_utf8_lossy(&listing.stdout);
+        let foreign: Vec<&str> = listing
+            .lines()
+            .skip(1) // the binary's own name
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .filter(|line| !line.starts_with("/usr/lib/") && !line.starts_with("/System/"))
+            .collect();
+        assert!(
+            foreign.is_empty(),
+            "the binary links libraries that are not part of macOS — \
+             the packaged app will fail to launch on other machines \
+             (and under the hardened runtime, on this one):\n{}",
+            foreign.join("\n")
+        );
+    }
+
     /// Proves the TLS path end to end against a real host, which local bare
     /// remotes never exercise. Ignored by default: it needs the network, and
     /// CI should not fail because GitHub is unreachable. Run on demand with
