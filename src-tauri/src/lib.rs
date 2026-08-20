@@ -380,7 +380,7 @@ fn resolve_link_target(root: &Path, note_directory: &Path, href: &str) -> Option
     // The library root, and so every folder above and inside it that Folio
     // resolved, is canonical. An unchanged path therefore proves the link
     // crossed no symbolic link on its way here.
-    let canonical = fs::canonicalize(&resolved).ok()?;
+    let canonical = canonical_path(&resolved).ok()?;
     if canonical != resolved || !fs::metadata(&canonical).ok()?.is_file() {
         return None;
     }
@@ -974,7 +974,7 @@ async fn move_note(
 
     // A case-only rename on a case-insensitive volume resolves to the same file
     // and is safe. Every other existing destination is left untouched.
-    let destination_is_source = if let Ok(destination_canonical) = fs::canonicalize(&destination) {
+    let destination_is_source = if let Ok(destination_canonical) = canonical_path(&destination) {
         if destination_canonical != source {
             return Err(format!(
                 "A file already exists at {}.",
@@ -1052,7 +1052,7 @@ fn rename_in_library(root: &Path, path: &str, name: &str, kind: PathKind) -> Res
     note_self_write(&destination);
     // A case-only rename on a case-insensitive volume resolves to the same
     // entry and is safe; any other existing destination is left untouched.
-    let same_entry = fs::canonicalize(&destination)
+    let same_entry = canonical_path(&destination)
         .map(|canonical| canonical == source)
         .unwrap_or(false);
     if same_entry {
@@ -1075,7 +1075,7 @@ fn rename_in_library(root: &Path, path: &str, name: &str, kind: PathKind) -> Res
     Ok(())
 }
 
-/// Moves a note or folder to the Finder trash, so a mistake stays undoable.
+/// Moves a note or folder to the system trash, so a mistake stays undoable.
 #[tauri::command]
 async fn delete_entry(
     path: String,
@@ -1133,6 +1133,7 @@ fn validate_entry_name(value: &str, kind: PathKind) -> Result<String, String> {
     if trimmed.starts_with('.') {
         return Err("Names cannot start with a dot.".to_string());
     }
+    reject_unusable_windows_name(trimmed)?;
 
     let name = match kind {
         PathKind::Folder => trimmed.to_string(),
@@ -1158,6 +1159,55 @@ fn validate_entry_name(value: &str, kind: PathKind) -> Result<String, String> {
     // a path is allowed to be.
     validate_relative_path(&name, kind)?;
     Ok(name)
+}
+
+/// Characters Windows forbids in a file name. macOS accepts all of them.
+const WINDOWS_RESERVED_CHARACTERS: [char; 7] = ['<', '>', ':', '"', '|', '?', '*'];
+
+/// Device names Windows still reserves, with or without an extension, so
+/// `CON.md` is refused as surely as `CON`.
+const WINDOWS_RESERVED_STEMS: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// Why Windows could not store a file under this name, if it could not.
+///
+/// Compiled on every platform so the rule stays testable from a Mac, and so a
+/// change here cannot break the Windows build unnoticed.
+fn unusable_windows_name_reason(name: &str) -> Option<String> {
+    if let Some(character) = name
+        .chars()
+        .find(|c| WINDOWS_RESERVED_CHARACTERS.contains(c))
+    {
+        return Some(format!("Names on Windows cannot contain {character}."));
+    }
+    // Windows silently drops a trailing dot or space, so the file would not
+    // keep the name that was typed.
+    if name.ends_with('.') || name.ends_with(' ') {
+        return Some("Names cannot end with a dot or a space.".to_string());
+    }
+    let stem = name.split('.').next().unwrap_or(name);
+    WINDOWS_RESERVED_STEMS
+        .iter()
+        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
+        .then(|| format!("{stem} is a name Windows reserves for a device."))
+}
+
+/// Refuses names Windows cannot store, so a rename reports Folio's own message
+/// instead of letting the failure surface as a raw operating system error.
+///
+/// Only the Windows build enforces this. macOS accepts these names, and
+/// rejecting them there would stop readers from renaming pages that their
+/// existing libraries already hold.
+fn reject_unusable_windows_name(name: &str) -> Result<(), String> {
+    if !cfg!(windows) {
+        return Ok(());
+    }
+    match unusable_windows_name_reason(name) {
+        Some(reason) => Err(reason),
+        None => Ok(()),
+    }
 }
 
 /// Saves image bytes (base64) beside the note and returns the file name that
@@ -1226,7 +1276,7 @@ async fn import_assets(
 /// folder. `directory` is canonical, so this compares canonical parents and
 /// never mistakes a symlinked or aliased route to the folder for a copy.
 fn asset_already_beside_note(directory: &Path, path: &Path) -> Option<String> {
-    let parent = fs::canonicalize(path.parent()?).ok()?;
+    let parent = canonical_path(path.parent()?).ok()?;
     if parent != directory {
         return None;
     }
@@ -1533,7 +1583,7 @@ fn canonical_library_root(path: &Path) -> Result<PathBuf, String> {
         return Err(format!("{} is not a folder.", display_path(path)));
     }
 
-    fs::canonicalize(path).map_err(|error| io_error("open the selected library", path, error))
+    canonical_path(path).map_err(|error| io_error("open the selected library", path, error))
 }
 
 fn scan_library_root(root: &Path) -> Result<LibrarySnapshot, String> {
@@ -1750,7 +1800,7 @@ fn resolve_existing_path(root: &Path, relative: &Path) -> Result<PathBuf, String
         }
     }
 
-    let canonical = fs::canonicalize(&current)
+    let canonical = canonical_path(&current)
         .map_err(|error| io_error("open a library entry", &current, error))?;
     if !canonical.starts_with(root) {
         return Err(format!(
@@ -1937,6 +1987,16 @@ fn io_error(action: &str, path: &Path, error: io::Error) -> String {
         "Folio could not {action} at {}: {error}",
         display_path(path)
     )
+}
+
+/// Resolves a path to its real location, the way `fs::canonicalize` does.
+///
+/// Windows `fs::canonicalize` returns a verbatim path (`\\?\C:\…`). That form
+/// is correct but leaks into anything a reader sees, and is not what other
+/// Windows programs accept, so it is reduced back to `C:\…` whenever the plain
+/// form means the same thing. On macOS this is `fs::canonicalize` unchanged.
+fn canonical_path(path: &Path) -> io::Result<PathBuf> {
+    dunce::canonicalize(path)
 }
 
 fn display_path(path: &Path) -> String {
@@ -2334,7 +2394,7 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir(&root).expect("create test root");
-        let root = fs::canonicalize(&root).expect("canonicalize root");
+        let root = canonical_path(&root).expect("canonicalize root");
         fs::create_dir(root.join("Research")).expect("create page folder");
         fs::create_dir(root.join("Elsewhere")).expect("create other folder");
         fs::write(root.join("Research/Idea.md"), "body").expect("write page");
@@ -2419,7 +2479,7 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir(&root).expect("create test root");
-        let root = fs::canonicalize(&root).expect("canonicalize root");
+        let root = canonical_path(&root).expect("canonicalize root");
         fs::create_dir(root.join("Research")).expect("create page folder");
         fs::create_dir(root.join("figs")).expect("create image folder");
         fs::write(root.join("Research/Idea.md"), "body").expect("write page");
@@ -2490,7 +2550,7 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir(&root).expect("create test root");
-        let root = fs::canonicalize(&root).expect("canonicalize root");
+        let root = canonical_path(&root).expect("canonicalize root");
         fs::create_dir(root.join("Research")).expect("create folder");
         fs::write(root.join("Research/Idea.md"), "body").expect("write note");
         fs::write(root.join("Research/Taken.md"), "other").expect("write other note");
@@ -2547,7 +2607,7 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir(&base).expect("create test base");
-        let base = fs::canonicalize(&base).expect("canonicalize base");
+        let base = canonical_path(&base).expect("canonicalize base");
         let notes = base.join("notes");
         fs::create_dir_all(notes.join("rust")).expect("create rust folder");
         fs::create_dir_all(notes.join("math")).expect("create math folder");
@@ -2719,11 +2779,56 @@ mod tests {
         fs::remove_dir_all(&root).expect("remove test root");
     }
 
-    /// Ignored by default because it leaves a file in the Finder trash. Run
-    /// with `cargo test -- --ignored` to confirm trashing still works on a
-    /// new macOS release.
+    /// The rule is checked on every platform even though only the Windows
+    /// build enforces it, so a Mac still catches a mistake in it.
     #[test]
-    #[ignore = "moves a file to the Finder trash"]
+    fn names_windows_cannot_store_are_named_as_such() {
+        for name in [
+            "notes: draft.md",
+            "why?.md",
+            "a<b>.md",
+            "pipe|name.md",
+            "star*.md",
+            "quote\".md",
+            "trailing dot.",
+            "trailing space ",
+            // Device names are reserved with or without an extension, and
+            // regardless of case.
+            "CON",
+            "con.md",
+            "Aux.md",
+            "lpt1.md",
+            "NUL",
+        ] {
+            assert!(
+                unusable_windows_name_reason(name).is_some(),
+                "{name} should be refused on Windows"
+            );
+        }
+
+        for name in [
+            "Ownership.md",
+            "notes - draft.md",
+            "a.b.c.md",
+            // Not device names: the reserved list is exact, not a prefix.
+            "CONTENTS.md",
+            "console.md",
+            "COM10.md",
+            "conclusion",
+        ] {
+            assert_eq!(
+                unusable_windows_name_reason(name),
+                None,
+                "{name} should be allowed on Windows"
+            );
+        }
+    }
+
+    /// Ignored by default because it leaves a file in the system trash. Run
+    /// with `cargo test -- --ignored` to confirm trashing still works on a new
+    /// macOS or Windows release.
+    #[test]
+    #[ignore = "moves a file to the system trash"]
     fn moves_entries_to_the_trash() {
         let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
         let root = std::env::temp_dir().join(format!(

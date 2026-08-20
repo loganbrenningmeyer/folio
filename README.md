@@ -1,6 +1,6 @@
 # Folio
 
-A Markdown reader and editor for macOS. You point it at a folder of `.md` files
+A Markdown reader and editor for macOS and Windows. You point it at a folder of `.md` files
 and it gives you a nicer way to read and write them than a plain text editor —
 rendered pages, a sidebar for your folders, an outline, wiki-style links between
 pages, and Python code blocks you can actually run.
@@ -10,8 +10,11 @@ Your files stay where they are on disk, and Folio just reads and writes them.
 
 ## Install
 
-Grab the `.dmg` from the [Releases](../../releases) page, open it, and drag Folio
-to your Applications folder.
+Both downloads are on the [Releases](../../releases) page.
+
+### macOS
+
+Grab the `.dmg`, open it, and drag Folio to your Applications folder.
 
 **macOS will block it on first launch** — it says Apple "could not verify" the app.
 That's because the build isn't signed with a paid Apple Developer certificate, not
@@ -24,7 +27,19 @@ xattr -dr com.apple.quarantine /Applications/Folio.app
 Or, without the terminal: try to open it, click **Done**, then go to
 **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
 
-If you'd rather not do either, build it yourself from source (see the bottom).
+### Windows
+
+Grab the `-setup.exe` and run it. It installs for the current user, so it doesn't
+ask for an administrator.
+
+**SmartScreen will warn you on first run**, for the same reason macOS does: the
+installer isn't signed with a paid certificate. Click **More info → Run anyway**.
+
+Folio needs the Microsoft Edge WebView2 runtime. Windows 11 already has it, and
+the installer fetches it if yours doesn't.
+
+If you'd rather not click past either warning, build it yourself from source (see
+the bottom).
 
 ## Getting started
 
@@ -169,36 +184,47 @@ for the reader and the editor (serif, sans, and monospace options).
 want; Backspace clears a binding.
 
 **Text snippets** — shortcuts that insert Markdown while you're writing. Three come
-built in: equation block (⌃⇧E), code block (⌃⇧\\), Python block (⌃⇧P). You can add
-your own, with `$1`, `$2` as tab stops and `$0` for where the cursor lands.
+built in: equation block (⌃⇧E), code block (⌃⇧\\), Python block (⌃⇧P), on Alt+Shift
+instead on Windows. You can add your own, with `$1`, `$2` as tab stops and `$0`
+for where the cursor lands.
 
 All preferences are stored locally on your machine.
 
 ## Default shortcuts
 
-| | |
-| --- | --- |
-| ⌘K | Find a page |
-| ⌘S | Save now |
-| ⌘← / ⌘→ | Previous / next page |
-| ⌘N | New file |
-| ⌘⇧N | New folder |
-| ⌘O | Open folder |
-| ⌘E | Toggle Read / Write |
-| ⌘⇧E | Toggle Split view |
+| macOS | Windows | |
+| --- | --- | --- |
+| ⌘K | Ctrl+K | Find a page |
+| ⌘S | Ctrl+S | Save now |
+| ⌘← / ⌘→ | Ctrl+Left / Ctrl+Right | Previous / next page |
+| ⌘N | Ctrl+N | New file |
+| ⌘⇧N | Ctrl+Shift+N | New folder |
+| ⌘O | Ctrl+O | Open folder |
+| ⌘E | Ctrl+E | Toggle Read / Write |
+| ⌘⇧E | Ctrl+Shift+E | Toggle Split view |
 
 Toggling the library and outline panels is unbound by default — assign keys in
 Preferences if you want them.
 
+Shortcuts elsewhere in this README are written the macOS way. On Windows, read ⌘
+as Ctrl, and the ⌃⇧ snippet shortcuts as Alt+Shift — Ctrl+Shift is taken there by
+the app commands above.
+
 ## Building from source
 
-Requires Node 22+ and a Rust toolchain.
+Requires Node 22+ and a Rust toolchain. Each platform builds on itself: Tauri
+links against the system webview, so a Windows build needs a Windows machine.
 
 ```sh
 npm install
 npm run desktop:dev      # dev mode with hot reload
+
+# macOS
 npm run desktop:install  # build and install to ~/Applications
 npm run desktop:dmg      # build a .dmg
+
+# Windows
+npm run desktop:exe      # build a setup .exe
 ```
 
 See [DESKTOP.md](DESKTOP.md) for more detail.

@@ -31,7 +31,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app"],
+    "targets": "all",
     "category": "Productivity",
     "shortDescription": "Read, edit, and organize local Markdown libraries.",
     "icon": [
@@ -46,6 +46,15 @@
       "hardenedRuntime": true,
       "signingIdentity": "-",
       "infoPlist": "Info.plist"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English"]
+      }
     }
   }
 }

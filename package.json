@@ -11,6 +11,8 @@
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build --bundles app",
     "desktop:dmg": "tauri build --bundles dmg",
+    "desktop:exe": "tauri build --bundles nsis",
+    "desktop:msi": "tauri build --bundles msi",
     "desktop:install": "npm run desktop:build && node scripts/install-desktop.mjs",
     "desktop:update": "npm run desktop:install",
     "test": "node --test tests/*.test.mjs",

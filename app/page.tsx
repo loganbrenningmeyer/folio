@@ -37,6 +37,7 @@ import {
   alignScrollAnchors,
   extractSearchExcerpts,
   formatShortcut,
+  IS_APPLE_PLATFORM,
   isCommandShortcut,
   isRecordedShortcut,
   mapScrollOffset,
@@ -50,6 +51,7 @@ import {
   renamedImageSrc,
   renameImageInContent,
   resolveNoteLink,
+  resolvePlatformShortcut,
   setPythonFenceRunnable,
   shortcutFromEvent,
   shortcutMatches,
@@ -309,11 +311,26 @@ const DRAG_SCROLL_STEP = 12;
 /** How far outside the panel a drag still counts as aimed at the library. */
 const DRAG_PANEL_REACH = 40;
 
+/**
+ * What this platform calls the place deleted files go, and where a reader goes
+ * to get one back. Folio deletes through the operating system's own trash, so
+ * it should use the operating system's own name for it.
+ */
+const TRASH_NAME = IS_APPLE_PLATFORM ? "Trash" : "Recycle Bin";
+const TRASH_RESTORE_LOCATION = IS_APPLE_PLATFORM
+  ? "the Finder"
+  : "the Recycle Bin";
+
+/**
+ * Folio's starting snippets and shortcuts. `Mod-` and `Snippet-` are expanded
+ * by `resolvePlatformShortcut` into the modifiers the host platform uses, so a
+ * default reads as Command on macOS and Ctrl on Windows.
+ */
 const DEFAULT_TEXT_SNIPPETS: TextSnippet[] = [
   {
     id: "equation",
     name: "Equation",
-    shortcut: "Ctrl-Shift-e",
+    shortcut: "Snippet-e",
     template: String.raw`$$
 \begin{equation}
 $0
@@ -324,14 +341,14 @@ $$`,
   {
     id: "code-block",
     name: "Code block",
-    shortcut: "Ctrl-Shift-\\",
+    shortcut: "Snippet-\\",
     template: ["```$1", "$0", "```"].join("\n"),
     enabled: true,
   },
   {
     id: "python-block",
     name: "Python block",
-    shortcut: "Ctrl-Shift-p",
+    shortcut: "Snippet-p",
     template: ["```python run", "$0", "```"].join("\n"),
     enabled: true,
   },
@@ -342,61 +359,61 @@ const APP_SHORTCUT_COMMANDS = [
     id: "find",
     label: "Find a page",
     group: "General",
-    defaultShortcut: "Meta-k",
+    defaultShortcut: "Mod-k",
   },
   {
     id: "save",
     label: "Save now",
     group: "General",
-    defaultShortcut: "Meta-s",
+    defaultShortcut: "Mod-s",
   },
   {
     id: "sync-commit",
     label: "Commit & sync",
     group: "General",
-    defaultShortcut: "Meta-Shift-s",
+    defaultShortcut: "Mod-Shift-s",
   },
   {
     id: "previous-page",
     label: "Previous page",
     group: "Navigation",
-    defaultShortcut: "Meta-ArrowLeft",
+    defaultShortcut: "Mod-ArrowLeft",
   },
   {
     id: "next-page",
     label: "Next page",
     group: "Navigation",
-    defaultShortcut: "Meta-ArrowRight",
+    defaultShortcut: "Mod-ArrowRight",
   },
   {
     id: "new-file",
     label: "New file",
     group: "Files",
-    defaultShortcut: "Meta-n",
+    defaultShortcut: "Mod-n",
   },
   {
     id: "new-folder",
     label: "New folder",
     group: "Files",
-    defaultShortcut: "Meta-Shift-n",
+    defaultShortcut: "Mod-Shift-n",
   },
   {
     id: "open-folder",
     label: "Open folder",
     group: "Files",
-    defaultShortcut: "Meta-o",
+    defaultShortcut: "Mod-o",
   },
   {
     id: "toggle-read-write",
     label: "Toggle Read / Write",
     group: "View",
-    defaultShortcut: "Meta-e",
+    defaultShortcut: "Mod-e",
   },
   {
     id: "toggle-split",
     label: "Toggle Split view",
     group: "View",
-    defaultShortcut: "Meta-Shift-e",
+    defaultShortcut: "Mod-Shift-e",
   },
   {
     id: "toggle-library",
@@ -460,14 +477,16 @@ const FONT_CHOICES = [
     label: "Geist Sans",
     category: "Sans serif",
     stack:
-      'var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif',
+      'var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Segoe UI", sans-serif',
   },
   {
     id: "system",
     label: "System UI",
     category: "Sans serif",
+    // The one choice that promises the platform's own interface font, so it
+    // names Segoe UI as well as the Apple faces.
     stack:
-      '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif',
+      '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif',
   },
   {
     id: "avenir",
@@ -1125,14 +1144,17 @@ function foldersClosedAround(
 }
 
 function freshDefaultTextSnippets() {
-  return DEFAULT_TEXT_SNIPPETS.map((snippet) => ({ ...snippet }));
+  return DEFAULT_TEXT_SNIPPETS.map((snippet) => ({
+    ...snippet,
+    shortcut: resolvePlatformShortcut(snippet.shortcut),
+  }));
 }
 
 function freshDefaultAppShortcuts() {
   return Object.fromEntries(
     APP_SHORTCUT_COMMANDS.map(({ id, defaultShortcut }) => [
       id,
-      defaultShortcut,
+      resolvePlatformShortcut(defaultShortcut),
     ]),
   ) as AppShortcuts;
 }
@@ -4796,7 +4818,7 @@ export default function Home() {
           : "";
         if (
           !window.confirm(
-            `Move “${name}”${detail} to the Trash?\n\nYou can restore it from the Finder.`,
+            `Move “${name}”${detail} to the ${TRASH_NAME}?\n\nYou can restore it from ${TRASH_RESTORE_LOCATION}.`,
           )
         ) {
           return;
@@ -4824,7 +4846,7 @@ export default function Home() {
             void saveFolderIcons(marks);
           }
         }
-      showNotice(`Moved ${name} to the Trash.`);
+      showNotice(`Moved ${name} to the ${TRASH_NAME}.`);
     } catch (error) {
       showNotice(error instanceof Error ? error.message : String(error));
     }
@@ -7245,7 +7267,7 @@ export default function Home() {
           >
             <PenLine size={13} aria-hidden="true" />
             <span>Rename</span>
-            <small>⏎</small>
+            <small>{formatShortcut("Enter")}</small>
           </button>
           <button
             type="button"
@@ -7256,8 +7278,10 @@ export default function Home() {
             }
           >
             <Trash2 size={13} aria-hidden="true" />
-            <span>Move to Trash</span>
-            <small>⌘⌫</small>
+            <span>Move to {TRASH_NAME}</span>
+            <small>
+              {formatShortcut(resolvePlatformShortcut("Mod-Backspace"))}
+            </small>
           </button>
         </div>
       )}

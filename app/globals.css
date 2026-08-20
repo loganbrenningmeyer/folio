@@ -47,7 +47,9 @@
   --folder-clay: #96593f;
   --folder-amber: #866525;
   --folder-slate: #566261;
-  --font-ui: var(--font-geist-sans), "Helvetica Neue", sans-serif;
+  /* Each stack names its macOS face first, then the Windows equivalent, so a
+     missing font falls through to a real face rather than to the generic. */
+  --font-ui: var(--font-geist-sans), "Helvetica Neue", "Segoe UI Variable Display", "Segoe UI", sans-serif;
   --font-code: var(--font-geist-mono), "SFMono-Regular", Consolas, monospace;
   --font-reading: "Iowan Old Style", "Palatino Linotype", Palatino, Baskerville, Georgia, serif;
 }

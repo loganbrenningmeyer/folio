@@ -1,3 +1,72 @@
+/**
+ * Whether Folio is running on an Apple platform. Read once at load: a webview
+ * does not move between operating systems while it is open.
+ *
+ * `userAgentData` is the current way to ask and is what WebView2 answers on
+ * Windows; WKWebView does not implement it yet, so `platform` remains the
+ * fallback there. The user agent string is consulted last, and only for the
+ * `Macintosh` token, because Windows user agents also carry `AppleWebKit`.
+ */
+function detectApplePlatform() {
+  if (typeof navigator === "undefined") return true;
+  const reported = navigator.userAgentData?.platform || navigator.platform;
+  if (reported) return /mac|iphone|ipad|ipod/i.test(reported);
+  return /Macintosh/.test(navigator.userAgent ?? "");
+}
+
+export const IS_APPLE_PLATFORM = detectApplePlatform();
+
+/**
+ * The modifier a platform's own applications put their main shortcuts on.
+ * Windows has no Command key, and its Meta key belongs to the operating
+ * system, so shortcuts recorded there use Ctrl.
+ *
+ * @param {boolean} apple
+ */
+function primaryModifier(apple) {
+  return apple ? "Meta" : "Ctrl";
+}
+
+/**
+ * The chord Folio's built-in text snippets sit on. It has to stay clear of
+ * `Mod-Shift-`, which app commands use. On macOS that is satisfied by Ctrl,
+ * because Command carries the app shortcuts; on Windows Ctrl is taken, so
+ * snippets move to Alt.
+ *
+ * @param {boolean} apple
+ */
+function snippetChord(apple) {
+  return apple ? "Ctrl-Shift-" : "Alt-Shift-";
+}
+
+export const PRIMARY_MODIFIER = primaryModifier(IS_APPLE_PLATFORM);
+
+/**
+ * Expands the placeholders Folio writes its default shortcuts with into real
+ * modifiers. Anything already naming its modifiers, such as a shortcut a
+ * reader recorded, is returned unchanged.
+ *
+ * Takes the platform as an argument so both spellings can be tested from
+ * either kind of machine; `resolvePlatformShortcut` is what the app calls.
+ *
+ * @param {string} shortcut
+ * @param {boolean} apple
+ */
+export function resolveShortcutForPlatform(shortcut, apple) {
+  if (shortcut.startsWith("Mod-")) {
+    return `${primaryModifier(apple)}-${shortcut.slice("Mod-".length)}`;
+  }
+  if (shortcut.startsWith("Snippet-")) {
+    return `${snippetChord(apple)}${shortcut.slice("Snippet-".length)}`;
+  }
+  return shortcut;
+}
+
+/** @param {string} shortcut */
+export function resolvePlatformShortcut(shortcut) {
+  return resolveShortcutForPlatform(shortcut, IS_APPLE_PLATFORM);
+}
+
 const SHORTCUT_CODE_KEYS = {
   Backquote: "`",
   Backslash: "\\",
@@ -485,12 +554,23 @@ export function markdownBlockCompletion(documentText, from, to, text) {
   return { from, to, insert: `${text}${text}`, anchor: from + 1 };
 }
 
-/** @param {string} shortcut */
+/**
+ * Modifiers in the order both platforms conventionally write them: ⌃⌥⇧⌘ on
+ * macOS, Ctrl+Alt+Shift+Win on Windows. The order is the same either way, so
+ * one list serves both spellings below.
+ */
 const SHORTCUT_MODIFIER_SYMBOLS = {
   Ctrl: "⌃",
   Alt: "⌥",
   Shift: "⇧",
   Meta: "⌘",
+};
+
+const SHORTCUT_MODIFIER_NAMES = {
+  Ctrl: "Ctrl",
+  Alt: "Alt",
+  Shift: "Shift",
+  Meta: "Win",
 };
 
 const SHORTCUT_KEY_SYMBOLS = {
@@ -510,25 +590,49 @@ const SHORTCUT_KEY_SYMBOLS = {
   Tab: "⇥",
 };
 
+const SHORTCUT_KEY_NAMES = {
+  ArrowDown: "Down",
+  ArrowLeft: "Left",
+  ArrowRight: "Right",
+  ArrowUp: "Up",
+  Escape: "Esc",
+  PageDown: "PgDn",
+  PageUp: "PgUp",
+};
+
 /**
- * Renders a shortcut the way macOS does: symbols, no separators, and
- * modifiers in the conventional ⌃⌥⇧⌘ order regardless of how they were typed.
+ * Renders a shortcut the way a platform writes them: on macOS as symbols run
+ * together, ⌘⇧E; on Windows as names joined by plus signs, Ctrl+Shift+E.
+ * Modifiers are put in conventional order regardless of how they were typed.
+ *
+ * Takes the platform as an argument so both spellings can be tested from
+ * either kind of machine; `formatShortcut` is what the app calls.
  *
  * @param {string} shortcut
+ * @param {boolean} apple
  */
-export function formatShortcut(shortcut) {
+export function formatShortcutForPlatform(shortcut, apple) {
   if (!shortcut) return "Press shortcut";
   const { modifiers, key } = shortcutParts(shortcut);
   const ordered = Object.keys(SHORTCUT_MODIFIER_SYMBOLS).filter((modifier) =>
     modifiers.includes(modifier),
   );
-  const symbols = ordered.map(
-    (modifier) => SHORTCUT_MODIFIER_SYMBOLS[modifier],
-  );
+  const printedKey = key.length === 1 ? key.toUpperCase() : key;
+  if (apple) {
+    return [
+      ...ordered.map((modifier) => SHORTCUT_MODIFIER_SYMBOLS[modifier]),
+      SHORTCUT_KEY_SYMBOLS[key] ?? printedKey,
+    ].join("");
+  }
   return [
-    ...symbols,
-    SHORTCUT_KEY_SYMBOLS[key] ?? (key.length === 1 ? key.toUpperCase() : key),
-  ].join("");
+    ...ordered.map((modifier) => SHORTCUT_MODIFIER_NAMES[modifier]),
+    SHORTCUT_KEY_NAMES[key] ?? printedKey,
+  ].join("+");
+}
+
+/** @param {string} shortcut */
+export function formatShortcut(shortcut) {
+  return formatShortcutForPlatform(shortcut, IS_APPLE_PLATFORM);
 }
 
 /**

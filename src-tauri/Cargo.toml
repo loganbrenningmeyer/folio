@@ -13,6 +13,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 base64 = "0.22"
+# Keeps canonical paths in the plain `C:\…` form on Windows rather than the
+# verbatim `\\?\C:\…` one. A no-op passthrough on macOS.
+dunce = "1"
 # Watches the open library so changes made outside Folio — a sync landing, an
 # editor saving over a page — appear on their own rather than behind Refresh.
 notify = "8"
@@ -29,7 +32,8 @@ notify = "8"
 # On Windows libssh2 uses WinCNG and no OpenSSL enters the build at all.
 git2 = { version = "0.21", features = ["https", "ssh", "vendored-openssl"] }
 serde = { version = "1", features = ["derive"] }
-# Deletes go to the Finder trash rather than unlinking, so they stay undoable.
+# Deletes go to the system trash rather than unlinking, so they stay undoable:
+# the Finder trash on macOS, the Recycle Bin on Windows.
 trash = "5"
 serde_json = "1"
 tauri = { version = "2", features = [] }
