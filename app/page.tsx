@@ -256,6 +256,8 @@ type Theme = "light" | "dark";
 type CreateKind = "file" | "folder";
 /** The two preference panels, each opened by its own button in the toolbar. */
 type PreferencePanel = "appearance" | "configure";
+/** The three tabs inside the Configure panel. */
+type ConfigureTab = "shortcuts" | "snippets" | "sync";
 type TextSnippet = {
   id: string;
   name: string;
@@ -2575,6 +2577,7 @@ export default function Home() {
   // Which preference panel is open, if either. Appearance is what Folio looks
   // like; Configure is what it does — keys, snippets, and sync.
   const [preferencePanel, setPreferencePanel] = useState<PreferencePanel>();
+  const [configureTab, setConfigureTab] = useState<ConfigureTab>("shortcuts");
   const [dirty, setDirty] = useState<Set<string>>(new Set());
   const [saved, setSaved] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -3188,12 +3191,15 @@ export default function Home() {
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : trigger.current;
-    // The panel itself takes focus: there is no tab strip to land on now that
-    // each panel is opened by its own button, and the trap below keeps Tab
-    // inside from here.
-    const frame = window.requestAnimationFrame(() =>
-      preferencesDialog.current?.focus(),
-    );
+    // Configure still has a tab strip inside it; Appearance does not, so the
+    // panel itself takes the focus there. The trap below keeps Tab inside
+    // from either landing spot.
+    const frame = window.requestAnimationFrame(() => {
+      const selectedTab = preferencesDialog.current?.querySelector<HTMLElement>(
+        '[role="tab"][aria-selected="true"]',
+      );
+      (selectedTab ?? preferencesDialog.current)?.focus();
+    });
     return () => {
       window.cancelAnimationFrame(frame);
       previouslyFocused?.focus();
@@ -5897,17 +5903,55 @@ export default function Home() {
             )}
 
             {preferencePanel === "configure" && (
-              <div className="preference-pane">
-                <section className="preference-group shortcut-preferences">
-                  <h3>
-                    <Command size={13} aria-hidden="true" /> Keyboard shortcuts
-                  </h3>
-                  <p className="shortcut-help">
-                    Focus a shortcut field and press the keys you want.
-                    Backspace clears a binding. Bare navigation and function
-                    keys are allowed; printable keys need Ctrl, Command, or
-                    Alt. Modified shortcuts also work while writing.
-                  </p>
+              <>
+                <div
+                  className="preference-tabs"
+                  role="tablist"
+                  aria-label="Configure sections"
+                >
+                  <button
+                    type="button"
+                    className={configureTab === "shortcuts" ? "selected" : ""}
+                    onClick={() => setConfigureTab("shortcuts")}
+                    role="tab"
+                    aria-selected={configureTab === "shortcuts"}
+                    aria-label="Keyboard shortcuts"
+                  >
+                    <Command size={14} /> Shortcuts
+                  </button>
+                  <button
+                    type="button"
+                    className={configureTab === "snippets" ? "selected" : ""}
+                    onClick={() => setConfigureTab("snippets")}
+                    role="tab"
+                    aria-selected={configureTab === "snippets"}
+                  >
+                    <Keyboard size={14} /> Text snippets
+                  </button>
+                  {desktopMode && (
+                    <button
+                      type="button"
+                      className={configureTab === "sync" ? "selected" : ""}
+                      onClick={() => setConfigureTab("sync")}
+                      role="tab"
+                      aria-selected={configureTab === "sync"}
+                    >
+                      <GitBranch size={14} /> Sync
+                    </button>
+                  )}
+                </div>
+
+                {configureTab === "shortcuts" && (
+                  <div
+                    className="preference-pane shortcut-preferences"
+                    role="tabpanel"
+                  >
+                    <p className="shortcut-help">
+                      Focus a shortcut field and press the keys you want.
+                      Backspace clears a binding. Bare navigation and function
+                      keys are allowed; printable keys need Ctrl, Command, or
+                      Alt. Modified shortcuts also work while writing.
+                    </p>
                   <div className="app-shortcut-groups">
                     {(["General", "Navigation", "Files", "View"] as const).map(
                       (group) => (
@@ -5961,18 +6005,23 @@ export default function Home() {
                       ),
                     )}
                   </div>
-                  <div className="snippet-actions shortcut-actions">
-                    <button type="button" onClick={restoreDefaultAppShortcuts}>
-                      Restore defaults
-                    </button>
+                    <div className="snippet-actions shortcut-actions">
+                      <button
+                        type="button"
+                        onClick={restoreDefaultAppShortcuts}
+                      >
+                        Restore defaults
+                      </button>
+                    </div>
                   </div>
-                </section>
+                )}
 
-                <section className="preference-group snippet-preferences">
-                  <h3>
-                    <Keyboard size={13} aria-hidden="true" /> Text snippets
-                  </h3>
-                  <p className="snippet-help">
+                {configureTab === "snippets" && (
+                  <div
+                    className="preference-pane snippet-preferences"
+                    role="tabpanel"
+                  >
+                    <p className="snippet-help">
                     Record a shortcut, then enter the text it should insert. Use{" "}
                     <code>$1</code>, <code>$2</code>, and so on for Tab stops;{" "}
                     <code>$0</code> is the final cursor. Write <code>\$1</code>{" "}
@@ -6075,21 +6124,22 @@ export default function Home() {
                       </p>
                     )}
                   </div>
-                  <div className="snippet-actions">
-                    <button type="button" onClick={addTextSnippet}>
-                      <Plus size={14} /> Add snippet
-                    </button>
-                    <button type="button" onClick={restoreDefaultTextSnippets}>
-                      Restore defaults
-                    </button>
+                    <div className="snippet-actions">
+                      <button type="button" onClick={addTextSnippet}>
+                        <Plus size={14} /> Add snippet
+                      </button>
+                      <button
+                        type="button"
+                        onClick={restoreDefaultTextSnippets}
+                      >
+                        Restore defaults
+                      </button>
+                    </div>
                   </div>
-                </section>
+                )}
 
-                {desktopMode && (
-                  <section className="preference-group sync-preferences">
-                    <h3>
-                      <GitBranch size={13} aria-hidden="true" /> Sync
-                    </h3>
+                {configureTab === "sync" && desktopMode && (
+                  <div className="preference-pane sync-preferences" role="tabpanel">
                     {!syncInfo?.configured ? (
                       <>
                         <p className="sync-help">
@@ -6261,9 +6311,9 @@ export default function Home() {
                         </p>
                       </>
                     )}
-                  </section>
+                  </div>
                 )}
-              </div>
+              </>
             )}
           </dialog>
         </>

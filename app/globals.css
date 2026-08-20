@@ -754,28 +754,42 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   font-size: 18px;
 }
 
-.preference-pane { min-width: 0; }
-
-/* Shortcuts, snippets, and sync share the Configure pane, so each one names
-   itself and a rule marks where the previous one ended. */
-.preference-group + .preference-group {
-  margin-top: 18px;
-  padding-top: 16px;
-  border-top: 1px solid var(--line);
+/* Configure's own tab strip, inside the popover the Configure button opens.
+   Flex rather than a fixed column count: the browser build drops the Sync
+   tab, and two tabs should split the strip evenly rather than leave a bare
+   third column. */
+.preference-tabs {
+  display: flex;
+  gap: 4px;
+  margin: -3px 0 16px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
 }
 
-.preference-group h3 {
+.preference-tabs button {
+  flex: 1;
+  height: 32px;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  margin: 0 0 10px;
-  color: var(--ink);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: .02em;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
 }
 
-.preference-group h3 svg { color: var(--muted); }
+.preference-tabs button.selected {
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgb(31 31 26 / 9%);
+}
+
+.preference-pane { min-width: 0; }
 
 .palette-control {
   margin: 0;
