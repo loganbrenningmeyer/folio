@@ -186,6 +186,14 @@ export function syncConnect(
   return invokeNative("sync_connect", { remoteUrl, token: token || null });
 }
 
+/**
+ * Replaces the stored token for a library that is already connected — one
+ * that has expired, or was never recorded because an early sync failed.
+ */
+export function syncSetToken(token: string): Promise<void> {
+  return invokeNative("sync_set_token", { token });
+}
+
 /** One beat of sync: commit whatever changed, pull, merge, push. */
 export function syncNow(): Promise<SyncOutcome> {
   return invokeNative("sync_now");
@@ -316,6 +324,7 @@ export const nativeLibrary = Object.freeze({
   onChange: onLibraryChanged,
   syncStatus,
   syncConnect,
+  syncSetToken,
   syncNow,
   syncDisconnect,
   approveClose,

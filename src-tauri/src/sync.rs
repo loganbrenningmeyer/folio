@@ -98,20 +98,47 @@ fn current_branch(repo: &Repository) -> Result<String, String> {
         .to_string())
 }
 
+/// Credentials for the sync remote, and a plain refusal when there are none
+/// to give. Answering with a default credential instead — which is what
+/// having nothing useful to say looks like — makes libgit2 ask again, and
+/// again, until it reports "too many redirects or authentication replays" or
+/// "no callback set". Both name the mechanism and hide the cause, so every
+/// path out of here that cannot authenticate says why in words the reader can
+/// act on.
 fn callbacks(token: Option<&str>) -> RemoteCallbacks<'_> {
     let mut callbacks = RemoteCallbacks::new();
+    let mut offered = false;
     callbacks.credentials(move |_url, username, allowed| {
-        // An https remote authenticates with the stored token; an ssh remote
-        // asks the agent, which holds whatever keys the reader already uses.
-        if allowed.contains(CredentialType::USER_PASS_PLAINTEXT) {
-            if let Some(token) = token {
-                return Cred::userpass_plaintext("x-access-token", token);
-            }
+        // An ssh remote asks for the user name first, then a key: the agent
+        // holds whatever keys the reader already uses.
+        if allowed.contains(CredentialType::USERNAME) {
+            return Cred::username(username.unwrap_or("git"));
         }
         if allowed.contains(CredentialType::SSH_KEY) {
             return Cred::ssh_key_from_agent(username.unwrap_or("git"));
         }
-        Cred::default()
+        if allowed.contains(CredentialType::USER_PASS_PLAINTEXT) {
+            let Some(token) = token else {
+                return Err(git2::Error::from_str(
+                    "This remote needs an access token. Add one in \
+                     Preferences → Sync.",
+                ));
+            };
+            // Being asked twice means the first answer was refused.
+            if offered {
+                return Err(git2::Error::from_str(
+                    "The sync remote refused the access token. Check that it \
+                     has not expired and that it grants read and write access \
+                     to this repository's contents.",
+                ));
+            }
+            offered = true;
+            return Cred::userpass_plaintext("x-access-token", token);
+        }
+        Err(git2::Error::from_str(
+            "The sync remote asked for a kind of authentication Folio does \
+             not support.",
+        ))
     });
     callbacks
 }
@@ -412,16 +439,21 @@ fn fetch_branch(
         .find_remote(REMOTE)
         .map_err(|_| NOT_CONFIGURED.to_string())?;
 
+    // The connection owns the callbacks it was opened with, so it has to
+    // outlive the listing rather than being opened and dropped in one breath.
     let wanted = format!("refs/heads/{branch}");
-    remote
-        .connect_auth(Direction::Fetch, Some(callbacks(token)), None)
-        .map_err(|error| format!("Folio could not reach the sync remote: {}", error.message()))?;
-    let exists = remote
-        .list()
-        .map_err(git_error("list the sync remote"))?
-        .iter()
-        .any(|head| head.name() == wanted);
-    let _ = remote.disconnect();
+    let exists = {
+        let connection = remote
+            .connect_auth(Direction::Fetch, Some(callbacks(token)), None)
+            .map_err(|error| {
+                format!("Folio could not reach the sync remote: {}", error.message())
+            })?;
+        connection
+            .list()
+            .map_err(git_error("list the sync remote"))?
+            .iter()
+            .any(|head| head.name() == wanted)
+    };
     if !exists {
         return Ok(None);
     }
@@ -875,6 +907,45 @@ mod tests {
              (and under the hardened runtime, on this one):\n{}",
             foreign.join("\n")
         );
+    }
+
+    /// A remote that wants credentials must fail in words the reader can act
+    /// on. libgit2's own accounts of these two cases — "remote authentication
+    /// required but no callback set" when nothing usable is offered, and "too
+    /// many redirects or authentication replays" when a rejected credential is
+    /// offered again — describe its retry machinery rather than what is wrong,
+    /// and both were reachable here. Needs the network: GitHub answers 401 for
+    /// a repository it will not confirm exists.
+    #[test]
+    #[ignore = "requires network access to github.com"]
+    fn a_remote_that_needs_credentials_says_what_is_missing() {
+        let base = test_dir("auth-messages");
+        let repo = Repository::init(&base).expect("init repo");
+        let url = "https://github.com/loganbrenningmeyer/folio-sync-probe-absent.git";
+
+        let attempt = |token: Option<&str>, name: &str| -> String {
+            let mut remote = repo.remote(name, url).expect("add remote");
+            let error = remote
+                .connect_auth(Direction::Fetch, Some(callbacks(token)), None)
+                .err()
+                .expect("a private remote should refuse an unauthenticated connection");
+            error.message().to_string()
+        };
+
+        let missing = attempt(None, "no-token");
+        assert!(
+            missing.contains("needs an access token"),
+            "a library with no token should say so, not {missing:?}"
+        );
+
+        let refused = attempt(Some("not-a-real-token"), "bad-token");
+        assert!(
+            refused.contains("refused the access token"),
+            "a rejected token should say so, not {refused:?}"
+        );
+
+        drop(repo);
+        fs::remove_dir_all(base).expect("remove test directory");
     }
 
     /// Proves the TLS path end to end against a real host, which local bare
