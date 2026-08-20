@@ -70,7 +70,33 @@ const NOT_CONFIGURED: &str =
 /// search parent folders, so a library that merely sits inside some other
 /// repository does not read as configured.
 fn open_repository(root: &Path) -> Option<Repository> {
-    Repository::open(root).ok()
+    let repo = Repository::open(root).ok()?;
+    keep_bytes_as_written(&repo);
+    Some(repo)
+}
+
+/// A Folio library *is* its files, so the bytes on disk and the bytes in
+/// history have to be the same bytes. Git disagrees by default on Windows,
+/// where `core.autocrlf` is usually true: every page it checks out is
+/// rewritten with CRLF endings on the way to disk, and every page committed is
+/// rewritten back — so a library pulled onto a Windows machine no longer
+/// matches the one that was pushed, and the file Folio reads is not the file
+/// it wrote. Each library repository says it wants none of that, whatever the
+/// machine's git is set to. `core.eol` is pinned alongside, since a global
+/// `text` attribute would otherwise decide endings on checkout on its own.
+///
+/// Only a setting that disagrees is written, so opening a library does not
+/// rewrite its config every time.
+fn keep_bytes_as_written(repo: &Repository) {
+    let Ok(mut config) = repo.config() else {
+        return;
+    };
+    if config.get_bool("core.autocrlf").unwrap_or(false) {
+        let _ = config.set_bool("core.autocrlf", false);
+    }
+    if config.get_string("core.eol").ok().as_deref() != Some("lf") {
+        let _ = config.set_str("core.eol", "lf");
+    }
 }
 
 /// Who the commits are from: the reader's own git identity when they have
@@ -200,14 +226,16 @@ pub fn connect(root: &Path, url: &str, token: Option<&str>) -> Result<SyncOutcom
     if url.is_empty() {
         return Err("A remote URL is required.".to_string());
     }
-    let repo = match Repository::open(root) {
-        Ok(repo) => repo,
-        Err(_) => {
+    let repo = match open_repository(root) {
+        Some(repo) => repo,
+        None => {
             let mut options = RepositoryInitOptions::new();
             options.initial_head("main");
             options.no_reinit(true);
-            Repository::init_opts(root, &options)
-                .map_err(git_error("turn the library into a repository"))?
+            let repo = Repository::init_opts(root, &options)
+                .map_err(git_error("turn the library into a repository"))?;
+            keep_bytes_as_written(&repo);
+            repo
         }
     };
 
@@ -945,6 +973,46 @@ mod tests {
         );
 
         drop(repo);
+        fs::remove_dir_all(base).expect("remove test directory");
+    }
+
+    /// The one failure the Windows build hit, kept from coming back on any
+    /// machine: git's line-ending translation is on by default there, so the
+    /// library arrived with every LF rewritten to CRLF and no longer matched
+    /// the one that was pushed. The second machine here is set up the way a
+    /// Windows one comes — `core.autocrlf` on in its own config — and the page
+    /// it pulls down has to be the page that was sent, byte for byte.
+    #[test]
+    fn line_endings_survive_a_machine_whose_git_translates_them() {
+        let base = test_dir("sync-crlf");
+        let bare = base.join("remote.git");
+        Repository::init_bare(&bare).expect("init bare remote");
+        let url = bare.to_str().expect("remote path").to_string();
+
+        let a = base.join("a");
+        write(&a, "Notes/One.md", "alpha\nshared\nomega\n");
+        connect(&a, &url, None).expect("connect a");
+
+        let b = base.join("b");
+        let mut options = RepositoryInitOptions::new();
+        options.initial_head("main");
+        let repo = Repository::init_opts(&b, &options).expect("init b");
+        repo.config()
+            .expect("config")
+            .set_bool("core.autocrlf", true)
+            .expect("translate line endings");
+        drop(repo);
+
+        connect(&b, &url, None).expect("connect b");
+        assert_eq!(read(&b, "Notes/One.md"), "alpha\nshared\nomega\n");
+
+        // And back the other way: what this machine writes is what the other
+        // one reads, rather than a copy carrying carriage returns it never had.
+        write(&b, "Notes/One.md", "alpha\nshared\nomega\ntail\n");
+        synchronize(&b, None).expect("sync b");
+        synchronize(&a, None).expect("sync a");
+        assert_eq!(read(&a, "Notes/One.md"), "alpha\nshared\nomega\ntail\n");
+
         fs::remove_dir_all(base).expect("remove test directory");
     }
 
