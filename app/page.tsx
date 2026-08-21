@@ -139,6 +139,8 @@ import {
   Command,
   Compass,
   Download,
+  Eye,
+  EyeClosed,
   Feather,
   FileCode2,
   FilePlus2,
@@ -146,8 +148,8 @@ import {
   FlaskConical,
   Folder,
   FolderInput,
-  FolderPlus,
   FolderOpen,
+  FolderPlus,
   GitBranch,
   GripVertical,
   Heart,
@@ -1155,7 +1157,7 @@ function cleanGroup(group: string) {
  * a folder is called by its own name alone — see `folderLabel`.
  */
 function displayGroup(group: string) {
-  if (!group) return "Notes";
+  if (!group) return "Home";
   return group
     .split("/")
     .map((segment) => cleanGroup(segment))
@@ -1164,7 +1166,7 @@ function displayGroup(group: string) {
 
 /** What a folder is called where it is drawn: its own name, not its path. */
 function folderLabel(group: string) {
-  return group ? cleanGroup(fileNameFromPath(group)) : "Notes";
+  return group ? cleanGroup(fileNameFromPath(group)) : "Home";
 }
 
 function normalizePath(path: string) {
@@ -2898,15 +2900,19 @@ export default function Home() {
   // The group whose name field should be waiting for typing: the one just
   // made, so a new group can be named without reaching for the mouse again.
   const [namingGroup, setNamingGroup] = useState<string>();
+
   const [libraryCollapsed, setLibraryCollapsed] = useState(false);
   const [outlineCollapsed, setOutlineCollapsed] = useState(false);
   const [splitScrollLocked, setSplitScrollLocked] = useState(true);
+  const [showEmptyFolders, setShowEmptyFolders] = useState(false);
   const [layoutPreferencesLoaded, setLayoutPreferencesLoaded] = useState(false);
+
   // Whether the first read of the stored library has finished, however it went.
   // Folio's window waits for it, so it opens on the reader's own pages.
   const [librarySettled, setLibrarySettled] = useState(false);
   const [desktopMode] = useState(() => isNativeRuntime());
   const [nativeLibraryOpen, setNativeLibraryOpen] = useState(false);
+
   // Which preference panel is open, if either. Appearance is what Folio looks
   // like; Configure is what it does — keys, snippets, and sync.
   const [preferencePanel, setPreferencePanel] = useState<PreferencePanel>();
@@ -2917,6 +2923,7 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [navOpen, setNavOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
+
   // In a browser the sample library is what is on screen from the first paint,
   // so it opens the way any library does: folded up around the page in front
   // of the reader. The desktop app starts empty and folds its own library up
@@ -2926,15 +2933,12 @@ export default function Home() {
       ? new Set()
       : foldersClosedAround(SAMPLE_NOTES, SAMPLE_FOLDERS, SAMPLE_NOTES[0].path),
   );
-  // The panel only lists folders that hold Markdown, so a folder created here
-  // would vanish before anything is in it. Those stay listed for the session.
+
   // The folder the reader last clicked open. A new file or folder is offered
   // there rather than wherever the page in front of them happens to live, and
   // only while it is still open — see `defaultCreateParent`.
   const [lastOpenedFolder, setLastOpenedFolder] = useState("");
-  const [revealedFolders, setRevealedFolders] = useState<Set<string>>(
-    new Set(),
-  );
+
   const [expandedAttachments, setExpandedAttachments] = useState<Set<string>>(
     new Set(),
   );
@@ -3116,15 +3120,14 @@ export default function Home() {
     );
   }, [folders, notes]);
 
-  // Folders without Markdown of their own are noise in a reading sidebar, so
-  // they are left out — the library root included, when nothing sits there.
+  // Empty folders are either shown all the time or hidden all the time.
+  // Dragging does not change which folders appear in the library.
   const grouped = useMemo(
     () =>
       allGroups.filter(
-        ([group, groupNotes]) =>
-          groupNotes.length > 0 || revealedFolders.has(group),
+        ([, groupNotes]) => groupNotes.length > 0 || showEmptyFolders,
       ),
-    [allGroups, revealedFolders],
+    [allGroups, showEmptyFolders],
   );
 
   /**
@@ -3132,18 +3135,12 @@ export default function Home() {
    * folder is drawn inside it rather than listed again from the root under its
    * whole path.
    *
-   * A folder holding no Markdown of its own is left out — it is noise in a
-   * reading sidebar — unless something under it is listed, or the reader has
-   * just made it. While an entry is in hand every folder is listed, so an
-   * empty one is still somewhere to drop; those appear in their own place in
-   * the tree, which is the only place a folder can be dropped into.
+   * Empty folders are included only when the reader has explicitly enabled
+   * "Show empty folders". Dragging an entry never changes the tree.
    */
   const libraryTree = useMemo(
-    () =>
-      folderTree(allGroups, (path) =>
-        Boolean(draggedEntry || revealedFolders.has(path)),
-      ),
-    [allGroups, draggedEntry, revealedFolders],
+    () => folderTree(allGroups, () => showEmptyFolders),
+    [allGroups, showEmptyFolders],
   );
 
   /** The pages sitting loose at the top of the library, in their own section. */
@@ -3151,48 +3148,69 @@ export default function Home() {
     () => allGroups.find(([group]) => !group)?.[1] ?? [],
     [allGroups],
   );
-  /** Whether the root's own section has anything to say for itself. */
-  const rootListed = Boolean(rootNotes.length || revealedFolders.has(""));
+
+  /**
+   * Every folder's total page count: its own pages, plus everything nested
+   * inside it. A folder with none of its own but a page two levels down
+   * still says how much it holds, rather than reading as empty.
+   */
+  const folderTotals = useMemo(() => {
+    const totals = new Map<string, number>();
+
+    const total = (node: FolderNode<Note>): number => {
+      const count =
+        node.pages.length +
+        node.children.reduce((sum, child) => sum + total(child), 0);
+
+      totals.set(node.path, count);
+      return count;
+    };
+
+    libraryTree.forEach(total);
+    return totals;
+  }, [libraryTree]);
+
+  /** Whether the root's own section should be drawn. */
+  const rootListed = Boolean(rootNotes.length || showEmptyFolders);
 
   /**
    * The tree drawn as the list it becomes on screen: a folder, then whatever
    * is inside it one indent deeper. A folded folder keeps its contents out of
-   * the list altogether — the rows are the panel, so a folder shut is a folder
-   * whose children are simply not there. The root's own pages lead the list,
-   * in a section that holds no folders of its own.
+   * the list altogether.
    */
   const libraryRows = useMemo(() => {
     const rows: {
       group: string;
       groupNotes: Note[];
       depth: number;
-      hasFolders: boolean;
     }[] = [];
+
     const root = {
       group: "",
       groupNotes: rootNotes,
       depth: 0,
-      hasFolders: false,
     };
+
     if (rootListed) rows.push(root);
+
     const walk = (nodes: FolderNode<Note>[], depth: number) => {
       for (const node of nodes) {
         rows.push({
           group: node.path,
           groupNotes: node.pages,
           depth,
-          hasFolders: node.children.length > 0,
         });
-        if (!collapsedGroups.has(node.path)) walk(node.children, depth + 1);
+
+        if (!collapsedGroups.has(node.path)) {
+          walk(node.children, depth + 1);
+        }
       }
     };
+
     walk(libraryTree, 0);
-    // With something in hand the root stays reachable even when nothing sits
-    // in it — added below the folders rather than above them, so no row
-    // already on screen moves at the moment the reader takes hold of one.
-    if (!rootListed && draggedEntry) rows.push(root);
+
     return rows;
-  }, [collapsedGroups, draggedEntry, libraryTree, rootListed, rootNotes]);
+  }, [collapsedGroups, libraryTree, rootListed, rootNotes]);
 
   const activeGroupPath = useMemo(() => {
     const segments = active.path.split("/");
@@ -3351,11 +3369,6 @@ export default function Home() {
             );
         return openedTo(closed, parentPath(opened?.path ?? ""));
       });
-      setRevealedFolders((current) =>
-        current.size
-          ? new Set(snapshot.folders.filter((folder) => current.has(folder)))
-          : current,
-      );
       // The library may have been reopened somewhere else entirely — following
       // a link can reroot it — so its order comes from the folder now open, and
       // the page to reopen at belongs to whichever library is in front of us.
@@ -3749,24 +3762,40 @@ export default function Home() {
       setSplitScrollLocked(
         localStorage.getItem("folio-split-scroll-locked") !== "false",
       );
+      setShowEmptyFolders(
+        localStorage.getItem("folio-show-empty-folders") === "true",
+      );
       setLayoutPreferencesLoaded(true);
     }, 0);
+
     return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
     if (!layoutPreferencesLoaded) return;
-    localStorage.setItem("folio-library-collapsed", String(libraryCollapsed));
-    localStorage.setItem("folio-outline-collapsed", String(outlineCollapsed));
+
+    localStorage.setItem(
+      "folio-library-collapsed",
+      String(libraryCollapsed),
+    );
+    localStorage.setItem(
+      "folio-outline-collapsed",
+      String(outlineCollapsed),
+    );
     localStorage.setItem(
       "folio-split-scroll-locked",
       String(splitScrollLocked),
+    );
+    localStorage.setItem(
+      "folio-show-empty-folders",
+      String(showEmptyFolders),
     );
   }, [
     layoutPreferencesLoaded,
     libraryCollapsed,
     outlineCollapsed,
     splitScrollLocked,
+    showEmptyFolders,
   ]);
 
   /** Folio's built-in guide, which stands in for a library there isn't one. */
@@ -4758,10 +4787,12 @@ export default function Home() {
           );
         }
         setCollapsedGroups((current) => openedTo(current, folderPath));
-        setRevealedFolders((current) => new Set(current).add(folderPath));
-        // A folder just made is the folder in front of the reader, so the next
-        // thing they create is offered there.
-        setLastOpenedFolder(folderPath);
+
+        // If empty folders are hidden, don't leave the hidden new folder as the
+        // destination for the next item the reader creates.
+        setLastOpenedFolder(
+          showEmptyFolders ? folderPath : newEntryParent,
+        );
         setCreateKind(undefined);
         showNotice(`Created ${displayGroup(folderPath)}.`);
       } catch {
@@ -4977,10 +5008,10 @@ export default function Home() {
 
   /**
    * A folder that has moved or been renamed is the same folder under a new
-   * path, so what the panel remembers about it follows: the mark it was given,
-   * whether it was open, and the place a still-empty folder holds. Everything
-   * nested inside it moves with it. The folders on the way down to where it
-   * landed are opened, so a folder never disappears into a folded parent.
+   * path, so what the panel remembers about it follows: its mark and whether
+   * it was open. Everything nested inside it moves with it. The folders on
+   * the way down to where it landed are opened so it does not disappear into
+   * a folded parent.
    */
   const carryFolderPath = (from: string, to: string, folders: string[]) => {
     const carried = (folder: string) =>
@@ -4989,14 +5020,16 @@ export default function Home() {
         : folder.startsWith(`${from}/`)
           ? `${to}${folder.slice(from.length)}`
           : folder;
-    setRevealedFolders((current) => new Set([...current].map(carried)));
+
     setCollapsedGroups((current) =>
       openedTo(new Set([...current].map(carried)), parentPath(to)),
     );
+
     const marks = prunedFolderIcons(
       renamedFolderIcons(folderIcons, from, to),
       folders,
     );
+
     if (serializeFolderIcons(marks) !== serializeFolderIcons(folderIcons)) {
       void saveFolderIcons(marks);
     }
@@ -5217,10 +5250,7 @@ export default function Home() {
       // A refresh picks up an order or icons file edited outside Folio too.
       await loadNoteOrder();
       await loadFolderIcons();
-      setRevealedFolders(
-        (current) =>
-          new Set(snapshot.folders.filter((folder) => current.has(folder))),
-      );
+
       // Collapsed folders and the open page are left as they were, unless the
       // page itself is gone from disk.
       if (!snapshot.notes.some((note) => note.id === activeIdRef.current)) {
@@ -5837,7 +5867,6 @@ export default function Home() {
           loaded.notes[0]?.path,
         ),
       );
-      setRevealedFolders(new Set());
       setView("preview");
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
@@ -6016,7 +6045,6 @@ export default function Home() {
     setCollapsedGroups(
       foldersClosedAround(loaded, [...importedFolders], loaded[0].path),
     );
-    setRevealedFolders(new Set());
     setLibraryName(files[0].webkitRelativePath.split("/")[0] || "My notes");
     event.target.value = "";
   };
@@ -6296,7 +6324,6 @@ export default function Home() {
             <span />
             <span />
           </div>
-          <span className="brand-name">Folio</span>
           <span className="brand-rule" />
           <span className="library-title">{libraryName}</span>
         </div>
@@ -7114,20 +7141,7 @@ export default function Home() {
             </button>
           </div>
           <div className="library-heading">
-            <div>
-              <span className="eyebrow">Your library</span>
-              <h2>{libraryName}</h2>
-            </div>
             <div className="library-create-actions">
-              <button
-                className="subtle-icon"
-                onClick={() => void refreshLibrary()}
-                disabled={refreshing}
-                aria-label="Refresh library"
-                title="Re-read this folder from disk"
-              >
-                <RefreshCw size={15} className={refreshing ? "spinning" : ""} />
-              </button>
               <button
                 className="subtle-icon"
                 onClick={() => beginCreate("file")}
@@ -7136,6 +7150,7 @@ export default function Home() {
               >
                 <FilePlus2 size={16} />
               </button>
+
               <button
                 className="subtle-icon"
                 onClick={() => beginCreate("folder")}
@@ -7143,6 +7158,38 @@ export default function Home() {
                 title="New folder"
               >
                 <FolderPlus size={16} />
+              </button>
+
+              <button
+                className="subtle-icon"
+                onClick={() => void refreshLibrary()}
+                disabled={refreshing}
+                aria-label="Refresh library"
+                title="Re-read this folder from disk"
+              >
+                <RefreshCw
+                  size={15}
+                  className={refreshing ? "spinning" : ""}
+                />
+              </button>
+
+              <button
+                type="button"
+                className="subtle-icon"
+                onClick={() => setShowEmptyFolders((current) => !current)}
+                aria-pressed={showEmptyFolders}
+                aria-label={
+                  showEmptyFolders ? "Hide empty folders" : "Show empty folders"
+                }
+                title={
+                  showEmptyFolders ? "Hide empty folders" : "Show empty folders"
+                }
+              >
+                {showEmptyFolders ? (
+                  <EyeClosed size={15} />
+                ) : (
+                  <Eye size={15} />
+                )}
               </button>
             </div>
           </div>
@@ -7157,11 +7204,13 @@ export default function Home() {
                 No Markdown files here yet. Create one to start this library.
               </p>
             )}
-            {libraryRows.map(({ group, groupNotes, depth, hasFolders }) => {
+            {libraryRows.map(({ group, groupNotes, depth }) => {
               const collapsed = collapsedGroups.has(group);
+
               const aimedHere = Boolean(
                 draggedEntry && dropTarget?.folder === group,
               );
+
               // The row a drop would take in this folder, drawn as a line
               // between pages. Only the folder under the pointer draws one,
               // and only for a page: a folder lands *in* a folder, not at a
@@ -7170,23 +7219,17 @@ export default function Home() {
                 aimedHere && draggedEntry?.kind === "note"
                   ? dropTarget?.index
                   : undefined;
-              // A folder listed only for the drag in hand — an empty one the
-              // panel normally hides. It is drawn as a drop zone, so appearing
-              // for the drag reads as an offer, not as the library changing.
-              const dropZone =
-                Boolean(draggedEntry) &&
-                !groupNotes.length &&
-                !hasFolders &&
-                !revealedFolders.has(group);
+
               const dragging =
                 draggedEntry?.kind === "folder" && draggedEntry.path === group;
+
               return (
                 <section
                   className={`section-group ${
                     group === activeGroupPath ? "active-section" : ""
                   } ${aimedHere ? "drop-target" : ""} ${
-                    dropZone ? "drop-zone" : ""
-                  } ${dragging ? "dragging" : ""}`}
+                    dragging ? "dragging" : ""
+                  }`}
                   key={group || "__root__"}
                   data-folder-path={group}
                   // How deep the folder sits, for the rules that indent it and
@@ -7267,7 +7310,9 @@ export default function Home() {
                       >
                         <strong>{folderLabel(group)}</strong>
                         <small>
-                          {dropZone ? "drop here" : groupNotes.length}
+                          {group
+                            ? (folderTotals.get(group) ?? groupNotes.length)
+                            : groupNotes.length}
                         </small>
                         <ChevronDown
                           size={14}
