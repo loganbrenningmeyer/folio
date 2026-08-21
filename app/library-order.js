@@ -282,6 +282,108 @@ export function prunedOrder(order, notes) {
 }
 
 /**
+ * @template Page
+ * @typedef {{ path: string; pages: Page[]; children: FolderNode<Page>[] }} FolderNode
+ */
+
+/**
+ * The library's folders as the tree they are on disk, so a folder inside a
+ * folder is drawn inside it rather than listed again from the root under its
+ * whole path.
+ *
+ * `groups` pairs each folder path with the pages sitting directly inside it,
+ * sorted by path; the root's own pages belong to no node and are left to the
+ * caller. A folder no group names but a deeper one implies is created on the
+ * way, so a gap in the list never orphans what is under it.
+ *
+ * `keep` decides the folders that hold no pages of their own: a folder is
+ * listed when it holds pages, when `keep` claims it, or when anything under it
+ * is listed. Everything else is left out, so an empty folder is not noise in a
+ * reading sidebar — and a folder whose pages are all deeper down still opens
+ * onto them.
+ *
+ * @template Page
+ * @param {[string, Page[]][]} groups
+ * @param {(path: string) => boolean} [keep]
+ * @returns {FolderNode<Page>[]}
+ */
+export function folderTree(groups, keep = () => false) {
+  /** @type {FolderNode<Page>[]} */
+  const roots = [];
+  /** @type {Map<string, FolderNode<Page>>} */
+  const nodes = new Map();
+
+  /** @param {string} path */
+  const nodeFor = (path) => {
+    const existing = nodes.get(path);
+    if (existing) return existing;
+    /** @type {FolderNode<Page>} */
+    const node = { path, pages: [], children: [] };
+    nodes.set(path, node);
+    const parent = parentFolder(path);
+    if (path.includes("/")) nodeFor(parent).children.push(node);
+    else roots.push(node);
+    return node;
+  };
+
+  for (const [path, pages] of groups) {
+    if (!path) continue;
+    nodeFor(path).pages = [...pages];
+  }
+
+  /** @param {FolderNode<Page>[]} list */
+  const listed = (list) =>
+    list
+      .map((node) => ({ ...node, children: listed(node.children) }))
+      .filter(
+        (node) => node.pages.length || node.children.length || keep(node.path),
+      );
+
+  return listed(roots);
+}
+
+/**
+ * Every folder on the way down to `path`, the folder itself last. Opening a
+ * page means opening each folder between it and the root, or the panel would
+ * hold it somewhere still folded away.
+ *
+ * @param {string} path
+ * @returns {string[]}
+ */
+export function folderTrail(path) {
+  const trail = [];
+  const segments = path ? path.split("/") : [];
+  for (let depth = 1; depth <= segments.length; depth += 1) {
+    trail.push(segments.slice(0, depth).join("/"));
+  }
+  return trail;
+}
+
+/**
+ * Why a folder cannot be carried into `target`, or `undefined` when it can.
+ *
+ * `"same"` is the move that changes nothing — back into the folder it already
+ * sits in. `"inside"` is the move that would strand it: a folder cannot hold
+ * itself, and neither can anything under it. `"taken"` is a name the
+ * destination already has, which a move must never quietly replace.
+ *
+ * @param {string} path
+ * @param {string} target
+ * @param {string[]} folders
+ * @returns {"same" | "inside" | "taken" | undefined}
+ */
+export function folderMoveIssue(path, target, folders) {
+  if (!path) return "inside";
+  if (target === parentFolder(path)) return "same";
+  if (target === path || target.startsWith(`${path}/`)) return "inside";
+  const destination = target ? `${target}/${fileNameOf(path)}` : fileNameOf(path);
+  const taken = folders.some(
+    (folder) => folder.toLowerCase() === destination.toLowerCase(),
+  );
+  return taken ? "taken" : undefined;
+}
+
+/**
  * True for `.folio` and anything else hidden. Folio's own bookkeeping sits in a
  * dot folder, and dot entries are not pages a reader put there.
  *

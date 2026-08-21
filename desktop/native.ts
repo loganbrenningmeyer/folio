@@ -255,6 +255,14 @@ export function moveNote(
   return invokeNative("move_note", { fromPath, toPath });
 }
 
+/** Moves a folder, with everything inside it, under a different parent. */
+export function moveFolder(
+  fromPath: RelativePath,
+  toPath: RelativePath,
+): Promise<LibrarySnapshot> {
+  return invokeNative("move_folder", { fromPath, toPath });
+}
+
 /** Renames a note or folder in place. `name` is a single path segment. */
 export function renameEntry(
   path: RelativePath,
@@ -332,6 +340,7 @@ export const nativeLibrary = Object.freeze({
   pickIconImage,
   write: writeNote,
   move: moveNote,
+  moveFolder,
   rename: renameEntry,
   remove: deleteEntry,
   writeAsset,

@@ -68,6 +68,10 @@ The rendered view supports GitHub-flavored Markdown — tables, task lists,
 strikethrough — plus syntax-highlighted code blocks and LaTeX math via KaTeX
 (`$inline$` and `$$display$$`).
 
+Math is left alone in the editor, too: the `*` and `**` in a formula are part of
+the formula, so they are not coloured as emphasis the way they would be in prose.
+The same goes for `\(…\)` and `\[…\]`, and for anything inside a code fence.
+
 At the bottom of each page there are Previous/Next buttons that walk through your
 library in order, and a thin progress bar at the top tracks how far into the page
 you are.
@@ -134,11 +138,21 @@ opening it.
 
 The library panel handles files:
 
-- **New file** (⌘N) and **new folder** (⌘⇧N)
+- **New file** (⌘N) and **new folder** (⌘⇧N). Both are offered in the folder you
+  last clicked open, as long as it is still open in front of you — fold it up, or
+  click the library root, and they go to the root instead
+- **Folders inside folders** are drawn inside them. Open a folder and the folders
+  it holds appear indented under it, with a line running down from their parent;
+  fold it up and everything under it goes away with it
 - **Drag a page** anywhere in the panel: a line shows where it will land, whether
   that is a new position in its own folder or a place inside another one. Moving
   it to another folder moves the actual file on disk; press Escape, or let go
   outside the panel, to leave it where it was
+- **Drag a folder** by its name to move it, and everything inside it, into
+  another folder. The whole destination lights up rather than showing a line,
+  because a folder lands *in* a folder rather than at a position within one.
+  Folio will not carry a folder into itself, into anything it holds, or onto a
+  name the destination already uses
 - A page's own order is remembered in `.folio/order.json` beside the library, so
   nothing is renamed and links between pages keep working. Pages that file does
   not mention — anything added outside Folio — stay in alphabetical order

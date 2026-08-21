@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  folderMoveIssue,
   folderNames,
+  folderTrail,
+  folderTree,
   isHiddenEntryName,
   parseFolderOrder,
   placedFolderNames,
@@ -173,4 +176,108 @@ test("hidden entries are not pages", () => {
   assert.equal(isHiddenEntryName(".folio"), true);
   assert.equal(isHiddenEntryName(".DS_Store"), true);
   assert.equal(isHiddenEntryName("guides"), false);
+});
+
+/** The shape the panel builds its rows from: folder path → pages inside it. */
+const groups = (...entries) =>
+  entries
+    .map((entry) => (Array.isArray(entry) ? entry : [entry, []]))
+    .sort(([left], [right]) => left.localeCompare(right));
+
+/** A tree flattened the way the panel draws it: `depth:path` per row. */
+const drawn = (nodes, depth = 0) =>
+  nodes.flatMap((node) => [
+    `${depth}:${node.path}`,
+    ...drawn(node.children, depth + 1),
+  ]);
+
+test("a folder inside a folder is listed inside it, not again from the root", () => {
+  const tree = folderTree(
+    groups(
+      ["", ["loose.md"]],
+      ["Deep Learning/Diffusion", ["ddim.md"]],
+      ["Deep Learning/Transformers", ["attention.md"]],
+      ["Zoo", ["gnu.md"]],
+    ),
+  );
+
+  // "Deep Learning" holds no pages of its own and is named by no group, but
+  // what is under it puts it on screen, with its folders drawn inside it.
+  assert.deepEqual(drawn(tree), [
+    "0:Deep Learning",
+    "1:Deep Learning/Diffusion",
+    "1:Deep Learning/Transformers",
+    "0:Zoo",
+  ]);
+
+  // The root's pages belong to no node — the panel gives them their own row.
+  assert.deepEqual(
+    tree.map((node) => node.pages),
+    [[], ["gnu.md"]],
+  );
+});
+
+test("a folder holding nothing anywhere below it is left out, unless kept", () => {
+  const listing = groups(["Notes", ["one.md"]], "Notes/Empty", "Nowhere");
+
+  assert.deepEqual(drawn(folderTree(listing)), ["0:Notes"]);
+
+  // A folder the reader just made is kept, and keeps its parent on screen.
+  assert.deepEqual(drawn(folderTree(listing, (path) => path === "Notes/Empty")), [
+    "0:Notes",
+    "1:Notes/Empty",
+  ]);
+  // While something is in hand every folder is somewhere to drop.
+  assert.deepEqual(drawn(folderTree(listing, () => true)), [
+    "0:Notes",
+    "1:Notes/Empty",
+    "0:Nowhere",
+  ]);
+});
+
+test("the way down to a folder names every folder on it", () => {
+  assert.deepEqual(folderTrail("a/b/c"), ["a", "a/b", "a/b/c"]);
+  assert.deepEqual(folderTrail("a"), ["a"]);
+  assert.deepEqual(folderTrail(""), []);
+});
+
+test("a folder cannot be carried into itself, or onto a name already there", () => {
+  const folders = ["Deep Learning", "Deep Learning/Diffusion", "Zoo", "Zoo/Diffusion"];
+
+  // The move that changes nothing is not an error, just nothing to do.
+  assert.equal(folderMoveIssue("Deep Learning/Diffusion", "Deep Learning", folders), "same");
+  assert.equal(folderMoveIssue("Zoo", "", folders), "same");
+
+  // A folder cannot hold itself, and neither can anything under it.
+  assert.equal(folderMoveIssue("Deep Learning", "Deep Learning", folders), "inside");
+  assert.equal(
+    folderMoveIssue("Deep Learning", "Deep Learning/Diffusion", folders),
+    "inside",
+  );
+  // The root itself is not a folder anything can be carried into place of.
+  assert.equal(folderMoveIssue("", "Zoo", folders), "inside");
+
+  // A destination already holding that name is refused rather than replaced.
+  assert.equal(folderMoveIssue("Deep Learning/Diffusion", "Zoo", folders), "taken");
+  assert.equal(folderMoveIssue("Deep Learning/Diffusion", "", folders), undefined);
+  assert.equal(folderMoveIssue("Zoo/Diffusion", "Deep Learning", folders), "taken");
+});
+
+test("moving a folder carries the order of every page under it", () => {
+  const order = {
+    "Deep Learning/Diffusion": ["ddim.md", "ancestral.md"],
+    "Deep Learning/Diffusion/Samplers": ["euler.md"],
+    Zoo: ["gnu.md"],
+  };
+
+  // A folder moved under a different parent keeps its pages in their places,
+  // and takes the folders under it with it.
+  assert.deepEqual(
+    renamedInOrder(order, "Deep Learning/Diffusion", "Zoo/Diffusion", true),
+    {
+      "Zoo/Diffusion": ["ddim.md", "ancestral.md"],
+      "Zoo/Diffusion/Samplers": ["euler.md"],
+      Zoo: ["gnu.md"],
+    },
+  );
 });

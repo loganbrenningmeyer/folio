@@ -694,6 +694,52 @@ export function tableSnippetTemplate(columns, rows) {
 }
 
 /**
+ * Where the math opened at `from` closes, or -1 when it never does. The rules
+ * are the ones `INLINE_MATH_PATTERN` reads by, so the span the parser claims
+ * and the span the editor tints are always the same span.
+ *
+ * @param {(position: number) => number} charAt
+ * @param {number} from
+ * @param {number} end
+ */
+export function mathSpanEnd(charAt, from, end) {
+  const DOLLAR = 36;
+  const BACKSLASH = 92;
+  const NEWLINE = 10;
+
+  if (charAt(from) === DOLLAR) {
+    // A display block runs to the next `$$`, however many lines away.
+    if (charAt(from + 1) === DOLLAR) {
+      for (let at = from + 2; at < end - 1; at += 1) {
+        if (charAt(at) === DOLLAR && charAt(at + 1) === DOLLAR) return at + 2;
+      }
+      return -1;
+    }
+    // Inline math stays on its line and holds no dollar of its own.
+    for (let at = from + 1; at < end; at += 1) {
+      const character = charAt(at);
+      if (character === NEWLINE) return -1;
+      if (character !== DOLLAR) continue;
+      return charAt(at - 1) === BACKSLASH || at === from + 1 ? -1 : at + 1;
+    }
+    return -1;
+  }
+
+  if (charAt(from) !== BACKSLASH) return -1;
+  const opener = charAt(from + 1);
+  // `\(…\)` inline, `\[…\]` display: LaTeX's own delimiters.
+  const closer = opener === 40 ? 41 : opener === 91 ? 93 : 0;
+  if (!closer) return -1;
+  for (let at = from + 2; at < end - 1; at += 1) {
+    if (charAt(at) !== BACKSLASH) continue;
+    if (charAt(at + 1) === closer) return at + 2;
+    // A backslash escapes whatever follows it, closer included.
+    at += 1;
+  }
+  return -1;
+}
+
+/**
  * @param {string} content
  * @param {string} query
  * @param {number} [limit]

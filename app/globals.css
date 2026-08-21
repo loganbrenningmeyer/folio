@@ -1477,13 +1477,38 @@ kbd {
   overflow-y: auto;
   padding: 4px 12px 20px;
 }
-.section-group + .section-group { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+/* Folders sit in a flat list of rows and are nested by how far they are
+   indented, the way a file browser does it. A rule between top-level folders
+   separates the library's own sections; folders inside one are drawn tight
+   under their parent, with a guide line running down from it. */
+.section-group + .section-group { margin-top: 2px; }
+.section-group[data-depth="0"] ~ .section-group[data-depth="0"] {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
 .library-empty { padding: 10px 6px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 
 .section-group {
+  position: relative;
+  padding-left: calc(var(--folder-depth, 0) * 15px);
   border-radius: 9px;
   transition: background 140ms ease, box-shadow 140ms ease;
 }
+
+/* The guide runs at the parent's own indent, a segment per row, so a run of
+   nested folders reads as one line down from the folder holding them. */
+.section-group:not([data-depth="0"])::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc((var(--folder-depth, 1) - 1) * 15px + 15px);
+  border-left: 1px solid var(--line);
+}
+
+/* A folder in hand is dimmed where it came from, as a page is. */
+.section-group.dragging > .section-head { opacity: .42; }
 
 .section-group.drop-target {
   background: var(--accent-soft);

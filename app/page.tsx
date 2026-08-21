@@ -17,6 +17,7 @@ import ReactMarkdown from "react-markdown";
 import CodeMirror from "@uiw/react-codemirror";
 import { snippet as applyCodeMirrorSnippet } from "@codemirror/autocomplete";
 import { markdown } from "@codemirror/lang-markdown";
+import { type MarkdownConfig } from "@lezer/markdown";
 import { languages } from "@codemirror/language-data";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import {
@@ -56,13 +57,18 @@ import {
   resolvePlatformShortcut,
   setPythonFenceRunnable,
   shortcutFromEvent,
+  mathSpanEnd,
   shortcutMatches,
   tableSnippetTemplate,
   toCodeMirrorSnippet,
 } from "@/app/editor-utils.js";
 import {
   type FolderOrder,
+  folderMoveIssue,
   folderNames,
+  type FolderNode,
+  folderTrail,
+  folderTree,
   isHiddenEntryName,
   ORDER_FILE_NAME,
   ORDER_DIRECTORY,
@@ -1143,12 +1149,22 @@ function cleanGroup(group: string) {
   return group.replace(/^\d+[._ -]*/, "");
 }
 
+/**
+ * The whole way down to a folder, for a message that has to say where
+ * something went. The panel itself draws folders inside one another, so there
+ * a folder is called by its own name alone — see `folderLabel`.
+ */
 function displayGroup(group: string) {
   if (!group) return "Notes";
   return group
     .split("/")
     .map((segment) => cleanGroup(segment))
     .join(" / ");
+}
+
+/** What a folder is called where it is drawn: its own name, not its path. */
+function folderLabel(group: string) {
+  return group ? cleanGroup(fileNameFromPath(group)) : "Notes";
 }
 
 function normalizePath(path: string) {
@@ -1188,8 +1204,20 @@ function foldersClosedAround(
 ) {
   const closed = new Set<string>(["", ...folders]);
   for (const note of notes) closed.add(parentPath(note.path));
-  closed.delete(parentPath(openPath ?? ""));
-  return closed;
+  return openedTo(closed, parentPath(openPath ?? ""));
+}
+
+/**
+ * The same folders, with `folder` and every folder above it open. A folder
+ * nested inside a folded one is drawn nowhere at all, so opening one means
+ * opening the whole way down to it.
+ */
+function openedTo(closed: Set<string>, folder: string) {
+  const next = new Set(closed);
+  // The root keeps no trail of its own, so it is named here directly.
+  next.delete(folder);
+  for (const step of folderTrail(folder)) next.delete(step);
+  return next;
 }
 
 function freshDefaultTextSnippets() {
@@ -1645,6 +1673,33 @@ function rehypeSourceLines(options?: { sourceLines?: number[] }) {
 const INLINE_MATH_PATTERN =
   /(\\\((?:\\.|[^\\\n])*?\\\)|(?<!\\)\$[^$\n]+?(?<!\\)\$)/g;
 
+/**
+ * Math is not Markdown. The Markdown parser knows nothing of `$…$`, so a
+ * formula reads as ordinary prose and the stars in `a**b**c` turn into
+ * emphasis — bold text in the middle of an equation, and a display block full
+ * of it. Claiming the whole span as one element before the emphasis parser
+ * sees the stars leaves a formula as written.
+ *
+ * The node carries no style of its own: the line and inline decorations below
+ * already tint math, and they should keep being what says so.
+ */
+const mathMarkdownExtension: MarkdownConfig = {
+  defineNodes: ["FolioMath"],
+  parseInline: [
+    {
+      name: "FolioMath",
+      // Ahead of Escape, so `\[` and `\(` reach this parser as delimiters
+      // rather than being eaten as an escaped bracket first.
+      before: "Escape",
+      parse(cx, _next, pos) {
+        const end = mathSpanEnd((at) => cx.char(at), pos, cx.end);
+        if (end < 0) return -1;
+        return cx.addElement(cx.elt("FolioMath", pos, end));
+      },
+    },
+  ],
+};
+
 const codeLineDecoration = Decoration.line({
   attributes: { class: "cm-folio-code-line" },
 });
@@ -1838,7 +1893,10 @@ function createEditorExtensions(theme: Theme) {
   ]);
 
   return [
-    markdown({ codeLanguages: languages }),
+    markdown({
+      codeLanguages: languages,
+      extensions: [mathMarkdownExtension],
+    }),
     syntaxHighlighting(highlightStyle),
     editorDecorationPlugin,
     markdownBlockAutoCloseExtension,
@@ -2866,6 +2924,10 @@ export default function Home() {
   );
   // The panel only lists folders that hold Markdown, so a folder created here
   // would vanish before anything is in it. Those stay listed for the session.
+  // The folder the reader last clicked open. A new file or folder is offered
+  // there rather than wherever the page in front of them happens to live, and
+  // only while it is still open — see `defaultCreateParent`.
+  const [lastOpenedFolder, setLastOpenedFolder] = useState("");
   const [revealedFolders, setRevealedFolders] = useState<Set<string>>(
     new Set(),
   );
@@ -2875,7 +2937,9 @@ export default function Home() {
   const [createKind, setCreateKind] = useState<CreateKind>();
   const [newEntryName, setNewEntryName] = useState("");
   const [newEntryParent, setNewEntryParent] = useState("");
-  const [draggedNoteId, setDraggedNoteId] = useState<string>();
+  // The page or folder in hand, if any. Folders are carried the same way pages
+  // are, and land in the folder under the pointer rather than between rows.
+  const [draggedEntry, setDraggedEntry] = useState<LibraryEntry>();
   // Where the dragged page would land: the folder, and the row it would take.
   const [dropTarget, setDropTarget] = useState<DropPlace>();
   // Explorer selection is separate from the open page: a folder can be
@@ -2928,6 +2992,7 @@ export default function Home() {
   // the click ending a drag from opening whatever was underneath.
   const pageListRef = useRef<HTMLElement>(null);
   const dragGhostRef = useRef<HTMLDivElement>(null);
+  const draggedEntryRef = useRef<LibraryEntry | undefined>(undefined);
   const dropPlace = useRef<DropPlace | undefined>(undefined);
   const dragPointer = useRef({ x: 0, y: 0 });
   const dragScroll = useRef(0);
@@ -3058,17 +3123,72 @@ export default function Home() {
     [allGroups, revealedFolders],
   );
 
-  // While a page is being dragged every folder is listed, so an empty folder —
-  // or the root, once the last page has moved out of it — stays reachable. The
-  // extra sections are appended below the listed ones rather than slotted in
-  // alphabetically: appearing in sorted order would push the rows down at the
-  // very moment the reader takes hold of one, and pull them back up on the
-  // drop. Nothing already visible may move when a drag begins.
-  const listedGroups = useMemo(() => {
-    if (!draggedNoteId) return grouped;
-    const shown = new Set(grouped.map(([group]) => group));
-    return [...grouped, ...allGroups.filter(([group]) => !shown.has(group))];
-  }, [allGroups, draggedNoteId, grouped]);
+  /**
+   * The library's folders as the tree they are on disk, so a folder inside a
+   * folder is drawn inside it rather than listed again from the root under its
+   * whole path.
+   *
+   * A folder holding no Markdown of its own is left out — it is noise in a
+   * reading sidebar — unless something under it is listed, or the reader has
+   * just made it. While an entry is in hand every folder is listed, so an
+   * empty one is still somewhere to drop; those appear in their own place in
+   * the tree, which is the only place a folder can be dropped into.
+   */
+  const libraryTree = useMemo(
+    () =>
+      folderTree(allGroups, (path) =>
+        Boolean(draggedEntry || revealedFolders.has(path)),
+      ),
+    [allGroups, draggedEntry, revealedFolders],
+  );
+
+  /** The pages sitting loose at the top of the library, in their own section. */
+  const rootNotes = useMemo(
+    () => allGroups.find(([group]) => !group)?.[1] ?? [],
+    [allGroups],
+  );
+  /** Whether the root's own section has anything to say for itself. */
+  const rootListed = Boolean(rootNotes.length || revealedFolders.has(""));
+
+  /**
+   * The tree drawn as the list it becomes on screen: a folder, then whatever
+   * is inside it one indent deeper. A folded folder keeps its contents out of
+   * the list altogether — the rows are the panel, so a folder shut is a folder
+   * whose children are simply not there. The root's own pages lead the list,
+   * in a section that holds no folders of its own.
+   */
+  const libraryRows = useMemo(() => {
+    const rows: {
+      group: string;
+      groupNotes: Note[];
+      depth: number;
+      hasFolders: boolean;
+    }[] = [];
+    const root = {
+      group: "",
+      groupNotes: rootNotes,
+      depth: 0,
+      hasFolders: false,
+    };
+    if (rootListed) rows.push(root);
+    const walk = (nodes: FolderNode<Note>[], depth: number) => {
+      for (const node of nodes) {
+        rows.push({
+          group: node.path,
+          groupNotes: node.pages,
+          depth,
+          hasFolders: node.children.length > 0,
+        });
+        if (!collapsedGroups.has(node.path)) walk(node.children, depth + 1);
+      }
+    };
+    walk(libraryTree, 0);
+    // With something in hand the root stays reachable even when nothing sits
+    // in it — added below the folders rather than above them, so no row
+    // already on screen moves at the moment the reader takes hold of one.
+    if (!rootListed && draggedEntry) rows.push(root);
+    return rows;
+  }, [collapsedGroups, draggedEntry, libraryTree, rootListed, rootNotes]);
 
   const activeGroupPath = useMemo(() => {
     const segments = active.path.split("/");
@@ -3225,8 +3345,7 @@ export default function Home() {
                 (folder) => !folder || snapshot.folders.includes(folder),
               ),
             );
-        closed.delete(parentPath(opened?.path ?? ""));
-        return closed;
+        return openedTo(closed, parentPath(opened?.path ?? ""));
       });
       setRevealedFolders((current) =>
         current.size
@@ -4554,6 +4673,22 @@ export default function Home() {
     };
   }, [desktopMode, flushAllNativeSaves, flushOpenNote]);
 
+  /**
+   * Where a new file or folder is offered: the folder the reader last clicked
+   * open, and only while it is still open in front of them. A folder they shut
+   * — or one hidden inside a folder they shut — is not somewhere they are
+   * looking, so the offer falls back to the library root, which is also what
+   * clicking the root itself asks for.
+   */
+  const defaultCreateParent = useMemo(() => {
+    if (!lastOpenedFolder) return "";
+    if (!folders.includes(lastOpenedFolder)) return "";
+    const shut = folderTrail(lastOpenedFolder).some((step) =>
+      collapsedGroups.has(step),
+    );
+    return shut ? "" : lastOpenedFolder;
+  }, [collapsedGroups, folders, lastOpenedFolder]);
+
   const beginCreate = useCallback(
     (kind: CreateKind) => {
       if (desktopMode && !nativeLibraryOpen) {
@@ -4564,11 +4699,9 @@ export default function Home() {
       }
       setCreateKind(kind);
       setNewEntryName("");
-      setNewEntryParent(
-        active.id === EMPTY_NOTE.id ? "" : parentPath(active.path),
-      );
+      setNewEntryParent(defaultCreateParent);
     },
-    [active.id, active.path, desktopMode, nativeLibraryOpen, showNotice],
+    [defaultCreateParent, desktopMode, nativeLibraryOpen, showNotice],
   );
 
   const createEntry = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -4620,12 +4753,11 @@ export default function Home() {
             ),
           );
         }
-        setCollapsedGroups((current) => {
-          const next = new Set(current);
-          next.delete(folderPath);
-          return next;
-        });
+        setCollapsedGroups((current) => openedTo(current, folderPath));
         setRevealedFolders((current) => new Set(current).add(folderPath));
+        // A folder just made is the folder in front of the reader, so the next
+        // thing they create is offered there.
+        setLastOpenedFolder(folderPath);
         setCreateKind(undefined);
         showNotice(`Created ${displayGroup(folderPath)}.`);
       } catch {
@@ -4719,8 +4851,8 @@ export default function Home() {
    * new order is written before the library is re-read, so the panel and the
    * order file never disagree, even for a moment.
    */
-  const dropNote = async (noteId: string, place: DropPlace) => {
-    const note = notes.find((item) => item.id === noteId);
+  const dropNote = async (notePath: string, place: DropPlace) => {
+    const note = notes.find((item) => item.path === notePath);
     if (!note) return;
 
     const sourceFolder = parentPath(note.path);
@@ -4729,6 +4861,10 @@ export default function Home() {
       ? availableFileName(note, place.folder)
       : fileNameFromPath(note.path);
     const destinationPath = joinPath(place.folder, destinationName);
+
+    // A page dropped into a folded folder would simply disappear, so the
+    // folder it lands in — and the way down to it — is opened to show it.
+    if (moving) setCollapsedGroups((current) => openedTo(current, place.folder));
 
     const listed = folderNames(notes, place.folder, noteOrder);
     const names = placedFolderNames(listed, destinationName, place.index);
@@ -4835,6 +4971,83 @@ export default function Home() {
     }
   };
 
+  /**
+   * A folder that has moved or been renamed is the same folder under a new
+   * path, so what the panel remembers about it follows: the mark it was given,
+   * whether it was open, and the place a still-empty folder holds. Everything
+   * nested inside it moves with it. The folders on the way down to where it
+   * landed are opened, so a folder never disappears into a folded parent.
+   */
+  const carryFolderPath = (from: string, to: string, folders: string[]) => {
+    const carried = (folder: string) =>
+      folder === from
+        ? to
+        : folder.startsWith(`${from}/`)
+          ? `${to}${folder.slice(from.length)}`
+          : folder;
+    setRevealedFolders((current) => new Set([...current].map(carried)));
+    setCollapsedGroups((current) =>
+      openedTo(new Set([...current].map(carried)), parentPath(to)),
+    );
+    const marks = prunedFolderIcons(
+      renamedFolderIcons(folderIcons, from, to),
+      folders,
+    );
+    if (serializeFolderIcons(marks) !== serializeFolderIcons(folderIcons)) {
+      void saveFolderIcons(marks);
+    }
+  };
+
+  /**
+   * Carries a folder, and everything inside it, into another folder. The moves
+   * that cannot mean anything are refused here rather than on disk: a folder
+   * into itself, into something it holds, or back where it already sits.
+   */
+  const dropFolder = async (path: string, target: string) => {
+    const name = fileNameFromPath(path);
+    const issue = folderMoveIssue(path, target, folders);
+    if (issue === "same") return;
+    if (issue === "inside") {
+      showNotice("A folder cannot be moved inside itself.");
+      return;
+    }
+    if (issue === "taken") {
+      showNotice(
+        `${displayGroup(target)} already holds a folder called ${cleanGroup(name)}.`,
+      );
+      return;
+    }
+
+    const destination = joinPath(target, name);
+    if (!desktopMode || !nativeLibraryOpen) {
+      showNotice("Open a folder to move folders around.");
+      return;
+    }
+
+    try {
+      await flushAllNativeSaves();
+      const snapshot = await nativeLibrary.moveFolder(path, destination);
+      // The open page follows its folder rather than being matched by path.
+      const openPath = active.path.startsWith(`${path}/`)
+        ? `${destination}${active.path.slice(path.length)}`
+        : active.path;
+      carryFolderPath(path, destination, snapshot.folders);
+      const moved = prunedOrder(
+        renamedInOrder(noteOrder, path, destination, true),
+        snapshot.notes,
+      );
+      if (serializeFolderOrder(moved) !== serializeFolderOrder(noteOrder)) {
+        await nativeLibrary.writeOrder(serializeFolderOrder(moved));
+      }
+      applyNoteOrder(moved);
+      applyNativeLibrary(snapshot, openPath);
+      setSelectedEntry({ kind: "folder", path: destination });
+      showNotice(`Moved ${cleanGroup(name)} to ${displayGroup(target)}.`);
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   // Renaming a folder rewrites the paths of everything inside it, so the open
   // page is followed to its new location rather than matched by path.
   const renameEntry = async (entry: LibraryEntry, rawName: string) => {
@@ -4870,26 +5083,10 @@ export default function Home() {
           : entry.kind === "folder" && active.path.startsWith(`${entry.path}/`)
             ? `${destination}${active.path.slice(entry.path.length)}`
             : active.path;
-      // Carry a still-empty folder's place in the panel over to its new name.
+      // A folder under a new name is the same folder, and keeps everything the
+      // panel knows about it.
       if (entry.kind === "folder") {
-        setRevealedFolders((current) => {
-          const next = new Set<string>();
-          current.forEach((folder) => {
-            if (folder === entry.path) next.add(destination);
-            else if (folder.startsWith(`${entry.path}/`))
-              next.add(`${destination}${folder.slice(entry.path.length)}`);
-            else next.add(folder);
-          });
-          return next;
-        });
-        // A folder under a new name is the same folder, so it keeps its mark.
-        const marks = prunedFolderIcons(
-          renamedFolderIcons(folderIcons, entry.path, destination),
-          snapshot.folders,
-        );
-        if (serializeFolderIcons(marks) !== serializeFolderIcons(folderIcons)) {
-          void saveFolderIcons(marks);
-        }
+        carryFolderPath(entry.path, destination, snapshot.folders);
       }
       // A renamed page keeps the place it was dragged to, rather than dropping
       // to the end of its folder under a name the order file does not know.
@@ -5055,7 +5252,7 @@ export default function Home() {
   }>({ busy: false, refresh: async () => undefined });
   useEffect(() => {
     externalRefreshRef.current = {
-      busy: Boolean(draggedNoteId || renamingEntry || createKind || refreshing),
+      busy: Boolean(draggedEntry || renamingEntry || createKind || refreshing),
       refresh: () => refreshLibrary(true),
     };
   });
@@ -5336,15 +5533,31 @@ export default function Home() {
       return undefined;
     }
 
-    const sections = Array.from(
+    // A folder carried over itself, or over anything inside it, is aimed at
+    // nowhere at all: holding it over its own rows names no place, rather than
+    // quietly falling back to the folder it already sits in.
+    const carried = draggedEntryRef.current;
+    const held = carried?.kind === "folder" ? carried.path : undefined;
+    const forbids = (path: string) =>
+      held !== undefined && (path === held || path.startsWith(`${held}/`));
+
+    const all = Array.from(
       list.querySelectorAll<HTMLElement>("[data-folder-path]"),
+    );
+    const over = (element: HTMLElement) => {
+      const box = element.getBoundingClientRect();
+      return y >= box.top && y < box.bottom;
+    };
+    if (all.some((element) => forbids(element.dataset.folderPath ?? "") && over(element))) {
+      return undefined;
+    }
+
+    const sections = all.filter(
+      (element) => !forbids(element.dataset.folderPath ?? ""),
     );
     if (!sections.length) return undefined;
 
-    let section = sections.find((element) => {
-      const box = element.getBoundingClientRect();
-      return y >= box.top && y < box.bottom;
-    });
+    let section = sections.find(over);
     if (!section) {
       // Between folders, or past either end of the list: aim at the nearer one.
       const above = sections.filter(
@@ -5418,9 +5631,9 @@ export default function Home() {
     }
   };
 
-  const beginNoteDrag = (
+  const beginEntryDrag = (
     event: React.PointerEvent<HTMLButtonElement>,
-    note: Note,
+    entry: LibraryEntry,
   ) => {
     // Touch belongs to scrolling the panel; a drag needs a mouse or a pen.
     if (event.button !== 0 || event.pointerType === "touch") return;
@@ -5444,7 +5657,8 @@ export default function Home() {
       endDragScroll();
       dropPlace.current = undefined;
       setDropTarget(undefined);
-      setDraggedNoteId(undefined);
+      setDraggedEntry(undefined);
+      draggedEntryRef.current = undefined;
       document.body.classList.remove("dragging-page");
     };
 
@@ -5459,7 +5673,10 @@ export default function Home() {
           return;
         }
         dragging = true;
-        setDraggedNoteId(note.id);
+        setDraggedEntry(entry);
+        // `placeFromPoint` runs from pointer handlers, ahead of the render
+        // that would tell it what is in hand, so the drag keeps its own copy.
+        draggedEntryRef.current = entry;
         document.body.classList.add("dragging-page");
       }
       moving.preventDefault();
@@ -5474,9 +5691,12 @@ export default function Home() {
       const dropped = dragging;
       stop();
       if (!dropped) return;
-      // The click that follows this pointerup would open the page underneath.
+      // The click that follows this pointerup would open the page underneath,
+      // or fold up the folder the drag started from.
       dragEnded.current = true;
-      if (place) void dropNote(note.id, place);
+      if (!place) return;
+      if (entry.kind === "folder") void dropFolder(entry.path, place.folder);
+      else void dropNote(entry.path, place);
     };
 
     const onCancel = (cancelled: PointerEvent) => {
@@ -5497,6 +5717,12 @@ export default function Home() {
     window.addEventListener("pointercancel", onCancel);
     window.addEventListener("keydown", onKey, true);
   };
+
+  /** What the ghost following the pointer is carrying. */
+  const draggedEntryLabel = (entry: LibraryEntry) =>
+    entry.kind === "folder"
+      ? folderLabel(entry.path)
+      : (notes.find((note) => note.path === entry.path)?.title ?? "");
 
   const positionDragGhost = (x: number, y: number) => {
     const ghost = dragGhostRef.current;
@@ -6922,35 +7148,48 @@ export default function Home() {
             aria-label="Library pages"
             ref={pageListRef}
           >
-            {!listedGroups.length && (
+            {!libraryRows.length && (
               <p className="library-empty">
                 No Markdown files here yet. Create one to start this library.
               </p>
             )}
-            {listedGroups.map(([group, groupNotes]) => {
+            {libraryRows.map(({ group, groupNotes, depth, hasFolders }) => {
               const collapsed = collapsedGroups.has(group);
+              const aimedHere = Boolean(
+                draggedEntry && dropTarget?.folder === group,
+              );
               // The row a drop would take in this folder, drawn as a line
-              // between pages. Only the folder under the pointer draws one.
+              // between pages. Only the folder under the pointer draws one,
+              // and only for a page: a folder lands *in* a folder, not at a
+              // row within it, so the whole section lights instead.
               const dropRow =
-                draggedNoteId && dropTarget?.folder === group
-                  ? dropTarget.index
+                aimedHere && draggedEntry?.kind === "note"
+                  ? dropTarget?.index
                   : undefined;
               // A folder listed only for the drag in hand — an empty one the
               // panel normally hides. It is drawn as a drop zone, so appearing
               // for the drag reads as an offer, not as the library changing.
               const dropZone =
-                Boolean(draggedNoteId) &&
+                Boolean(draggedEntry) &&
                 !groupNotes.length &&
+                !hasFolders &&
                 !revealedFolders.has(group);
+              const dragging =
+                draggedEntry?.kind === "folder" && draggedEntry.path === group;
               return (
                 <section
                   className={`section-group ${
                     group === activeGroupPath ? "active-section" : ""
-                  } ${dropRow === undefined ? "" : "drop-target"} ${
+                  } ${aimedHere ? "drop-target" : ""} ${
                     dropZone ? "drop-zone" : ""
-                  }`}
+                  } ${dragging ? "dragging" : ""}`}
                   key={group || "__root__"}
                   data-folder-path={group}
+                  // How deep the folder sits, for the rules that indent it and
+                  // draw its guide. The rows are a flat list; the indent is
+                  // what nests them.
+                  data-depth={depth}
+                  style={{ "--folder-depth": depth } as React.CSSProperties}
                 >
                   {/* The mark sits outside the folder's own button so it can
                       be a button itself: a click on the folder opens it, a
@@ -6993,22 +7232,36 @@ export default function Home() {
                             : ""
                         }`}
                         onClick={() => {
+                          // The click that ends a drag would otherwise fold
+                          // up whichever folder was dropped somewhere.
+                          if (dragEnded.current) {
+                            dragEnded.current = false;
+                            return;
+                          }
                           // A click only opens or closes the folder — the
                           // accent outline is reserved for the row a right
                           // click or the entry menu actually selected.
-                          setCollapsedGroups((current) => {
-                            const next = new Set(current);
-                            if (next.has(group)) next.delete(group);
-                            else next.add(group);
-                            return next;
-                          });
+                          setCollapsedGroups((current) =>
+                            current.has(group)
+                              ? openedTo(current, group)
+                              : new Set(current).add(group),
+                          );
+                          // Whichever folder was last opened is the one a new
+                          // file or folder is offered, so the click that opens
+                          // it is the click that says where things go.
+                          setLastOpenedFolder(group);
                         }}
                         onContextMenu={(event) =>
                           group &&
                           openEntryMenu(event, { kind: "folder", path: group })
                         }
+                        onPointerDown={(event) =>
+                          group &&
+                          beginEntryDrag(event, { kind: "folder", path: group })
+                        }
+                        title="Open this folder, or drag it into another"
                       >
-                        <strong>{displayGroup(group)}</strong>
+                        <strong>{folderLabel(group)}</strong>
                         <small>
                           {dropZone ? "drop here" : groupNotes.length}
                         </small>
@@ -7058,7 +7311,10 @@ export default function Home() {
                           >
                             <button
                               className={`page-row ${note.id === active.id ? "active" : ""} ${
-                                draggedNoteId === note.id ? "dragging" : ""
+                                draggedEntry?.kind === "note" &&
+                                draggedEntry.path === note.path
+                                  ? "dragging"
+                                  : ""
                               } ${noteImages ? "has-attachments" : ""} ${
                                 sameEntry(selectedEntry, {
                                   kind: "note",
@@ -7095,7 +7351,10 @@ export default function Home() {
                                 })
                               }
                               onPointerDown={(event) =>
-                                beginNoteDrag(event, note)
+                                beginEntryDrag(event, {
+                                  kind: "note",
+                                  path: note.path,
+                                })
                               }
                               data-page-row=""
                               title="Open this page, or drag it into place"
@@ -7228,12 +7487,16 @@ export default function Home() {
               place it before it is shown, rather than flashing at the corner
               of the screen for the frame before the first move arrives. */}
           <div
-            className={`drag-ghost ${draggedNoteId ? "is-dragging" : ""}`}
+            className={`drag-ghost ${draggedEntry ? "is-dragging" : ""}`}
             ref={dragGhostRef}
             aria-hidden="true"
           >
-            <GripVertical size={12} />
-            <span>{notes.find((note) => note.id === draggedNoteId)?.title}</span>
+            {draggedEntry?.kind === "folder" ? (
+              <Folder size={12} />
+            ) : (
+              <GripVertical size={12} />
+            )}
+            <span>{draggedEntry ? draggedEntryLabel(draggedEntry) : ""}</span>
           </div>
 
           <div className="library-foot">

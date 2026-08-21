@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { snippet, hasNextSnippetField, nextSnippetField } from "@codemirror/autocomplete";
 import { EditorState } from "@codemirror/state";
+import { markdown } from "@codemirror/lang-markdown";
+import { syntaxTree } from "@codemirror/language";
 import {
   alignScrollAnchors,
   extractSearchExcerpts,
@@ -22,6 +24,7 @@ import {
   resolveNoteLink,
   setPythonFenceRunnable,
   shortcutFromEvent,
+  mathSpanEnd,
   shortcutMatches,
   tableSnippetTemplate,
   toCodeMirrorSnippet,
@@ -217,6 +220,91 @@ test("tabbing a table runs top left to bottom right and then leaves it", () => {
   }
   // The run ends where the table does.
   assert.equal(visited.at(-1), state.doc.length);
+});
+
+/** The Markdown parser Folio writes with, math extension and all. */
+function markdownLanguage() {
+  return markdown({
+    extensions: [
+      {
+        defineNodes: ["FolioMath"],
+        parseInline: [
+          {
+            name: "FolioMath",
+            before: "Escape",
+            parse(cx, _next, pos) {
+              const end = mathSpanEnd((at) => cx.char(at), pos, cx.end);
+              if (end < 0) return -1;
+              return cx.addElement(cx.elt("FolioMath", pos, end));
+            },
+          },
+        ],
+      },
+    ],
+  });
+}
+
+/** Every node of the given kinds, as `name:text` pairs, in document order. */
+function nodesMatching(doc, pattern) {
+  const state = EditorState.create({ doc, extensions: [markdownLanguage()] });
+  const found = [];
+  syntaxTree(state).iterate({
+    enter(node) {
+      if (pattern.test(node.name)) {
+        found.push(`${node.name}:${state.doc.sliceString(node.from, node.to)}`);
+      }
+    },
+  });
+  return found;
+}
+
+test("math spans end where the delimiter that opened them closes", () => {
+  const at = (text) => (position) => text.charCodeAt(position);
+  const spanOf = (text) => {
+    const end = mathSpanEnd(at(text), 0, text.length);
+    return end < 0 ? undefined : text.slice(0, end);
+  };
+
+  assert.equal(spanOf("$x + y$ and more"), "$x + y$");
+  assert.equal(spanOf("$$\na**b**\n$$ after"), "$$\na**b**\n$$");
+  assert.equal(spanOf("\\[ p \\] rest"), "\\[ p \\]");
+  assert.equal(spanOf("\\( q \\) rest"), "\\( q \\)");
+
+  // A run that never closes is not math, and neither is an empty one.
+  assert.equal(spanOf("$ nothing closes this"), undefined);
+  assert.equal(spanOf("$$ nor does this"), undefined);
+  assert.equal(spanOf("$$"), undefined);
+  // Inline math holds no dollar of its own and stays on its line.
+  assert.equal(spanOf("$\nx$"), undefined);
+  assert.equal(spanOf("$$x$"), undefined);
+  // Text that merely starts with a backslash is not a delimiter.
+  assert.equal(spanOf("\\alpha $x$"), undefined);
+});
+
+test("stars inside math are formula, not emphasis", () => {
+  // Display and inline math alike keep their stars and underscores.
+  assert.deepEqual(nodesMatching("$$\na **b** c *d* _e_\n$$", /Emphasis|FolioMath/), [
+    "FolioMath:$$\na **b** c *d* _e_\n$$",
+  ]);
+  assert.deepEqual(nodesMatching("Inline $x **y** z$ here.", /Emphasis|FolioMath/), [
+    "FolioMath:$x **y** z$",
+  ]);
+  assert.deepEqual(nodesMatching("Also \\[ p **q** \\] and \\( r *s* \\).", /Emphasis|FolioMath/), [
+    "FolioMath:\\[ p **q** \\]",
+    "FolioMath:\\( r *s* \\)",
+  ]);
+
+  // Fenced code was already safe, and stays so.
+  assert.deepEqual(nodesMatching("```\nfence **bold**\n```", /Emphasis/), []);
+
+  // Prose still reads as prose, and an escaped dollar is not an opener.
+  assert.deepEqual(
+    nodesMatching("Normal **bold** and *italic*.", /StrongEmphasis|^Emphasis$/),
+    ["StrongEmphasis:**bold**", "Emphasis:*italic*"],
+  );
+  assert.deepEqual(nodesMatching("Costs \\$5 and **bold**.", /StrongEmphasis|FolioMath/), [
+    "StrongEmphasis:**bold**",
+  ]);
 });
 
 test("pairs delimiters and promotes centered runs into three-line blocks", () => {

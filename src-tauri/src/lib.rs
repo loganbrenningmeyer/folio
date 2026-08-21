@@ -1024,6 +1024,75 @@ async fn move_note(
     scan_library_root(&root)
 }
 
+/// Moves a folder, with everything inside it, under a different parent.
+#[tauri::command]
+async fn move_folder(
+    from_path: String,
+    to_path: String,
+    state: State<'_, LibraryState>,
+) -> Result<LibrarySnapshot, String> {
+    let _operation = state.lock_operation()?;
+    let root = require_library_root(&state)?;
+    move_folder_in_library(&root, &from_path, &to_path)?;
+    scan_library_root(&root)
+}
+
+/// The filesystem half of `move_folder`, split out so it can be tested against
+/// a real directory without a Tauri state handle.
+fn move_folder_in_library(root: &Path, from_path: &str, to_path: &str) -> Result<(), String> {
+    let source_relative = validate_relative_path(from_path, PathKind::Folder)?;
+    let destination_relative = validate_relative_path(to_path, PathKind::Folder)?;
+    if source_relative == destination_relative {
+        return Ok(());
+    }
+    // A folder cannot be carried inside itself: the move would leave the whole
+    // subtree with no way back to the root.
+    if destination_relative.starts_with(&source_relative) {
+        return Err("A folder cannot be moved inside itself.".to_string());
+    }
+
+    let source = resolve_existing_directory(root, &source_relative)?;
+    let destination_parent = resolve_existing_directory(
+        root,
+        destination_relative
+            .parent()
+            .unwrap_or_else(|| Path::new("")),
+    )?;
+    let name = destination_relative
+        .file_name()
+        .ok_or_else(|| "A destination folder name is required.".to_string())?;
+    let destination = destination_parent.join(name);
+
+    // Canonical paths catch what the relative ones cannot: a link that leads
+    // back into the folder being moved, and a case-only difference that names
+    // the same directory on a case-insensitive volume.
+    let inside_itself = match (canonical_path(&source), canonical_path(&destination_parent)) {
+        (Ok(source), Ok(parent)) => parent.starts_with(&source),
+        _ => false,
+    };
+    if inside_itself {
+        return Err("A folder cannot be moved inside itself.".to_string());
+    }
+
+    ensure_destination_absent(&destination)?;
+    note_self_write(&source);
+    note_self_write(&destination);
+    // Directories have no hard-link trick to fall back on, so the absence
+    // check above is what keeps a rename from replacing something. Windows and
+    // Unix alike refuse to rename across volumes; inside one library root
+    // every folder shares a volume.
+    fs::rename(&source, &destination)
+        .map_err(|error| io_error("move the folder", &destination, error))?;
+
+    sync_directory(&destination_parent);
+    if let Some(source_parent) = source.parent() {
+        if source_parent != destination_parent {
+            sync_directory(source_parent);
+        }
+    }
+    Ok(())
+}
+
 /// Renames a note or folder in place. `name` is a single path segment; a note
 /// keeps (or gains) its `.md` extension.
 #[tauri::command]
@@ -2085,6 +2154,7 @@ pub fn run() {
             sync_disconnect,
             approve_close,
             write_note,
+            move_folder,
             move_note,
             rename_entry,
             delete_entry,
@@ -2690,6 +2760,61 @@ mod tests {
         // Escaping the library is refused.
         assert!(rename_in_library(&root, "../outside", "x", PathKind::Folder).is_err());
         assert!(rename_in_library(&root, "Field notes", "../escape", PathKind::Folder).is_err());
+
+        fs::remove_dir_all(&root).expect("remove test root");
+    }
+
+    #[test]
+    fn moves_folders_under_other_folders_but_never_inside_themselves() {
+        let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "folio-folder-move-test-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create test root");
+        let root = canonical_path(&root).expect("canonicalize root");
+        fs::create_dir(root.join("Deep Learning")).expect("create parent");
+        fs::create_dir(root.join("Diffusion")).expect("create folder");
+        fs::create_dir(root.join("Diffusion/Samplers")).expect("create nested folder");
+        fs::write(root.join("Diffusion/Samplers/DDIM.md"), "body").expect("write nested note");
+        fs::create_dir(root.join("Taken")).expect("create occupied name");
+        fs::create_dir(root.join("Deep Learning/Taken")).expect("create clashing name");
+
+        // A folder carries everything under it to its new parent.
+        move_folder_in_library(&root, "Diffusion", "Deep Learning/Diffusion")
+            .expect("move folder");
+        assert!(!root.join("Diffusion").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("Deep Learning/Diffusion/Samplers/DDIM.md"))
+                .expect("read moved note"),
+            "body"
+        );
+
+        // Moving onto a name the destination already holds is refused, and
+        // leaves both folders where they were.
+        assert!(move_folder_in_library(&root, "Taken", "Deep Learning/Taken").is_err());
+        assert!(root.join("Taken").exists());
+        assert!(root.join("Deep Learning/Taken").exists());
+
+        // A folder cannot be carried into itself, or into anything under it.
+        assert!(move_folder_in_library(
+            &root,
+            "Deep Learning",
+            "Deep Learning/Diffusion/Deep Learning"
+        )
+        .is_err());
+        assert!(move_folder_in_library(&root, "Deep Learning", "Deep Learning").is_ok());
+        assert!(root.join("Deep Learning/Diffusion/Samplers/DDIM.md").exists());
+
+        // Escaping the library is refused from either end.
+        assert!(move_folder_in_library(&root, "../outside", "Deep Learning/outside").is_err());
+        assert!(move_folder_in_library(&root, "Deep Learning", "../escape").is_err());
+
+        // A folder moves back out to the root just as readily.
+        move_folder_in_library(&root, "Deep Learning/Diffusion", "Diffusion")
+            .expect("move folder back");
+        assert!(root.join("Diffusion/Samplers/DDIM.md").exists());
+        assert!(!root.join("Deep Learning/Diffusion").exists());
 
         fs::remove_dir_all(&root).expect("remove test root");
     }
