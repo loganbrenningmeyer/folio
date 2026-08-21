@@ -113,6 +113,17 @@ live in the image title — `![alt](plot.png "My caption | width=420 center")` �
 the file still renders as a normal image in any other Markdown tool. The `|`
 keeps a caption safe even when it contains a word like "center".
 
+## Tables
+
+The **table button** in the editor's top bar opens a size grid — drag or arrow
+across it to pick the shape, up to 8 × 8, and click to insert.
+
+The table goes in ready to fill: every cell is a tab stop, running left to right
+along each row and then down the table. The first heading arrives selected, so
+you can type straight over it, then **Tab** to the next cell and **Shift+Tab**
+back. Tab past the last cell and the run ends just after the table. Headings
+start as "Column 1", "Column 2" and so on, so tabbing past one keeps it.
+
 ## Finding things
 
 ⌘K opens search. It looks at page titles, section names, and the full text of every
@@ -187,6 +198,12 @@ want; Backspace clears a binding.
 built in: equation block (⌃⇧E), code block (⌃⇧\\), Python block (⌃⇧P), on Alt+Shift
 instead on Windows. You can add your own, with `$1`, `$2` as tab stops and `$0`
 for where the cursor lands.
+
+**Groups** — snippets and shortcuts both file into groups, the way pages file into
+folders in the library: one for LaTeX, one for code, whatever suits. Make one with
+**New group**, rename it by typing in its heading, move an item in with the folder
+button beside it, and click a group's chevron to fold it away. Deleting a group
+keeps everything inside it — those items just become ungrouped.
 
 All preferences are stored locally on your machine.
 

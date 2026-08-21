@@ -23,6 +23,7 @@ import {
   setPythonFenceRunnable,
   shortcutFromEvent,
   shortcutMatches,
+  tableSnippetTemplate,
   toCodeMirrorSnippet,
 } from "../app/editor-utils.js";
 
@@ -157,6 +158,65 @@ test("CodeMirror inserts a snippet and tabs from $1 to $0", () => {
   assert.equal(nextSnippetField(editor), true);
   assert.equal(state.selection.main.from, 4);
   assert.equal(hasNextSnippetField(state), false);
+});
+
+test("a table's cells are tab stops, read across each row and then down", () => {
+  assert.equal(
+    tableSnippetTemplate(3, 3),
+    [
+      "| ${1:Column 1} | ${2:Column 2} | ${3:Column 3} |",
+      "| --- | --- | --- |",
+      "| ${4} | ${5} | ${6} |",
+      "| ${7} | ${8} | ${9} |${0}",
+    ].join("\n"),
+  );
+
+  // A heading row on its own still ends at a stop past the table.
+  assert.equal(
+    tableSnippetTemplate(2, 1),
+    ["| ${1:Column 1} | ${2:Column 2} |", "| --- | --- |${0}"].join("\n"),
+  );
+});
+
+test("tabbing a table runs top left to bottom right and then leaves it", () => {
+  let state = EditorState.create({ doc: "" });
+  const editor = {
+    get state() {
+      return state;
+    },
+    dispatch(transaction) {
+      state = transaction.state;
+    },
+  };
+
+  snippet(tableSnippetTemplate(2, 3))(editor, null, 0, 0);
+
+  const rows = ["| Column 1 | Column 2 |", "| --- | --- |", "|  |  |", "|  |  |"];
+  assert.equal(state.doc.toString(), rows.join("\n"));
+
+  // The first heading arrives selected, ready to be typed over.
+  const headingAt = rows[0].indexOf("Column 1");
+  assert.equal(state.selection.main.from, headingAt);
+  assert.equal(state.selection.main.to, headingAt + "Column 1".length);
+
+  // Every cell in reading order, the alignment row skipped, and one last stop
+  // that parks the cursor past the table rather than back inside it.
+  const visited = [state.selection.main.from];
+  while (hasNextSnippetField(state)) {
+    assert.equal(nextSnippetField(editor), true);
+    visited.push(state.selection.main.from);
+  }
+  // Six cells, then the stop that ends the run past the table.
+  assert.equal(visited.length, 7);
+
+  const lineOf = (position) => state.doc.lineAt(position).number;
+  assert.deepEqual(visited.map(lineOf), [1, 1, 3, 3, 4, 4, 4]);
+  // Reading order: each stop is further into the document than the last.
+  for (let index = 1; index < visited.length; index += 1) {
+    assert.ok(visited[index] > visited[index - 1]);
+  }
+  // The run ends where the table does.
+  assert.equal(visited.at(-1), state.doc.length);
 });
 
 test("pairs delimiters and promotes centered runs into three-line blocks", () => {

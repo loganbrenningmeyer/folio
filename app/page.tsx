@@ -2,9 +2,11 @@
 
 import React, {
   type ChangeEvent,
+  type Dispatch,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type ReactNode,
+  type SetStateAction,
   useCallback,
   useEffect,
   useMemo,
@@ -55,6 +57,7 @@ import {
   setPythonFenceRunnable,
   shortcutFromEvent,
   shortcutMatches,
+  tableSnippetTemplate,
   toCodeMirrorSnippet,
 } from "@/app/editor-utils.js";
 import {
@@ -136,6 +139,7 @@ import {
   FileText,
   FlaskConical,
   Folder,
+  FolderInput,
   FolderPlus,
   FolderOpen,
   GitBranch,
@@ -258,16 +262,28 @@ type CreateKind = "file" | "folder";
 type PreferencePanel = "appearance" | "configure";
 /** The three tabs inside the Configure panel. */
 type ConfigureTab = "shortcuts" | "snippets" | "sync";
+/**
+ * A folder inside Configure. Snippets and app commands both sit in one, so a
+ * long list can be put away by subject the way the library puts pages away by
+ * folder. The id is what an item points at, so renaming a group is only a
+ * rename; `""` is the id of no group at all.
+ */
+type PreferenceGroup = { id: string; name: string };
 type TextSnippet = {
   id: string;
   name: string;
   shortcut: string;
   template: string;
   enabled: boolean;
+  /** The group this snippet sits in, or `""` for none. */
+  group: string;
 };
 type StoredSnippetSettings = {
-  version: 1;
+  version: 2;
   snippets: TextSnippet[];
+  groups: PreferenceGroup[];
+  /** Ids of the groups drawn folded up, `""` among them for the ungrouped. */
+  collapsed: string[];
 };
 type SearchExcerpt = { line: number; text: string };
 type SearchResult = {
@@ -330,6 +346,17 @@ const TRASH_RESTORE_LOCATION = IS_APPLE_PLATFORM
  * by `resolvePlatformShortcut` into the modifiers the host platform uses, so a
  * default reads as Command on macOS and Ctrl on Windows.
  */
+/**
+ * The value the group picker uses for "New group…". No real group can hold it,
+ * since every made group is given a random id.
+ */
+const NEW_GROUP_OPTION = "__new-group__";
+
+const DEFAULT_SNIPPET_GROUPS: PreferenceGroup[] = [
+  { id: "math", name: "Math" },
+  { id: "code", name: "Code" },
+];
+
 const DEFAULT_TEXT_SNIPPETS: TextSnippet[] = [
   {
     id: "equation",
@@ -341,6 +368,7 @@ $0
 \end{equation}
 $$`,
     enabled: true,
+    group: "math",
   },
   {
     id: "code-block",
@@ -348,6 +376,7 @@ $$`,
     shortcut: "Snippet-\\",
     template: ["```$1", "$0", "```"].join("\n"),
     enabled: true,
+    group: "code",
   },
   {
     id: "python-block",
@@ -355,87 +384,103 @@ $$`,
     shortcut: "Snippet-p",
     template: ["```python run", "$0", "```"].join("\n"),
     enabled: true,
+    group: "code",
   },
+];
+
+const DEFAULT_SHORTCUT_GROUPS: PreferenceGroup[] = [
+  { id: "general", name: "General" },
+  { id: "navigation", name: "Navigation" },
+  { id: "files", name: "Files" },
+  { id: "view", name: "View" },
 ];
 
 const APP_SHORTCUT_COMMANDS = [
   {
     id: "find",
     label: "Find a page",
-    group: "General",
+    group: "general",
     defaultShortcut: "Mod-k",
   },
   {
     id: "save",
     label: "Save now",
-    group: "General",
+    group: "general",
     defaultShortcut: "Mod-s",
   },
   {
     id: "sync-commit",
     label: "Commit & sync",
-    group: "General",
+    group: "general",
     defaultShortcut: "Mod-Shift-s",
   },
   {
     id: "previous-page",
     label: "Previous page",
-    group: "Navigation",
+    group: "navigation",
     defaultShortcut: "Mod-ArrowLeft",
   },
   {
     id: "next-page",
     label: "Next page",
-    group: "Navigation",
+    group: "navigation",
     defaultShortcut: "Mod-ArrowRight",
   },
   {
     id: "new-file",
     label: "New file",
-    group: "Files",
+    group: "files",
     defaultShortcut: "Mod-n",
   },
   {
     id: "new-folder",
     label: "New folder",
-    group: "Files",
+    group: "files",
     defaultShortcut: "Mod-Shift-n",
   },
   {
     id: "open-folder",
     label: "Open folder",
-    group: "Files",
+    group: "files",
     defaultShortcut: "Mod-o",
   },
   {
     id: "toggle-read-write",
     label: "Toggle Read / Write",
-    group: "View",
+    group: "view",
     defaultShortcut: "Mod-e",
   },
   {
     id: "toggle-split",
     label: "Toggle Split view",
-    group: "View",
+    group: "view",
     defaultShortcut: "Mod-Shift-e",
   },
   {
     id: "toggle-library",
     label: "Toggle library panel",
-    group: "View",
+    group: "view",
     defaultShortcut: "",
   },
   {
     id: "toggle-outline",
     label: "Toggle outline panel",
-    group: "View",
+    group: "view",
     defaultShortcut: "",
   },
 ] as const;
 
 type AppCommandId = (typeof APP_SHORTCUT_COMMANDS)[number]["id"];
 type AppShortcuts = Record<AppCommandId, string>;
-type StoredAppShortcutSettings = { version: 1; shortcuts: AppShortcuts };
+/** Which group each command has been filed under, keyed by command. */
+type CommandGroups = Record<AppCommandId, string>;
+type StoredAppShortcutSettings = {
+  version: 2;
+  shortcuts: AppShortcuts;
+  groups: PreferenceGroup[];
+  commandGroups: CommandGroups;
+  collapsed: string[];
+};
 
 const EDITOR_BASIC_SETUP = {
   lineNumbers: true,
@@ -1163,12 +1208,72 @@ function freshDefaultAppShortcuts() {
   ) as AppShortcuts;
 }
 
+function freshDefaultCommandGroups() {
+  return Object.fromEntries(
+    APP_SHORTCUT_COMMANDS.map(({ id, group }) => [id, group]),
+  ) as CommandGroups;
+}
+
+/** A new id for a group the reader just made. */
+function newGroupId() {
+  return globalThis.crypto?.randomUUID?.() ?? `group-${Date.now()}`;
+}
+
+function isPreferenceGroup(value: unknown): value is PreferenceGroup {
+  if (!value || typeof value !== "object") return false;
+  const group = value as Partial<PreferenceGroup>;
+  return typeof group.id === "string" && !!group.id && typeof group.name === "string";
+}
+
+function parseStoredGroups(value: unknown, fallback: PreferenceGroup[]) {
+  if (!Array.isArray(value) || !value.every(isPreferenceGroup)) return fallback;
+  return value as PreferenceGroup[];
+}
+
+function parseCollapsedGroups(value: unknown) {
+  if (!Array.isArray(value)) return new Set<string>();
+  return new Set(value.filter((id): id is string => typeof id === "string"));
+}
+
+/**
+ * Items laid out group by group, in the order the groups are listed, with
+ * whatever is filed under no group — or under a group since deleted — kept for
+ * a last section of its own. A group that holds nothing still gets a row, so
+ * it can be renamed and dropped into; the ungrouped section only appears when
+ * something is actually in it.
+ */
+function groupedForDisplay<Item>(
+  items: Item[],
+  groups: PreferenceGroup[],
+  groupOf: (item: Item) => string,
+): [PreferenceGroup | undefined, Item[]][] {
+  const known = new Set(groups.map((group) => group.id));
+  const sections: [PreferenceGroup | undefined, Item[]][] = groups.map(
+    (group) => [group, items.filter((item) => groupOf(item) === group.id)],
+  );
+  const loose = items.filter((item) => !known.has(groupOf(item)));
+  if (loose.length) sections.push([undefined, loose]);
+  return sections;
+}
+
+/** The name a group's section shows; the ungrouped section speaks for itself. */
+function groupSectionName(group: PreferenceGroup | undefined) {
+  return group ? group.name || "Untitled group" : "Ungrouped";
+}
+
+/**
+ * Reads the stored shortcut settings, in either shape they have had: version 1
+ * held the bindings alone, so a library written before groups existed reopens
+ * with its keys intact and every command back in the group it shipped in.
+ */
 function parseStoredAppShortcuts(value: string | null) {
   if (!value) return;
   try {
-    const stored = JSON.parse(value) as Partial<StoredAppShortcutSettings>;
+    const stored = JSON.parse(value) as Partial<
+      Omit<StoredAppShortcutSettings, "version">
+    > & { version?: number };
     if (
-      stored.version !== 1 ||
+      (stored.version !== 1 && stored.version !== 2) ||
       !stored.shortcuts ||
       typeof stored.shortcuts !== "object"
     ) {
@@ -1184,7 +1289,18 @@ function parseStoredAppShortcuts(value: string | null) {
         shortcuts[id] = shortcut;
       }
     }
-    return shortcuts;
+    const groups = parseStoredGroups(stored.groups, DEFAULT_SHORTCUT_GROUPS);
+    const commandGroups = freshDefaultCommandGroups();
+    for (const { id } of APP_SHORTCUT_COMMANDS) {
+      const group = stored.commandGroups?.[id];
+      if (typeof group === "string") commandGroups[id] = group;
+    }
+    return {
+      shortcuts,
+      groups,
+      commandGroups,
+      collapsed: parseCollapsedGroups(stored.collapsed),
+    };
   } catch {
     // Invalid local preferences should never prevent the app from opening.
   }
@@ -1244,21 +1360,39 @@ function isTextSnippet(value: unknown): value is TextSnippet {
     typeof snippet.shortcut === "string" &&
     (!snippet.shortcut || isRecordedShortcut(snippet.shortcut)) &&
     typeof snippet.template === "string" &&
-    typeof snippet.enabled === "boolean"
+    typeof snippet.enabled === "boolean" &&
+    // Groups arrived after the first stored shape, so a snippet written
+    // without one is still a snippet — it simply belongs to no group.
+    (snippet.group === undefined || typeof snippet.group === "string")
   );
 }
 
 function parseStoredTextSnippets(value: string | null) {
   if (!value) return;
   try {
-    const stored = JSON.parse(value) as Partial<StoredSnippetSettings>;
+    const stored = JSON.parse(value) as Partial<
+      Omit<StoredSnippetSettings, "version">
+    > & { version?: number };
     if (
-      stored.version === 1 &&
-      Array.isArray(stored.snippets) &&
-      stored.snippets.every(isTextSnippet)
+      (stored.version !== 1 && stored.version !== 2) ||
+      !Array.isArray(stored.snippets) ||
+      !stored.snippets.every(isTextSnippet)
     ) {
-      return stored.snippets;
+      return;
     }
+    return {
+      snippets: stored.snippets.map((snippet) => ({
+        ...snippet,
+        group: snippet.group ?? "",
+      })),
+      // Version 1 knew nothing of groups, so its snippets keep the group each
+      // one names — none — rather than being scattered into the defaults.
+      groups: parseStoredGroups(
+        stored.groups,
+        stored.version === 1 ? [] : DEFAULT_SNIPPET_GROUPS,
+      ),
+      collapsed: parseCollapsedGroups(stored.collapsed),
+    };
   } catch {
     // Invalid local preferences should never prevent the editor from opening.
   }
@@ -2442,34 +2576,157 @@ function EntryRenameField({
   );
 }
 
+/**
+ * One folder in the Configure panel — the head that names it and folds it up,
+ * with whatever it holds below. It reads like a library folder: a mark, a
+ * name, a count, and a chevron that turns as the group closes. The name is a
+ * field rather than a label, so renaming a group is just typing in it.
+ */
+function ConfigureGroup({
+  name,
+  count,
+  collapsed,
+  onToggle,
+  onRename,
+  onDelete,
+  onAdd,
+  addLabel,
+  focusName,
+  children,
+}: {
+  name: string;
+  count: number;
+  collapsed: boolean;
+  onToggle: () => void;
+  /** Absent on the ungrouped section, which has no name of its own to edit. */
+  onRename?: (value: string) => void;
+  onDelete?: () => void;
+  onAdd?: () => void;
+  addLabel?: string;
+  focusName?: boolean;
+  children: ReactNode;
+}) {
+  const field = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (focusName) field.current?.select();
+  }, [focusName]);
+  return (
+    <section className={`configure-group ${collapsed ? "folded" : ""}`}>
+      <div className="configure-group-head">
+        <button
+          type="button"
+          className="configure-group-toggle"
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+          aria-label={`${collapsed ? "Expand" : "Collapse"} ${name}`}
+          title={collapsed ? "Expand group" : "Collapse group"}
+        >
+          <ChevronDown size={13} className={collapsed ? "rotated" : ""} />
+          {collapsed ? <Folder size={13} /> : <FolderOpen size={13} />}
+        </button>
+        {onRename ? (
+          <input
+            ref={field}
+            className="configure-group-name"
+            value={name}
+            onChange={(event) => onRename(event.target.value)}
+            placeholder="Group name"
+            aria-label="Group name"
+            spellCheck={false}
+          />
+        ) : (
+          <span className="configure-group-name static">{name}</span>
+        )}
+        <small>{count}</small>
+        {onAdd && (
+          <button
+            type="button"
+            className="subtle-icon"
+            onClick={onAdd}
+            aria-label={`${addLabel ?? "Add"} in ${name}`}
+            title={addLabel ?? "Add"}
+          >
+            <Plus size={13} />
+          </button>
+        )}
+        {onDelete && (
+          <button
+            type="button"
+            className="subtle-icon"
+            onClick={onDelete}
+            aria-label={`Delete group ${name}`}
+            // Nothing inside is lost, so the button says where things go.
+            title="Delete group — its contents move to Ungrouped"
+          >
+            <Trash2 size={13} />
+          </button>
+        )}
+      </div>
+      {!collapsed && <div className="configure-group-body">{children}</div>}
+    </section>
+  );
+}
+
+/**
+ * The control each item carries for filing itself under a group. The section
+ * it is drawn in already says which group that is, so the picker is left as a
+ * bare mark: a real menu underneath, laid over the icon at no opacity, so the
+ * platform draws the list and a screen reader still meets an ordinary select.
+ */
+function GroupPicker({
+  value,
+  groups,
+  label,
+  onChange,
+  onCreate,
+}: {
+  value: string;
+  groups: PreferenceGroup[];
+  label: string;
+  onChange: (group: string) => void;
+  onCreate: () => void;
+}) {
+  // A group since deleted is shown as no group, matching where the item is
+  // actually drawn rather than pointing at a folder that is not there.
+  const selected = groups.some((group) => group.id === value) ? value : "";
+  return (
+    <span className="group-picker" title="Move to a group">
+      <FolderInput size={13} aria-hidden="true" />
+      <select
+        value={selected}
+        aria-label={label}
+        onChange={(event) => {
+          if (event.target.value === NEW_GROUP_OPTION) onCreate();
+          else onChange(event.target.value);
+        }}
+      >
+        <option value="">Ungrouped</option>
+        {groups.map((group) => (
+          <option key={group.id} value={group.id}>
+            {group.name || "Untitled group"}
+          </option>
+        ))}
+        <option value={NEW_GROUP_OPTION}>New group…</option>
+      </select>
+    </span>
+  );
+}
+
 const TABLE_MAX_COLUMNS = 8;
 const TABLE_MAX_ROWS = 8;
-const TABLE_FIRST_HEADING = "Column 1";
-
-/** `rows` counts the header, matching what the size picker shows. */
-function tableMarkdown(columns: number, rows: number) {
-  const headings = Array.from(
-    { length: columns },
-    (_, index) => `Column ${index + 1}`,
-  );
-  const blanks = Array.from({ length: columns }, () => "");
-  const line = (cells: string[]) => `| ${cells.join(" | ")} |`;
-  return [
-    line(headings),
-    line(Array.from({ length: columns }, () => "---")),
-    ...Array.from({ length: Math.max(0, rows - 1) }, () => line(blanks)),
-  ].join("\n");
-}
 
 /**
  * Inserts a table as its own block. GFM only recognises a table when it starts
  * a block, so a blank line is added on either side when the neighbouring lines
- * have content. The first heading is selected, ready to be typed over.
+ * have content.
+ *
+ * The table goes in as a snippet, so every cell is a tab stop: the first
+ * heading arrives selected, and Tab walks the rest of the row and then down
+ * the table. Tabbing out of the last cell ends the run just past the table.
  */
 function insertTableMarkdown(view: EditorView, columns: number, rows: number) {
   const { doc } = view.state;
   const line = doc.lineAt(Math.min(view.state.selection.main.head, doc.length));
-  const table = tableMarkdown(columns, rows);
   const blank = !line.text.trim();
   const from = blank ? line.from : line.to;
   const to = line.to;
@@ -2486,17 +2743,11 @@ function insertTableMarkdown(view: EditorView, columns: number, rows: number) {
   const leading = above?.text.trim() ? (blank ? "\n" : "\n\n") : "";
   const below = line.number < doc.lines ? doc.line(line.number + 1) : undefined;
   const trailing = below?.text.trim() ? "\n" : "";
-  const insert = `${leading}${table}${trailing}`;
+  // The template already ends at its own final stop, so the blank line that
+  // separates the table from whatever follows is appended after it.
+  const template = `${leading}${tableSnippetTemplate(columns, rows)}${trailing}`;
 
-  const headingAt = from + insert.indexOf(TABLE_FIRST_HEADING);
-  view.dispatch({
-    changes: { from, to, insert },
-    selection: {
-      anchor: headingAt,
-      head: headingAt + TABLE_FIRST_HEADING.length,
-    },
-    scrollIntoView: true,
-  });
+  applyCodeMirrorSnippet(template)(view, null, from, to);
   view.focus();
 }
 
@@ -2559,12 +2810,32 @@ export default function Home() {
   const [textSnippets, setTextSnippets] = useState<TextSnippet[]>(
     freshDefaultTextSnippets,
   );
+  const [snippetGroups, setSnippetGroups] = useState<PreferenceGroup[]>(
+    DEFAULT_SNIPPET_GROUPS,
+  );
   const [snippetPreferencesLoaded, setSnippetPreferencesLoaded] =
     useState(false);
   const [appShortcuts, setAppShortcuts] = useState<AppShortcuts>(
     freshDefaultAppShortcuts,
   );
+  const [shortcutGroups, setShortcutGroups] = useState<PreferenceGroup[]>(
+    DEFAULT_SHORTCUT_GROUPS,
+  );
+  const [commandGroups, setCommandGroups] = useState<CommandGroups>(
+    freshDefaultCommandGroups,
+  );
   const [appShortcutsLoaded, setAppShortcutsLoaded] = useState(false);
+  // Which Configure groups are folded up, by group id. Kept with the rest of
+  // the preferences, so a panel put in order stays in order between sessions.
+  const [foldedSnippetGroups, setFoldedSnippetGroups] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [foldedShortcutGroups, setFoldedShortcutGroups] = useState<Set<string>>(
+    () => new Set(),
+  );
+  // The group whose name field should be waiting for typing: the one just
+  // made, so a new group can be named without reaching for the mouse again.
+  const [namingGroup, setNamingGroup] = useState<string>();
   const [libraryCollapsed, setLibraryCollapsed] = useState(false);
   const [outlineCollapsed, setOutlineCollapsed] = useState(false);
   const [splitScrollLocked, setSplitScrollLocked] = useState(true);
@@ -3269,7 +3540,11 @@ export default function Home() {
       const stored = parseStoredTextSnippets(
         localStorage.getItem("folio-snippet-shortcuts"),
       );
-      if (stored) setTextSnippets(stored);
+      if (stored) {
+        setTextSnippets(stored.snippets);
+        setSnippetGroups(stored.groups);
+        setFoldedSnippetGroups(stored.collapsed);
+      }
       setSnippetPreferencesLoaded(true);
     }, 0);
     return () => window.clearTimeout(timer);
@@ -3278,22 +3553,34 @@ export default function Home() {
   useEffect(() => {
     if (!snippetPreferencesLoaded) return;
     const stored: StoredSnippetSettings = {
-      version: 1,
+      version: 2,
       snippets: textSnippets,
+      groups: snippetGroups,
+      collapsed: [...foldedSnippetGroups],
     };
     try {
       localStorage.setItem("folio-snippet-shortcuts", JSON.stringify(stored));
     } catch {
       // The shortcuts remain active for this session when storage is unavailable.
     }
-  }, [snippetPreferencesLoaded, textSnippets]);
+  }, [
+    foldedSnippetGroups,
+    snippetGroups,
+    snippetPreferencesLoaded,
+    textSnippets,
+  ]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const stored = parseStoredAppShortcuts(
         localStorage.getItem("folio-app-shortcuts"),
       );
-      if (stored) setAppShortcuts(stored);
+      if (stored) {
+        setAppShortcuts(stored.shortcuts);
+        setShortcutGroups(stored.groups);
+        setCommandGroups(stored.commandGroups);
+        setFoldedShortcutGroups(stored.collapsed);
+      }
       setAppShortcutsLoaded(true);
     }, 0);
     return () => window.clearTimeout(timer);
@@ -3302,15 +3589,24 @@ export default function Home() {
   useEffect(() => {
     if (!appShortcutsLoaded) return;
     const stored: StoredAppShortcutSettings = {
-      version: 1,
+      version: 2,
       shortcuts: appShortcuts,
+      groups: shortcutGroups,
+      commandGroups,
+      collapsed: [...foldedShortcutGroups],
     };
     try {
       localStorage.setItem("folio-app-shortcuts", JSON.stringify(stored));
     } catch {
       // The shortcuts remain active for this session when storage is unavailable.
     }
-  }, [appShortcuts, appShortcutsLoaded]);
+  }, [
+    appShortcuts,
+    appShortcutsLoaded,
+    commandGroups,
+    foldedShortcutGroups,
+    shortcutGroups,
+  ]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -3842,13 +4138,117 @@ export default function Home() {
     [appShortcuts, showNotice, textSnippets],
   );
 
-  const addTextSnippet = useCallback(() => {
+  const addTextSnippet = useCallback((group = "") => {
     const id = globalThis.crypto?.randomUUID?.() ?? `snippet-${Date.now()}`;
     setTextSnippets((current) => [
       ...current,
-      { id, name: "New snippet", shortcut: "", template: "$0", enabled: true },
+      {
+        id,
+        name: "New snippet",
+        shortcut: "",
+        template: "$0",
+        enabled: true,
+        group,
+      },
     ]);
   }, []);
+
+  const toggleGroupFold = useCallback(
+    (setFolded: Dispatch<SetStateAction<Set<string>>>, id: string) => {
+      setFolded((current) => {
+        const next = new Set(current);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const renameGroup = useCallback(
+    (
+      setGroups: Dispatch<SetStateAction<PreferenceGroup[]>>,
+      id: string,
+      name: string,
+    ) => {
+      setGroups((current) =>
+        current.map((group) => (group.id === id ? { ...group, name } : group)),
+      );
+    },
+    [],
+  );
+
+  /**
+   * Makes a group and hands back its id, so a caller can file something into
+   * it at the same time. The new group opens with its name selected.
+   */
+  const createGroup = useCallback(
+    (setGroups: Dispatch<SetStateAction<PreferenceGroup[]>>) => {
+      const id = newGroupId();
+      setGroups((current) => [...current, { id, name: "New group" }]);
+      setNamingGroup(id);
+      return id;
+    },
+    [],
+  );
+
+  const addSnippetGroup = useCallback(
+    () => createGroup(setSnippetGroups),
+    [createGroup],
+  );
+  const addShortcutGroup = useCallback(
+    () => createGroup(setShortcutGroups),
+    [createGroup],
+  );
+
+  /** Drops a group, leaving what it held ungrouped rather than deleting it. */
+  const deleteSnippetGroup = useCallback((id: string) => {
+    setSnippetGroups((current) => current.filter((group) => group.id !== id));
+    setTextSnippets((current) =>
+      current.map((textSnippet) =>
+        textSnippet.group === id ? { ...textSnippet, group: "" } : textSnippet,
+      ),
+    );
+  }, []);
+
+  const deleteShortcutGroup = useCallback((id: string) => {
+    setShortcutGroups((current) => current.filter((group) => group.id !== id));
+    setCommandGroups((current) => {
+      const next = { ...current };
+      for (const commandId of Object.keys(next) as AppCommandId[]) {
+        if (next[commandId] === id) next[commandId] = "";
+      }
+      return next;
+    });
+  }, []);
+
+  const moveCommandToGroup = useCallback(
+    (commandId: AppCommandId, group: string) => {
+      setCommandGroups((current) => ({ ...current, [commandId]: group }));
+    },
+    [],
+  );
+
+  /** The two Configure lists, laid out group by group for drawing. */
+  const shortcutSections = useMemo(
+    () =>
+      groupedForDisplay(
+        [...APP_SHORTCUT_COMMANDS],
+        shortcutGroups,
+        (command) => commandGroups[command.id],
+      ),
+    [commandGroups, shortcutGroups],
+  );
+
+  const snippetSections = useMemo(
+    () =>
+      groupedForDisplay(
+        textSnippets,
+        snippetGroups,
+        (textSnippet) => textSnippet.group,
+      ),
+    [snippetGroups, textSnippets],
+  );
 
   const restoreDefaultAppShortcuts = useCallback(() => {
     const defaults = freshDefaultAppShortcuts();
@@ -3866,6 +4266,8 @@ export default function Home() {
       return;
     }
     setAppShortcuts(defaults);
+    setShortcutGroups(DEFAULT_SHORTCUT_GROUPS);
+    setCommandGroups(freshDefaultCommandGroups());
   }, [showNotice, textSnippets]);
 
   const restoreDefaultTextSnippets = useCallback(() => {
@@ -3884,6 +4286,7 @@ export default function Home() {
       return;
     }
     setTextSnippets(defaults);
+    setSnippetGroups(DEFAULT_SNIPPET_GROUPS);
   }, [appShortcuts, showNotice]);
 
   const trapPreferencesFocus = useCallback(
@@ -5950,62 +6353,111 @@ export default function Home() {
                       Focus a shortcut field and press the keys you want.
                       Backspace clears a binding. Bare navigation and function
                       keys are allowed; printable keys need Ctrl, Command, or
-                      Alt. Modified shortcuts also work while writing.
+                      Alt. Modified shortcuts also work while writing. Use the
+                      group menu beside a command to file it elsewhere, and a
+                      group&rsquo;s chevron to fold it away.
                     </p>
-                  <div className="app-shortcut-groups">
-                    {(["General", "Navigation", "Files", "View"] as const).map(
-                      (group) => (
-                        <fieldset className="app-shortcut-group" key={group}>
-                          <legend>{group}</legend>
-                          {APP_SHORTCUT_COMMANDS.filter(
-                            (command) => command.group === group,
-                          ).map((command) => {
-                            const issue = appShortcutIssue(
-                              command.id,
-                              appShortcuts,
-                              textSnippets,
-                            );
-                            return (
-                              <label
-                                className="app-shortcut-row"
-                                key={command.id}
-                              >
-                                <span>{command.label}</span>
-                                <input
-                                  className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
-                                  // Symbols are set large, so the unbound state
-                                  // uses a short placeholder rather than a label
-                                  // that would not fit.
-                                  value={
-                                    appShortcuts[command.id]
-                                      ? formatShortcut(appShortcuts[command.id])
-                                      : ""
-                                  }
-                                  placeholder="Not set"
-                                  onKeyDown={(event) =>
-                                    recordAppShortcut(event, command.id)
-                                  }
-                                  onFocus={(event) =>
-                                    event.currentTarget.select()
-                                  }
-                                  readOnly
-                                  aria-label={`Record shortcut for ${command.label}`}
-                                  aria-invalid={Boolean(issue)}
-                                  title="Focus, then press the shortcut. Backspace clears it."
-                                />
-                                {issue && (
-                                  <small className="shortcut-issue">
-                                    {issue}
-                                  </small>
-                                )}
-                              </label>
-                            );
-                          })}
-                        </fieldset>
-                      ),
-                    )}
-                  </div>
+                    <div className="app-shortcut-groups">
+                      {shortcutSections.map(([group, commands]) => {
+                        const groupId = group?.id ?? "";
+                        return (
+                          <ConfigureGroup
+                            key={groupId || "__ungrouped__"}
+                            name={groupSectionName(group)}
+                            count={commands.length}
+                            collapsed={foldedShortcutGroups.has(groupId)}
+                            onToggle={() =>
+                              toggleGroupFold(setFoldedShortcutGroups, groupId)
+                            }
+                            onRename={
+                              group
+                                ? (value) =>
+                                    renameGroup(
+                                      setShortcutGroups,
+                                      groupId,
+                                      value,
+                                    )
+                                : undefined
+                            }
+                            onDelete={
+                              group
+                                ? () => deleteShortcutGroup(groupId)
+                                : undefined
+                            }
+                            focusName={namingGroup === groupId}
+                          >
+                            {!commands.length && (
+                              <p className="group-empty">
+                                Nothing here yet. Move a command in with the
+                                group menu beside it.
+                              </p>
+                            )}
+                            {commands.map((command) => {
+                              const issue = appShortcutIssue(
+                                command.id,
+                                appShortcuts,
+                                textSnippets,
+                              );
+                              return (
+                                <div
+                                  className="app-shortcut-row"
+                                  key={command.id}
+                                >
+                                  <span>{command.label}</span>
+                                  <GroupPicker
+                                    value={commandGroups[command.id]}
+                                    groups={shortcutGroups}
+                                    label={`Group for ${command.label}`}
+                                    onChange={(next) =>
+                                      moveCommandToGroup(command.id, next)
+                                    }
+                                    onCreate={() =>
+                                      moveCommandToGroup(
+                                        command.id,
+                                        addShortcutGroup(),
+                                      )
+                                    }
+                                  />
+                                  <input
+                                    className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
+                                    // Symbols are set large, so the unbound state
+                                    // uses a short placeholder rather than a label
+                                    // that would not fit.
+                                    value={
+                                      appShortcuts[command.id]
+                                        ? formatShortcut(
+                                            appShortcuts[command.id],
+                                          )
+                                        : ""
+                                    }
+                                    placeholder="Not set"
+                                    onKeyDown={(event) =>
+                                      recordAppShortcut(event, command.id)
+                                    }
+                                    onFocus={(event) =>
+                                      event.currentTarget.select()
+                                    }
+                                    readOnly
+                                    aria-label={`Record shortcut for ${command.label}`}
+                                    aria-invalid={Boolean(issue)}
+                                    title="Focus, then press the shortcut. Backspace clears it."
+                                  />
+                                  {issue && (
+                                    <small className="shortcut-issue">
+                                      {issue}
+                                    </small>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </ConfigureGroup>
+                        );
+                      })}
+                    </div>
                     <div className="snippet-actions shortcut-actions">
+                      <button type="button" onClick={() => addShortcutGroup()}>
+                        <FolderPlus size={14} /> New group
+                      </button>
                       <button
                         type="button"
                         onClick={restoreDefaultAppShortcuts}
@@ -6025,10 +6477,42 @@ export default function Home() {
                     Record a shortcut, then enter the text it should insert. Use{" "}
                     <code>$1</code>, <code>$2</code>, and so on for Tab stops;{" "}
                     <code>$0</code> is the final cursor. Write <code>\$1</code>{" "}
-                    for literal text.
+                    for literal text. Keep snippets in groups &mdash; one for
+                    maths, one for code &mdash; and fold up the ones you are not
+                    using.
                   </p>
                   <div className="snippet-list">
-                    {textSnippets.map((textSnippet) => {
+                    {snippetSections.map(([group, snippets]) => {
+                      const groupId = group?.id ?? "";
+                      return (
+                        <ConfigureGroup
+                          key={groupId || "__ungrouped__"}
+                          name={groupSectionName(group)}
+                          count={snippets.length}
+                          collapsed={foldedSnippetGroups.has(groupId)}
+                          onToggle={() =>
+                            toggleGroupFold(setFoldedSnippetGroups, groupId)
+                          }
+                          onRename={
+                            group
+                              ? (value) =>
+                                  renameGroup(setSnippetGroups, groupId, value)
+                              : undefined
+                          }
+                          onDelete={
+                            group ? () => deleteSnippetGroup(groupId) : undefined
+                          }
+                          onAdd={() => addTextSnippet(groupId)}
+                          addLabel="New snippet"
+                          focusName={namingGroup === groupId}
+                        >
+                          {!snippets.length && (
+                            <p className="group-empty">
+                              Nothing here yet. Add a snippet, or move one in
+                              with the group menu on its card.
+                            </p>
+                          )}
+                          {snippets.map((textSnippet) => {
                       const issue = snippetShortcutIssue(
                         textSnippet,
                         textSnippets,
@@ -6063,6 +6547,21 @@ export default function Home() {
                               }
                               placeholder="Snippet name"
                               aria-label="Snippet name"
+                            />
+                            <GroupPicker
+                              value={textSnippet.group}
+                              groups={snippetGroups}
+                              label={`Group for ${label}`}
+                              onChange={(next) =>
+                                updateTextSnippet(textSnippet.id, {
+                                  group: next,
+                                })
+                              }
+                              onCreate={() =>
+                                updateTextSnippet(textSnippet.id, {
+                                  group: addSnippetGroup(),
+                                })
+                              }
                             />
                             <input
                               className={`shortcut-recorder ${issue ? "has-issue" : ""}`}
@@ -6117,16 +6616,22 @@ export default function Home() {
                           />
                         </article>
                       );
+                          })}
+                        </ConfigureGroup>
+                      );
                     })}
-                    {!textSnippets.length && (
+                    {!textSnippets.length && !snippetGroups.length && (
                       <p className="snippet-empty">
                         No snippets yet. Add one to get started.
                       </p>
                     )}
                   </div>
                     <div className="snippet-actions">
-                      <button type="button" onClick={addTextSnippet}>
+                      <button type="button" onClick={() => addTextSnippet()}>
                         <Plus size={14} /> Add snippet
+                      </button>
+                      <button type="button" onClick={() => addSnippetGroup()}>
+                        <FolderPlus size={14} /> New group
                       </button>
                       <button
                         type="button"

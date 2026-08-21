@@ -661,6 +661,39 @@ export function toCodeMirrorSnippet(template) {
 }
 
 /**
+ * A Markdown table written as a CodeMirror snippet: every cell is a tab stop,
+ * numbered across each row and then down the table, so a whole table can be
+ * filled in from the keyboard. Headings arrive with their names as the stop's
+ * own text, selected when the stop is reached — Tab past one to keep it, type
+ * to replace it. The trailing `${0}` ends the run just past the table, so a
+ * Tab out of the last cell leaves the block rather than wrapping back to the
+ * first heading.
+ *
+ * The alignment row is not a stop: it is punctuation, not content.
+ *
+ * `rows` counts the heading row, matching what the size picker shows.
+ *
+ * @param {number} columns
+ * @param {number} rows
+ */
+export function tableSnippetTemplate(columns, rows) {
+  let stop = 0;
+  /** @param {string} [text] */
+  const cell = (text) =>
+    `\${${(stop += 1)}${text === undefined ? "" : `:${text}`}}`;
+  /** @param {string[]} cells */
+  const row = (cells) => `| ${cells.join(" | ")} |`;
+  const headings = row(
+    Array.from({ length: columns }, (_, index) => cell(`Column ${index + 1}`)),
+  );
+  const divider = row(Array.from({ length: columns }, () => "---"));
+  const body = Array.from({ length: Math.max(0, rows - 1) }, () =>
+    row(Array.from({ length: columns }, () => cell())),
+  );
+  return `${[headings, divider, ...body].join("\n")}\${0}`;
+}
+
+/**
  * @param {string} content
  * @param {string} query
  * @param {number} [limit]
