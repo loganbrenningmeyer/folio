@@ -3799,6 +3799,11 @@ body.dragging-page .page-row { cursor: grabbing; }
   z-index: 120;
   width: 246px;
   display: grid;
+  /* A grid track never shrinks below its content's minimum, so a folder with
+     a long name would push the rows out past the picker's own edge. The rows
+     are told they may be narrower than what they hold; the name ellipsizes
+     instead. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 9px;
   padding: 10px;
   border: 1px solid var(--line-strong);

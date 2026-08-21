@@ -2485,12 +2485,16 @@ const FOLDER_ICON_MENU_HEIGHT = 300;
  */
 function FolderIconPicker({
   name,
+  label,
   mark,
   at,
   onChoose,
   onChoosePicture,
 }: {
+  /** The whole way down to the folder, for what is read aloud and hovered. */
   name: string;
+  /** What the folder is called where it is drawn, which is what is shown. */
+  label: string;
   mark: FolderIcon | undefined;
   at: { x: number; y: number };
   onChoose: (mark: FolderIcon | undefined) => void;
@@ -2508,7 +2512,7 @@ function FolderIconPicker({
       <div className="folder-icon-head">
         <span data-color={mark?.color}>
           <FolderMark mark={mark} size={12} />
-          <strong>{name}</strong>
+          <strong title={name}>{label}</strong>
         </span>
         <button
           type="button"
@@ -8144,6 +8148,7 @@ export default function Home() {
       {folderIconMenu && (
         <FolderIconPicker
           name={displayGroup(folderIconMenu.folder)}
+          label={folderLabel(folderIconMenu.folder)}
           mark={folderIcons[folderIconMenu.folder]}
           at={folderIconMenu}
           onChoose={(mark) => setFolderIcon(folderIconMenu.folder, mark)}
