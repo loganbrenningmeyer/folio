@@ -19,7 +19,11 @@ import { snippet as applyCodeMirrorSnippet } from "@codemirror/autocomplete";
 import { markdown } from "@codemirror/lang-markdown";
 import { type MarkdownConfig } from "@lezer/markdown";
 import { languages } from "@codemirror/language-data";
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import {
+  HighlightStyle,
+  syntaxHighlighting,
+  syntaxTree,
+} from "@codemirror/language";
 import {
   Prec,
   RangeSetBuilder,
@@ -35,7 +39,8 @@ import {
   ViewPlugin,
   type ViewUpdate,
 } from "@codemirror/view";
-import { tags } from "@lezer/highlight";
+import { highlightTree, tagHighlighter, tags } from "@lezer/highlight";
+import { type Tree } from "@lezer/common";
 import {
   alignScrollAnchors,
   extractSearchExcerpts,
@@ -302,6 +307,7 @@ type SearchResult = {
 type MarkdownAstNode = {
   type?: string;
   tagName?: string;
+  value?: string;
   properties?: Record<string, unknown>;
   children?: MarkdownAstNode[];
   position?: {
@@ -1672,8 +1678,52 @@ function rehypeSourceLines(options?: { sourceLines?: number[] }) {
   };
 }
 
+/** The quote characters a language opens a string with. */
+const STRING_QUOTES = "'\"`";
+
+const HLJS_STRING_CLASS = "hljs-string";
+
+function astNodeText(node: MarkdownAstNode): string {
+  if (typeof node.value === "string") return node.value;
+  return (node.children ?? []).map(astNodeText).join("");
+}
+
+/**
+ * The reading pane's twin of the editor's `plainCodeDecorations`: prose in a
+ * fence still gets read as code, so the apostrophe in `don't` opens a string
+ * that runs to the end of the block. Highlight.js hands that back as one
+ * string element, quote and all, which makes it easy to tell from a real one —
+ * a string that never closes loses its class and reads as plain code.
+ */
+function rehypeUnquoteUnterminatedStrings() {
+  return (tree: MarkdownAstNode) => {
+    const visit = (node: MarkdownAstNode) => {
+      const classNames = nodeClassNames(node);
+      if (classNames.includes(HLJS_STRING_CLASS)) {
+        const text = astNodeText(node).trimEnd();
+        const quote = text.slice(0, 1);
+        const closed = text.length > 1 && text.endsWith(quote);
+        if (STRING_QUOTES.includes(quote) && !closed) {
+          const kept = classNames.filter((name) => name !== HLJS_STRING_CLASS);
+          node.properties = { ...node.properties, className: kept };
+          if (!kept.length) delete node.properties.className;
+        }
+      }
+      for (const child of node.children ?? []) visit(child);
+    };
+    visit(tree);
+  };
+}
+
 const INLINE_MATH_PATTERN =
   /(\\\((?:\\.|[^\\\n])*?\\\)|(?<!\\)\$[^$\n]+?(?<!\\)\$)/g;
+
+/** `$$` or `\[` opening display math on this line, with the closer it wants. */
+function displayMathOpener(text: string) {
+  const opener = /^(\$\$|\\\[)/.exec(text);
+  if (!opener) return undefined;
+  return { opener: opener[1], closer: opener[1] === "$$" ? "$$" : "\\]" };
+}
 
 /**
  * Math is not Markdown. The Markdown parser knows nothing of `$…$`, so a
@@ -1687,6 +1737,42 @@ const INLINE_MATH_PATTERN =
  */
 const mathMarkdownExtension: MarkdownConfig = {
   defineNodes: ["FolioMath"],
+  parseBlock: [
+    {
+      // The inline parser below only ever sees one block's worth of text, so a
+      // blank line inside a formula hands the rest back to Markdown — `**`
+      // turns bold again, a leading `-` turns into a list. Claiming the lines
+      // up front keeps a display block literal however it is written, over
+      // exactly the span the editor tints as math.
+      name: "FolioMathBlock",
+      // After FencedCode, so a `$$` written inside a fence stays code, and
+      // ahead of the block constructs a formula's lines can look like.
+      before: "Blockquote",
+      parse(cx, line) {
+        const match = displayMathOpener(line.text.slice(line.pos));
+        if (!match) return false;
+        const from = cx.lineStart + line.pos;
+        let to = cx.lineStart + line.text.length;
+        const rest = line.text.slice(line.pos + match.opener.length);
+        if (!rest.includes(match.closer)) {
+          // An unclosed block runs to the end of the document, the way an
+          // unterminated fence does — and the way the tint below reads it.
+          while (cx.nextLine()) {
+            to = cx.lineStart + line.text.length;
+            if (line.text.includes(match.closer)) break;
+          }
+        }
+        cx.addElement(cx.elt("FolioMath", from, to));
+        cx.nextLine();
+        return true;
+      },
+      // A formula that follows straight on from a line of prose opens its own
+      // block rather than joining the paragraph.
+      endLeaf(_cx, line) {
+        return Boolean(displayMathOpener(line.text.slice(line.pos)));
+      },
+    },
+  ],
   parseInline: [
     {
       name: "FolioMath",
@@ -1807,6 +1893,107 @@ const editorDecorationPlugin = ViewPlugin.fromClass(
   },
 );
 
+const plainCodeDecoration = Decoration.mark({
+  attributes: { class: "cm-folio-plain-code" },
+});
+
+// Reports the string tokens and nothing else. The class it hands out is never
+// rendered; only the ranges it reports are read.
+const stringTokenProbe = tagHighlighter([{ tag: tags.string, class: "s" }]);
+
+/**
+ * Prose inside a fence is not code, but the language parsing that fence still
+ * reads it as code: the apostrophe in `don't` opens a string nothing ever
+ * closes, and every word after it — to the end of the block — comes out
+ * quoted. A quote the fence closes before the language does was never a
+ * string, so those ranges are handed back the plain code colour.
+ *
+ * A language reports a string that spans lines one line at a time, so runs of
+ * touching string ranges are read as the single string they came from: a real
+ * multi-line string, which does close, keeps its colour.
+ */
+function plainCodeDecorations(view: EditorView) {
+  const builder = new RangeSetBuilder<Decoration>();
+  const tree = syntaxTree(view.state);
+  const doc = view.state.doc;
+
+  const fences: { from: number; to: number }[] = [];
+  for (const { from, to } of view.visibleRanges) {
+    tree.iterate({
+      from,
+      to,
+      enter: (node) => {
+        if (node.name !== "FencedCode") return true;
+        const last = fences[fences.length - 1];
+        if (!last || last.from !== node.from) {
+          fences.push({ from: node.from, to: node.to });
+        }
+        return false;
+      },
+    });
+  }
+
+  for (const fence of fences) {
+    let run: { from: number; to: number; quote: string } | undefined;
+
+    const closeRun = () => {
+      if (!run) return;
+      const text = doc.sliceString(run.from, run.to).trimEnd();
+      const closed = text.length > 1 && text.endsWith(run.quote);
+      if (run.quote && !closed) {
+        builder.add(run.from, run.to, plainCodeDecoration);
+      }
+      run = undefined;
+    };
+
+    highlightTree(
+      tree,
+      stringTokenProbe,
+      (from, to) => {
+        // Only whitespace between two string ranges: the same string, wrapped.
+        if (run && doc.sliceString(run.to, from).trim() === "") {
+          run.to = to;
+          return;
+        }
+        closeRun();
+        const opener = doc.sliceString(from, from + 1);
+        run = { from, to, quote: STRING_QUOTES.includes(opener) ? opener : "" };
+      },
+      fence.from,
+      fence.to,
+    );
+    closeRun();
+  }
+
+  return builder.finish();
+}
+
+const plainCodeDecorationPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    tree: Tree;
+
+    constructor(view: EditorView) {
+      this.tree = syntaxTree(view.state);
+      this.decorations = plainCodeDecorations(view);
+    }
+
+    update(update: ViewUpdate) {
+      // A fence's language is fetched and parsed after the document loads, so
+      // this follows the tree rather than the document: it reads a block when
+      // the block's own strings first exist, and again when one scrolls in.
+      const tree = syntaxTree(update.state);
+      if (tree !== this.tree || update.viewportChanged) {
+        this.tree = tree;
+        this.decorations = plainCodeDecorations(update.view);
+      }
+    }
+  },
+  {
+    decorations: (value) => value.decorations,
+  },
+);
+
 const markdownBlockAutoCloseExtension = Prec.high(
   EditorView.inputHandler.of((view, from, to, text, insert) => {
     const selection = view.state.selection;
@@ -1901,6 +2088,7 @@ function createEditorExtensions(theme: Theme) {
     }),
     syntaxHighlighting(highlightStyle),
     editorDecorationPlugin,
+    plainCodeDecorationPlugin,
     markdownBlockAutoCloseExtension,
     EditorView.lineWrapping,
     EditorView.contentAttributes.of({
@@ -1976,6 +2164,11 @@ function createEditorExtensions(theme: Theme) {
         },
         ".cm-folio-code-line": {
           backgroundColor: "var(--syntax-code-bg)",
+        },
+        // The highlighter's own span may end up inside this one or around it;
+        // the plain colour has to reach the text either way.
+        ".cm-folio-plain-code, .cm-folio-plain-code span": {
+          color: "var(--ink-2) !important",
         },
         ".cm-folio-math-line": {
           backgroundColor: "var(--syntax-math-bg)",
@@ -6281,6 +6474,7 @@ export default function Home() {
           },
         ],
         rehypeHighlight,
+        rehypeUnquoteUnterminatedStrings,
       ]}
       urlTransform={(url) => url}
       components={markdownComponents}
