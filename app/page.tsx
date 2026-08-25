@@ -2039,10 +2039,20 @@ type SearchIconNode = [
   Record<string, string>,
 ];
 
-// The icon nodes used by lucide-react's Replace and ReplaceAll components.
+// The icon nodes used by the matching lucide-react components.
 // CodeMirror creates this panel outside React, so the same Lucide drawings are
-// mounted as native SVG rather than creating a second React root for two icons.
-const SEARCH_REPLACE_ICON_NODES: Record<"replace" | "replaceAll", SearchIconNode[]> = {
+// mounted as native SVG rather than creating a second React root for the panel.
+type SearchControlIconName = "prev" | "next" | "replace" | "replaceAll";
+
+const SEARCH_CONTROL_ICON_NODES: Record<SearchControlIconName, SearchIconNode[]> = {
+  prev: [
+    ["path", { d: "m5 12 7-7 7 7" }],
+    ["path", { d: "M12 19V5" }],
+  ],
+  next: [
+    ["path", { d: "M12 5v14" }],
+    ["path", { d: "m19 12-7 7-7-7" }],
+  ],
   replace: [
     ["path", { d: "M14 4a2 2 0 0 1 2-2" }],
     ["path", { d: "M16 10a2 2 0 0 1-2-2" }],
@@ -2065,7 +2075,7 @@ const SEARCH_REPLACE_ICON_NODES: Record<"replace" | "replaceAll", SearchIconNode
   ],
 };
 
-function searchControlIcon(name: "replace" | "replaceAll") {
+function searchControlIcon(name: SearchControlIconName) {
   const namespace = "http://www.w3.org/2000/svg";
   const icon = document.createElementNS(namespace, "svg");
   icon.setAttribute("viewBox", "0 0 24 24");
@@ -2079,7 +2089,7 @@ function searchControlIcon(name: "replace" | "replaceAll") {
   icon.setAttribute("aria-hidden", "true");
   icon.dataset.searchIcon = name;
 
-  for (const [tag, attributes] of SEARCH_REPLACE_ICON_NODES[name]) {
+  for (const [tag, attributes] of SEARCH_CONTROL_ICON_NODES[name]) {
     const node = document.createElementNS(namespace, tag);
     for (const [attribute, value] of Object.entries(attributes)) {
       node.setAttribute(attribute, value);
@@ -2116,7 +2126,7 @@ const searchPanelControls = ViewPlugin.fromClass(
         title('[name="replaceAll"]', "Replace all matches");
         title('[name="close"]', "Close search");
 
-        for (const name of ["replace", "replaceAll"] as const) {
+        for (const name of ["prev", "next", "replace", "replaceAll"] as const) {
           const button = panel.querySelector<HTMLButtonElement>(
             `.cm-button[name="${name}"]`,
           );

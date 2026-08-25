@@ -2973,8 +2973,7 @@ body.dragging-page .page-row { cursor: grabbing; }
   display: grid;
   grid-template-columns:
     minmax(160px, 1fr)
-    repeat(3, 30px)
-    32px 32px 42px 30px;
+    repeat(7, 30px);
   grid-template-rows: 32px 32px;
   align-items: center;
   gap: 6px;
@@ -3142,8 +3141,11 @@ body.dragging-page .page-row { cursor: grabbing; }
 }
 
 .folio-code-editor .cm-panel.cm-search [name="prev"],
-.folio-code-editor .cm-panel.cm-search [name="next"] {
+.folio-code-editor .cm-panel.cm-search [name="next"],
+.folio-code-editor .cm-panel.cm-search > button[name="close"] {
   grid-row: 1;
+  width: 30px;
+  height: 30px;
   padding: 0;
   font-size: 0;
 }
@@ -3152,18 +3154,15 @@ body.dragging-page .page-row { cursor: grabbing; }
   grid-column: 6;
 }
 
-.folio-code-editor .cm-panel.cm-search [name="prev"]::before {
-  content: "\2191";
-  font: 18px/1 var(--font-ui);
-}
-
 .folio-code-editor .cm-panel.cm-search [name="next"] {
   grid-column: 7;
 }
 
-.folio-code-editor .cm-panel.cm-search [name="next"]::before {
-  content: "\2193";
-  font: 18px/1 var(--font-ui);
+.folio-code-editor .cm-panel.cm-search [name="prev"] svg,
+.folio-code-editor .cm-panel.cm-search [name="next"] svg {
+  display: block;
+  width: 18px;
+  height: 18px;
 }
 
 .folio-code-editor .cm-panel.cm-search [name="select"] {
@@ -3189,17 +3188,34 @@ body.dragging-page .page-row { cursor: grabbing; }
 }
 
 .folio-code-editor .cm-panel.cm-search > button[name="close"] {
-  position: static !important;
+  position: relative !important;
+  inset: auto !important;
   grid-column: 8;
-  grid-row: 1;
-  padding: 0;
-  font-size: 20px;
-  font-weight: 300;
+}
+
+.folio-code-editor .cm-panel.cm-search > button[name="close"]::before,
+.folio-code-editor .cm-panel.cm-search > button[name="close"]::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 16px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  content: "";
+}
+
+.folio-code-editor .cm-panel.cm-search > button[name="close"]::before {
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.folio-code-editor .cm-panel.cm-search > button[name="close"]::after {
+  transform: translate(-50%, -50%) rotate(-45deg);
 }
 
 @media (max-width: 640px) {
   .folio-code-editor .cm-panel.cm-search {
-    grid-template-columns: minmax(120px, 1fr) repeat(3, 28px) 28px 28px 36px 28px;
+    grid-template-columns: minmax(120px, 1fr) repeat(7, 28px);
     gap: 4px;
     width: calc(100% - 12px);
     margin: 6px;
@@ -3208,6 +3224,14 @@ body.dragging-page .page-row { cursor: grabbing; }
 
   .folio-code-editor .cm-panel.cm-search .cm-button {
     padding-inline: 4px;
+  }
+
+  .folio-code-editor .cm-panel.cm-search > label,
+  .folio-code-editor .cm-panel.cm-search [name="prev"],
+  .folio-code-editor .cm-panel.cm-search [name="next"],
+  .folio-code-editor .cm-panel.cm-search > button[name="close"] {
+    width: 28px;
+    height: 28px;
   }
 }
 
