@@ -41,6 +41,7 @@ import {
 } from "@codemirror/view";
 import { highlightTree, tagHighlighter, tags } from "@lezer/highlight";
 import { type Tree } from "@lezer/common";
+import { search } from "@codemirror/search";
 import {
   alignScrollAnchors,
   extractSearchExcerpts,
@@ -69,6 +70,7 @@ import {
 } from "@/app/editor-utils.js";
 import {
   type FolderOrder,
+  emptyFoldersLast,
   folderMoveIssue,
   folderNames,
   type FolderNode,
@@ -2032,6 +2034,109 @@ const markdownBlockAutoCloseExtension = Prec.high(
   }),
 );
 
+type SearchIconNode = [
+  "path" | "rect",
+  Record<string, string>,
+];
+
+// The icon nodes used by lucide-react's Replace and ReplaceAll components.
+// CodeMirror creates this panel outside React, so the same Lucide drawings are
+// mounted as native SVG rather than creating a second React root for two icons.
+const SEARCH_REPLACE_ICON_NODES: Record<"replace" | "replaceAll", SearchIconNode[]> = {
+  replace: [
+    ["path", { d: "M14 4a2 2 0 0 1 2-2" }],
+    ["path", { d: "M16 10a2 2 0 0 1-2-2" }],
+    ["path", { d: "M20 2a2 2 0 0 1 2 2" }],
+    ["path", { d: "M22 8a2 2 0 0 1-2 2" }],
+    ["path", { d: "m3 7 3 3 3-3" }],
+    ["path", { d: "M6 10V5a3 3 0 0 1 3-3h1" }],
+    ["rect", { x: "2", y: "14", width: "8", height: "8", rx: "2" }],
+  ],
+  replaceAll: [
+    ["path", { d: "M14 14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2" }],
+    ["path", { d: "M14 4a2 2 0 0 1 2-2" }],
+    ["path", { d: "M16 10a2 2 0 0 1-2-2" }],
+    ["path", { d: "M20 14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2" }],
+    ["path", { d: "M20 2a2 2 0 0 1 2 2" }],
+    ["path", { d: "M22 8a2 2 0 0 1-2 2" }],
+    ["path", { d: "m3 7 3 3 3-3" }],
+    ["path", { d: "M6 10V5a 3 3 0 0 1 3-3h1" }],
+    ["rect", { x: "2", y: "14", width: "8", height: "8", rx: "2" }],
+  ],
+};
+
+function searchControlIcon(name: "replace" | "replaceAll") {
+  const namespace = "http://www.w3.org/2000/svg";
+  const icon = document.createElementNS(namespace, "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("width", "16");
+  icon.setAttribute("height", "16");
+  icon.setAttribute("fill", "none");
+  icon.setAttribute("stroke", "currentColor");
+  icon.setAttribute("stroke-width", "2");
+  icon.setAttribute("stroke-linecap", "round");
+  icon.setAttribute("stroke-linejoin", "round");
+  icon.setAttribute("aria-hidden", "true");
+  icon.dataset.searchIcon = name;
+
+  for (const [tag, attributes] of SEARCH_REPLACE_ICON_NODES[name]) {
+    const node = document.createElementNS(namespace, tag);
+    for (const [attribute, value] of Object.entries(attributes)) {
+      node.setAttribute(attribute, value);
+    }
+    icon.append(node);
+  }
+
+  return icon;
+}
+
+/** Adds native hover text and Lucide marks to CodeMirror's transient panel. */
+const searchPanelControls = ViewPlugin.fromClass(
+  class {
+    observer: MutationObserver;
+
+    constructor(view: EditorView) {
+      const enhance = () => {
+        const panel = view.dom.querySelector<HTMLElement>(".cm-panel.cm-search");
+        if (!panel) return;
+
+        const title = (selector: string, text: string) => {
+          const control = panel.querySelector<HTMLElement>(selector);
+          control?.setAttribute("title", text);
+          control?.setAttribute("aria-label", text);
+        };
+
+        title('label:has([name="case"])', "Match case");
+        title('label:has([name="word"])', "Match whole word");
+        title('label:has([name="re"])', "Use regular expression");
+        title('[name="prev"]', "Find previous match");
+        title('[name="next"]', "Find next match");
+        title('[name="select"]', "Select all matches");
+        title('.cm-button[name="replace"]', "Replace next match");
+        title('[name="replaceAll"]', "Replace all matches");
+        title('[name="close"]', "Close search");
+
+        for (const name of ["replace", "replaceAll"] as const) {
+          const button = panel.querySelector<HTMLButtonElement>(
+            `.cm-button[name="${name}"]`,
+          );
+          if (button && !button.querySelector("svg[data-search-icon]")) {
+            button.replaceChildren(searchControlIcon(name));
+          }
+        }
+      };
+
+      this.observer = new MutationObserver(enhance);
+      this.observer.observe(view.dom, { childList: true, subtree: true });
+      enhance();
+    }
+
+    destroy() {
+      this.observer.disconnect();
+    }
+  },
+);
+
 function createEditorExtensions(theme: Theme) {
   const dark = theme === "dark";
   const highlightStyle = HighlightStyle.define([
@@ -2082,6 +2187,8 @@ function createEditorExtensions(theme: Theme) {
   ]);
 
   return [
+    search({ top: true }),
+    searchPanelControls,
     markdown({
       codeLanguages: languages,
       extensions: [mathMarkdownExtension],
@@ -3332,7 +3439,8 @@ export default function Home() {
    * "Show empty folders". Dragging an entry never changes the tree.
    */
   const libraryTree = useMemo(
-    () => folderTree(allGroups, () => showEmptyFolders),
+    () =>
+      emptyFoldersLast(folderTree(allGroups, () => showEmptyFolders)),
     [allGroups, showEmptyFolders],
   );
 
@@ -3376,22 +3484,40 @@ export default function Home() {
       group: string;
       groupNotes: Note[];
       depth: number;
+      empty: boolean;
+      emptyDivider: boolean;
     }[] = [];
 
     const root = {
       group: "",
       groupNotes: rootNotes,
       depth: 0,
+      empty: false,
+      emptyDivider: false,
     };
 
     if (rootListed) rows.push(root);
 
     const walk = (nodes: FolderNode<Note>[], depth: number) => {
-      for (const node of nodes) {
+      const firstEmpty = nodes.findIndex(
+        (node) => (folderTotals.get(node.path) ?? 0) === 0,
+      );
+
+      for (const [index, node] of nodes.entries()) {
+        const empty = index >= firstEmpty && firstEmpty >= 0;
         rows.push({
           group: node.path,
           groupNotes: node.pages,
           depth,
+          empty,
+          // At the top level Home is the populated area the divider follows.
+          // Deeper down, a divider is only needed when populated siblings came
+          // before the empty ones; an all-empty branch already has its dotted
+          // parent to set it apart.
+          emptyDivider:
+            empty &&
+            index === firstEmpty &&
+            (firstEmpty > 0 || (depth === 0 && rootListed)),
         });
 
         if (!collapsedGroups.has(node.path)) {
@@ -3403,7 +3529,7 @@ export default function Home() {
     walk(libraryTree, 0);
 
     return rows;
-  }, [collapsedGroups, libraryTree, rootListed, rootNotes]);
+  }, [collapsedGroups, folderTotals, libraryTree, rootListed, rootNotes]);
 
   const activeGroupPath = useMemo(() => {
     const segments = active.path.split("/");
@@ -7398,7 +7524,8 @@ export default function Home() {
                 No Markdown files here yet. Create one to start this library.
               </p>
             )}
-            {libraryRows.map(({ group, groupNotes, depth }) => {
+            {libraryRows.map(
+              ({ group, groupNotes, depth, empty, emptyDivider }) => {
               const collapsed = collapsedGroups.has(group);
 
               const aimedHere = Boolean(
@@ -7423,6 +7550,8 @@ export default function Home() {
                     group === activeGroupPath ? "active-section" : ""
                   } ${aimedHere ? "drop-target" : ""} ${
                     dragging ? "dragging" : ""
+                  } ${empty ? "empty-folder" : ""} ${
+                    emptyDivider ? "empty-folder-divider" : ""
                   }`}
                   key={group || "__root__"}
                   data-folder-path={group}
@@ -7724,7 +7853,8 @@ export default function Home() {
                   )}
                 </section>
               );
-            })}
+              },
+            )}
           </nav>
           {/* The page following the pointer. It stays mounted so a drag can
               place it before it is shown, rather than flashing at the corner

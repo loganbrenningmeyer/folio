@@ -1,6 +1,6 @@
 [package]
 name = "folio"
-version = "0.4.5"
+version = "0.4.6"
 description = "A native Markdown library reader and editor"
 edition = "2021"
 

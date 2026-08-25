@@ -1501,18 +1501,59 @@ kbd {
   border-top: 1px solid var(--line);
 }
 
-/* Root "Notes" */
-.section-group[data-folder-path=""] {
-  margin-top: 0;
+/* Home, and empty folders shown on request, share the light dotted container
+   that marks somewhere structural rather than somewhere with pages to read. */
+.section-group[data-folder-path=""],
+.section-group.empty-folder[data-folder-path] {
   padding: 5px;
   border: 1px dashed var(--line-strong);
   border-radius: 9px;
 }
 
-/* Give the first real folder below Notes the normal spacing */
+.section-group[data-folder-path=""] {
+  margin-top: 0;
+}
+
+/* Nested empty folders keep their tree indent inside the dotted container. */
+.section-group.empty-folder:not([data-depth="0"]) {
+  padding-left: calc(var(--folder-depth, 0) * 15px + 5px);
+}
+
+/* The first empty sibling sits below a labeled rule, separating the folders
+   that currently hold pages from the structural folders shown on request. */
+.section-group.empty-folder-divider[data-folder-path] {
+  margin-top: 58px;
+}
+
+.section-group.empty-folder-divider::after {
+  content: "Empty folders";
+  position: absolute;
+  top: -40px;
+  right: 0;
+  left: 0;
+  height: 28px;
+  padding: 7px 4px 1px;
+  border-top: 1px solid var(--line-strong);
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: .12em;
+  line-height: 1;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+/* Give the first real folder below Home the normal spacing */
 .section-group[data-folder-path=""] +
 .section-group[data-depth="0"] {
   margin-top: 10px;
+}
+
+/* When every real top-level folder is empty, its divider still takes priority
+   over the ordinary Home-to-folder gap above. */
+.section-group[data-folder-path=""] +
+.section-group.empty-folder-divider[data-depth="0"] {
+  margin-top: 58px;
 }
 
 .library-empty { padding: 10px 6px; color: var(--muted); font-size: 11px; line-height: 1.6; }
@@ -2906,6 +2947,268 @@ body.dragging-page .page-row { cursor: grabbing; }
 .folio-code-editor .cm-content {
   min-width: 0;
   max-width: 100%;
+}
+
+/* CodeMirror supplies the search behavior and its intentionally plain panel.
+   Folio keeps those controls (and their keyboard handling) but presents them
+   as a compact editor tool rather than a full-width browser-style form. */
+.folio-code-editor .cm-panels {
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--ink-2);
+  font-family: var(--font-ui);
+}
+
+/* CodeMirror normally keeps a top panel in the editor's flex layout, which
+   reserves a full-width strip as tall as the search card. Float this one over
+   the scroller instead: text continues beneath it and only the card catches
+   pointer input. */
+.folio-code-editor .cm-panels-top:has(.cm-search) {
+  position: absolute !important;
+  inset: 0 0 auto;
+  pointer-events: none;
+}
+
+.folio-code-editor .cm-panel.cm-search {
+  display: grid;
+  grid-template-columns:
+    minmax(160px, 1fr)
+    repeat(3, 30px)
+    32px 32px 42px 30px;
+  grid-template-rows: 32px 32px;
+  align-items: center;
+  gap: 6px;
+  width: min(680px, calc(100% - 24px));
+  margin: 10px 12px;
+  margin-left: auto;
+  padding: 10px;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 96%, var(--paper));
+  box-shadow: 0 10px 28px rgb(0 0 0 / 12%);
+  pointer-events: auto;
+}
+
+.folio-code-editor .cm-panel.cm-search > br {
+  display: none;
+}
+
+.folio-code-editor .cm-panel.cm-search input,
+.folio-code-editor .cm-panel.cm-search button,
+.folio-code-editor .cm-panel.cm-search label {
+  margin: 0 !important;
+}
+
+.folio-code-editor .cm-panel.cm-search .cm-textfield {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  outline: none;
+  background: var(--paper-deep);
+  color: var(--ink);
+  font: 12px var(--font-code);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.folio-code-editor .cm-panel.cm-search .cm-textfield::placeholder {
+  color: var(--faint);
+}
+
+.folio-code-editor .cm-panel.cm-search .cm-textfield:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.folio-code-editor .cm-panel.cm-search [name="search"] {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.folio-code-editor .cm-panel.cm-search [name="replace"] {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+/* These remain real checkboxes for CodeMirror and assistive technology, while
+   the whole label becomes the familiar Aa / whole-word / regex toggle. */
+.folio-code-editor .cm-panel.cm-search > label {
+  position: relative;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 0;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.folio-code-editor .cm-panel.cm-search > label:hover {
+  border-color: var(--line-strong);
+  background: var(--paper-deep);
+  color: var(--ink);
+}
+
+.folio-code-editor .cm-panel.cm-search > label:has(input:checked) {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.folio-code-editor .cm-panel.cm-search > label:has(input:focus-visible) {
+  outline: 2px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  outline-offset: 1px;
+}
+
+.folio-code-editor .cm-panel.cm-search input[type="checkbox"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0 !important;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.folio-code-editor .cm-panel.cm-search > label::before {
+  font: 600 14px var(--font-code);
+  letter-spacing: -.06em;
+}
+
+.folio-code-editor .cm-panel.cm-search > label:has([name="case"]) {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.folio-code-editor .cm-panel.cm-search > label:has([name="case"])::before {
+  content: "Aa";
+}
+
+.folio-code-editor .cm-panel.cm-search > label:has([name="word"]) {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.folio-code-editor .cm-panel.cm-search > label:has([name="word"])::before {
+  content: "ab";
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.folio-code-editor .cm-panel.cm-search > label:has([name="re"]) {
+  grid-column: 4;
+  grid-row: 1;
+}
+
+.folio-code-editor .cm-panel.cm-search > label:has([name="re"])::before {
+  content: ".*";
+}
+
+.folio-code-editor .cm-panel.cm-search .cm-button,
+.folio-code-editor .cm-panel.cm-search > button[name="close"] {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  background-image: none;
+  color: var(--muted);
+  font: 600 10px var(--font-ui);
+  cursor: pointer;
+}
+
+.folio-code-editor .cm-panel.cm-search .cm-button:hover,
+.folio-code-editor .cm-panel.cm-search > button[name="close"]:hover {
+  border-color: var(--line-strong);
+  background: var(--paper-deep);
+  color: var(--ink);
+}
+
+.folio-code-editor .cm-panel.cm-search .cm-button:focus-visible,
+.folio-code-editor .cm-panel.cm-search > button[name="close"]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  outline-offset: 1px;
+}
+
+.folio-code-editor .cm-panel.cm-search [name="prev"],
+.folio-code-editor .cm-panel.cm-search [name="next"] {
+  grid-row: 1;
+  padding: 0;
+  font-size: 0;
+}
+
+.folio-code-editor .cm-panel.cm-search [name="prev"] {
+  grid-column: 6;
+}
+
+.folio-code-editor .cm-panel.cm-search [name="prev"]::before {
+  content: "\2191";
+  font: 18px/1 var(--font-ui);
+}
+
+.folio-code-editor .cm-panel.cm-search [name="next"] {
+  grid-column: 7;
+}
+
+.folio-code-editor .cm-panel.cm-search [name="next"]::before {
+  content: "\2193";
+  font: 18px/1 var(--font-ui);
+}
+
+.folio-code-editor .cm-panel.cm-search [name="select"] {
+  display: none;
+}
+
+.folio-code-editor .cm-panel.cm-search .cm-button[name="replace"] {
+  grid-column: 2;
+  grid-row: 2;
+  padding: 0;
+}
+
+.folio-code-editor .cm-panel.cm-search [name="replaceAll"] {
+  grid-column: 3;
+  grid-row: 2;
+  padding: 0;
+}
+
+.folio-code-editor .cm-panel.cm-search .cm-button[name="replace"] svg,
+.folio-code-editor .cm-panel.cm-search [name="replaceAll"] svg {
+  width: 16px;
+  height: 16px;
+}
+
+.folio-code-editor .cm-panel.cm-search > button[name="close"] {
+  position: static !important;
+  grid-column: 8;
+  grid-row: 1;
+  padding: 0;
+  font-size: 20px;
+  font-weight: 300;
+}
+
+@media (max-width: 640px) {
+  .folio-code-editor .cm-panel.cm-search {
+    grid-template-columns: minmax(120px, 1fr) repeat(3, 28px) 28px 28px 36px 28px;
+    gap: 4px;
+    width: calc(100% - 12px);
+    margin: 6px;
+    padding: 8px;
+  }
+
+  .folio-code-editor .cm-panel.cm-search .cm-button {
+    padding-inline: 4px;
+  }
 }
 
 .folio-code-editor .cm-lineWrapping {

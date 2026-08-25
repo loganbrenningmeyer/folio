@@ -343,6 +343,44 @@ export function folderTree(groups, keep = () => false) {
 }
 
 /**
+ * Keeps a folder tree intact while putting empty siblings after the folders
+ * that have something to read. A folder with pages anywhere below it is not
+ * empty: it stays with the populated folders and keeps its descendants inside
+ * it. Both partitions preserve the order supplied by `folderTree`.
+ *
+ * @template Page
+ * @param {FolderNode<Page>[]} roots
+ * @returns {FolderNode<Page>[]}
+ */
+export function emptyFoldersLast(roots) {
+  /**
+   * @param {FolderNode<Page>} node
+   * @returns {{ node: FolderNode<Page>; empty: boolean }}
+   */
+  const visit = (node) => {
+    const children = node.children.map(visit);
+    const orderedChildren = [
+      ...children.filter((child) => !child.empty),
+      ...children.filter((child) => child.empty),
+    ];
+
+    return {
+      node: {
+        ...node,
+        children: orderedChildren.map((child) => child.node),
+      },
+      empty: !node.pages.length && children.every((child) => child.empty),
+    };
+  };
+
+  const visited = roots.map(visit);
+  return [
+    ...visited.filter((entry) => !entry.empty),
+    ...visited.filter((entry) => entry.empty),
+  ].map((entry) => entry.node);
+}
+
+/**
  * Every folder on the way down to `path`, the folder itself last. Opening a
  * page means opening each folder between it and the root, or the panel would
  * hold it somewhere still folded away.

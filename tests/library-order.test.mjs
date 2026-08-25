@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  emptyFoldersLast,
   folderMoveIssue,
   folderNames,
   folderTrail,
@@ -232,6 +233,30 @@ test("a folder holding nothing anywhere below it is left out, unless kept", () =
     "0:Notes",
     "1:Notes/Empty",
     "0:Nowhere",
+  ]);
+});
+
+test("empty folders follow populated siblings without leaving their parent", () => {
+  const tree = emptyFoldersLast(
+    folderTree(
+      groups(
+        "Alpha Empty",
+        "Projects/Archive",
+        ["Projects/Current", ["today.md"]],
+        ["Reading", ["book.md"]],
+        "Zulu Empty",
+      ),
+      () => true,
+    ),
+  );
+
+  assert.deepEqual(drawn(tree), [
+    "0:Projects",
+    "1:Projects/Current",
+    "1:Projects/Archive",
+    "0:Reading",
+    "0:Alpha Empty",
+    "0:Zulu Empty",
   ]);
 });
 
