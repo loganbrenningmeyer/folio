@@ -525,6 +525,12 @@ const APP_SHORTCUT_COMMANDS = [
     group: "view",
     defaultShortcut: "",
   },
+  {
+    id: "toggle-theme",
+    label: "Toggle light / dark mode",
+    group: "view",
+    defaultShortcut: "Mod-Shift-d",
+  },
 ] as const;
 
 type AppCommandId = (typeof APP_SHORTCUT_COMMANDS)[number]["id"];
@@ -7009,6 +7015,9 @@ export default function Home() {
           } else {
             setOutlineCollapsed((current) => !current);
           }
+          return;
+        case "toggle-theme":
+          setTheme((current) => (current === "light" ? "dark" : "light"));
       }
     },
     [
