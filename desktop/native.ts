@@ -8,6 +8,9 @@ export type NoteRecord = {
   path: RelativePath;
   title: string;
   content: string;
+  /** Milliseconds since the epoch; null where the filesystem keeps none. */
+  created: number | null;
+  modified: number | null;
 };
 
 export type LibrarySnapshot = {
@@ -315,6 +318,31 @@ export function renameAsset(
   return invokeNative("rename_asset", { notePath, src, name });
 }
 
+/**
+ * Hands the backend the open HTML page's current text, so its frame shows
+ * edits autosave has not written yet. See `src-tauri/src/page_frame.rs`.
+ */
+export function stagePagePreview(
+  path: RelativePath,
+  content: string,
+): Promise<void> {
+  return invokeNative("stage_page_preview", { path, content });
+}
+
+/**
+ * The URL an HTML page is framed from: Folio's `folio-page` scheme, one
+ * encoded segment per folder so the page's relative references resolve
+ * against its own folder. WebView2 serves custom schemes over
+ * `http://<scheme>.localhost`, WebKit under the scheme itself — the same
+ * split `convertFileSrc` makes.
+ */
+export function pageFrameUrl(path: RelativePath): string {
+  const base = /Windows|Android/.test(navigator.userAgent)
+    ? "http://folio-page.localhost/"
+    : "folio-page://localhost/";
+  return base + path.split("/").map(encodeURIComponent).join("/");
+}
+
 export const nativeLibrary = Object.freeze({
   isAvailable: isNativeRuntime,
   restore: restoreLibrary,
@@ -347,6 +375,7 @@ export const nativeLibrary = Object.freeze({
   importAssets,
   readAsset,
   renameAsset,
+  stagePagePreview,
 });
 
 export type NativeLibraryBridge = typeof nativeLibrary;

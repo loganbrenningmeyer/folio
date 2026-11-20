@@ -912,8 +912,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   background: var(--panel);
   color: var(--ink);
   cursor: pointer;
-  font: 11px var(--font-ui);
+  font-size: 13px;
 }
+
+/* Each font is named in its own face, in the menu and once chosen. */
+.font-control option { font-size: 14px; }
+.font-control optgroup { font: 600 11px var(--font-ui); }
 
 .font-sample {
   min-height: 62px;
@@ -1425,12 +1429,46 @@ kbd {
 
 .workspace {
   display: grid;
-  grid-template-columns: 276px minmax(0, 1fr) 248px;
+  grid-template-columns: var(--library-width, 276px) minmax(0, 1fr) var(--outline-width, 248px);
   grid-template-rows: minmax(0, 1fr);
   height: calc(100dvh - 64px);
 }
 
-.library-panel, .outline-panel { min-width: 0; background: var(--panel); }
+.library-panel, .outline-panel { position: relative; min-width: 0; background: var(--panel); }
+
+/* The draggable edge of a docked panel. It sits wholly inside the panel, over
+   the panel's own border, so it never covers the reading pane's scrollbar. */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 5;
+  width: 6px;
+  outline: none;
+  cursor: col-resize;
+  touch-action: none;
+}
+.panel-resizer.library { right: 0; }
+.panel-resizer.outline { left: 0; }
+.panel-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.panel-resizer.library::after { right: -1px; }
+.panel-resizer.outline::after { left: -1px; }
+.panel-resizer:hover::after,
+.panel-resizer:focus-visible::after { background: var(--accent); }
+body.resizing-panel { cursor: col-resize; }
+body.resizing-panel * { user-select: none; }
+/* A framed page would swallow the pointer mid-drag. */
+body.resizing-panel iframe { pointer-events: none; }
+body.resizing-panel .panel-resizer::after { background: var(--accent); }
 .library-panel { display: flex; flex-direction: column; border-right: 1px solid var(--line); }
 
 .library-heading {
@@ -1454,7 +1492,14 @@ kbd {
 
 .library-heading > div:first-child { min-width: 0; }
 
-.eyebrow, .aside-label, .result-label {
+.aside-label {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: .01em;
+}
+
+.eyebrow, .result-label {
   color: var(--muted);
   font-size: 10px;
   font-weight: 650;
@@ -1516,7 +1561,7 @@ kbd {
 
 /* Nested empty folders keep their tree indent inside the dotted container. */
 .section-group.empty-folder:not([data-depth="0"]) {
-  padding-left: calc(var(--folder-depth, 0) * 15px + 5px);
+  padding-left: calc(var(--folder-depth, 0) * var(--indent-step) + 5px);
 }
 
 /* The first empty sibling sits below a labeled rule, separating the folders
@@ -1558,22 +1603,60 @@ kbd {
 
 .library-empty { padding: 10px 6px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 
+/* The library as a tree, drawn the way a code editor's explorer draws one:
+   each level one --indent-step in, and a thin guide line running down from
+   every open folder's caret past everything inside it. Guides show only
+   while the pointer is over the library, as in VS Code. */
+@property --guide-color {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+.section-list {
+  --indent-step: 16px;
+  --guide-color: transparent;
+  transition: --guide-color 160ms ease;
+}
+.section-list:hover,
+.section-list:focus-within { --guide-color: var(--line-strong); }
+
 .section-group {
   position: relative;
-  padding-left: calc(var(--folder-depth, 0) * 15px);
+  padding-left: calc(var(--folder-depth, 0) * var(--indent-step));
   border-radius: 9px;
   transition: background 140ms ease, box-shadow 140ms ease;
 }
 
-/* The guide runs at the parent's own indent, a segment per row, so a run of
-   nested folders reads as one line down from the folder holding them. */
-.section-group:not([data-depth="0"])::before {
+/* A nested folder carries one guide for every level above it, each centred
+   under that ancestor's caret, so the lines run unbroken from one row to the
+   next. Folders sit 5px in from the list, hence the offset. */
+.section-group:not([data-depth="0"]) {
+  padding-left: calc(var(--folder-depth, 0) * var(--indent-step) + 5px);
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0 7px,
+    var(--guide-color) 7px 8px,
+    transparent 8px var(--indent-step)
+  );
+  background-position: 5px 0;
+  background-repeat: no-repeat;
+  background-size: calc(var(--folder-depth, 0) * var(--indent-step)) 100%;
+}
+
+/* A folder's pages sit one step in, under the folder's own guide. */
+.page-list {
+  position: relative;
+  padding-left: var(--indent-step, 16px);
+}
+.page-list::before {
   content: "";
   position: absolute;
   top: 0;
   bottom: 0;
-  left: calc((var(--folder-depth, 1) - 1) * 15px + 15px);
-  border-left: 1px solid var(--line);
+  left: 7px;
+  width: 1px;
+  background: var(--guide-color);
+  pointer-events: none;
 }
 
 /* A folder in hand is dimmed where it came from, as a page is. */
@@ -1595,17 +1678,32 @@ kbd {
    folder looks is asked for by clicking the mark itself. */
 .section-head {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: var(--indent-step, 16px) auto minmax(0, 1fr);
   align-items: center;
-  gap: 2px;
+  gap: 0;
 }
+
+/* The open/closed caret, leftmost, centred over the folder's guide line. */
+.section-caret {
+  width: var(--indent-step, 16px);
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.section-caret svg { transition: transform 160ms ease; }
+.section-caret svg.open { transform: rotate(90deg); }
 
 .section-icon {
   width: 26px;
   height: 26px;
   display: grid;
   place-items: center;
-  margin-left: 3px;
+  margin-left: 0;
   border: 0;
   border-radius: 7px;
   background: transparent;
@@ -1683,7 +1781,7 @@ kbd {
 .section-label {
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 5px;
   padding: 8px 6px 8px 2px;
@@ -1696,11 +1794,10 @@ kbd {
 .section-label strong {
   overflow: hidden;
   color: var(--ink-2);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .09em;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: .01em;
   text-overflow: ellipsis;
-  text-transform: uppercase;
   white-space: nowrap;
 }
 
@@ -1714,8 +1811,6 @@ kbd {
   text-align: center;
 }
 
-.section-label svg { transition: transform 160ms ease; }
-.section-label svg.rotated { transform: rotate(-90deg); }
 .page-list { display: grid; gap: 2px; }
 
 .page-row {
@@ -1808,6 +1903,28 @@ body.dragging-page .page-row { cursor: grabbing; }
 }
 
 .page-row.active .page-order { color: var(--accent-ink); font-weight: 700; }
+
+.page-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Which kind of file a page is: Markdown or HTML. */
+.page-kind {
+  flex: none;
+  padding: 1px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--faint);
+  font: 600 8px/1.3 var(--font-code);
+  letter-spacing: .05em;
+}
+.page-kind.html {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent);
+}
 
 .page-title {
   min-width: 0;
@@ -2148,6 +2265,22 @@ body.dragging-page .page-row { cursor: grabbing; }
 }
 
 .markdown-body { font-family: var(--font-reading); color: var(--ink-2); font-size: 17px; line-height: 1.78; }
+/* HTML pages render as authored, in a frame that follows Folio's light or
+   dark scheme. They lay themselves out, so they fill the pane edge to edge
+   rather than sitting in the Markdown reading column. */
+.html-page-frame {
+  display: block;
+  width: 100%;
+  border: 0;
+}
+.reading-scroll .markdown-page.is-html {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+/* The page-turner keeps its own breathing room under an edge-to-edge page. */
+.reading-scroll .markdown-page.is-html .page-turner { margin: 24px clamp(12px, 2vw, 28px) 40px; }
 .markdown-body > h1:first-child { margin-top: 0; }
 
 .markdown-body h1 {
@@ -3293,7 +3426,7 @@ body.dragging-page .page-row { cursor: grabbing; }
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.35;
   text-align: left;
   text-overflow: ellipsis;
@@ -3303,6 +3436,29 @@ body.dragging-page .page-row { cursor: grabbing; }
 .heading-list button:hover { color: var(--ink); }
 .heading-list button.nested { padding-left: 12px; color: var(--faint); }
 .backlinks-section { margin-top: 30px; padding-top: 23px; border-top: 1px solid var(--line); }
+
+/* When the page was made and last changed: two quiet rows, label and value. */
+.details-section { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--line); }
+.page-dates { display: grid; gap: 8px; margin: 0; }
+.page-dates > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.page-dates dt { flex: none; color: var(--faint); font-size: 12px; }
+.page-dates dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
 .backlink-list { display: grid; gap: 5px; margin-top: 13px; }
 
 .backlink-list button {
@@ -3321,9 +3477,9 @@ body.dragging-page .page-row { cursor: grabbing; }
 .backlink-list button:hover { background: var(--paper); color: var(--ink); }
 .backlink-list span { min-width: 0; }
 .backlink-list strong, .backlink-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.backlink-list strong { color: var(--ink-2); font-size: 11px; font-weight: 550; }
+.backlink-list strong { color: var(--ink-2); font-size: 12px; font-weight: 500; }
 .backlink-list small { margin-top: 3px; color: var(--faint); font-size: 9px; }
-.empty-aside { display: block; padding: 6px 0; color: var(--faint); font-size: 11px; font-style: italic; }
+.empty-aside { display: block; padding: 6px 0; color: var(--faint); font-size: 12px; font-style: italic; }
 
 .keyboard-hint {
   display: flex;
@@ -3637,8 +3793,8 @@ body.dragging-page .page-row { cursor: grabbing; }
 }
 
 @media (min-width: 1121px) {
-  .workspace.library-collapsed { grid-template-columns: minmax(0, 1fr) 248px; }
-  .workspace.outline-collapsed { grid-template-columns: 276px minmax(0, 1fr); }
+  .workspace.library-collapsed { grid-template-columns: minmax(0, 1fr) var(--outline-width, 248px); }
+  .workspace.outline-collapsed { grid-template-columns: var(--library-width, 276px) minmax(0, 1fr); }
   .workspace.library-collapsed.outline-collapsed { grid-template-columns: minmax(0, 1fr); }
   .workspace.library-collapsed > .library-panel,
   .workspace.outline-collapsed > .outline-panel { display: none; }
@@ -3650,7 +3806,8 @@ body.dragging-page .page-row { cursor: grabbing; }
 }
 
 @media (max-width: 1120px) {
-  .workspace { grid-template-columns: 252px minmax(0, 1fr); }
+  .panel-resizer.outline { display: none; }
+  .workspace { grid-template-columns: min(var(--library-width, 252px), 40vw) minmax(0, 1fr); }
   .docked-outline-toggle { display: none; }
 
   .outline-panel {
@@ -3697,6 +3854,7 @@ body.dragging-page .page-row { cursor: grabbing; }
   .font-popover { top: 66px; right: 12px; max-height: calc(100dvh - 78px); }
   .topbar .mobile-only { display: grid; }
   .docked-library-toggle { display: none; }
+  .panel-resizer { display: none; }
   .brand-mark, .brand-rule, .library-title, .search-trigger { display: none; }
   .brand-zone { gap: 8px; }
   .brand-name { font-size: 19px; }

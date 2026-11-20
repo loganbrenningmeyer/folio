@@ -16,6 +16,7 @@ import React, {
 import ReactMarkdown from "react-markdown";
 import CodeMirror from "@uiw/react-codemirror";
 import { snippet as applyCodeMirrorSnippet } from "@codemirror/autocomplete";
+import { html } from "@codemirror/lang-html";
 import { markdown } from "@codemirror/lang-markdown";
 import { type MarkdownConfig } from "@lezer/markdown";
 import { languages } from "@codemirror/language-data";
@@ -116,6 +117,7 @@ import {
 import {
   isNativeRuntime,
   nativeLibrary,
+  pageFrameUrl,
   type LibrarySnapshot,
   type SyncStatus,
 } from "@/desktop/native";
@@ -138,8 +140,8 @@ import {
   Briefcase,
   Camera,
   Check,
-  ChevronDown,
   ChevronLeft,
+  ChevronDown,
   ChevronRight,
   Coffee,
   Columns2,
@@ -265,7 +267,46 @@ type Note = {
   title: string;
   content: string;
   handle?: FileHandleLike;
+  /** File times in milliseconds since the epoch, when known. */
+  created?: number | null;
+  modified?: number | null;
 };
+
+/**
+ * A file time the way a person says it: "Today, 3:19 AM", "Yesterday, 9:02
+ * PM", "Nov 18, 10:37 PM" this year, "Nov 18, 2025" before it.
+ */
+function friendlyFileTime(time: number, now = new Date()) {
+  const date = new Date(time);
+  const clock = date.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const startOfDay = (value: Date) =>
+    new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const days = Math.round((startOfDay(now) - startOfDay(date)) / 86_400_000);
+  if (days === 0) return `Today, ${clock}`;
+  if (days === 1) return `Yesterday, ${clock}`;
+  if (date.getFullYear() === now.getFullYear()) {
+    return `${date.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+    })}, ${clock}`;
+  }
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+/** The full timestamp, for a hover. */
+function fullFileTime(time: number) {
+  return new Date(time).toLocaleString(undefined, {
+    dateStyle: "full",
+    timeStyle: "short",
+  });
+}
 
 /** The link kinds that name a page, rather than a place the browser handles. */
 type LibraryLink = Exclude<NoteLink, { kind: "external" | "fragment" }>;
@@ -545,6 +586,15 @@ const FONT_CHOICES = [
       'var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Segoe UI", sans-serif',
   },
   {
+    id: "inter",
+    label: "Inter",
+    category: "Sans serif",
+    // Bundled when @fontsource-variable/inter is installed; on a Mac the
+    // system face (San Francisco) is the same family of design, so it follows.
+    stack:
+      '"Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", sans-serif',
+  },
+  {
     id: "system",
     label: "System UI",
     category: "Sans serif",
@@ -610,6 +660,77 @@ const FONT_CHOICES = [
 ] as const;
 
 type FontId = (typeof FONT_CHOICES)[number]["id"];
+
+/**
+ * What Windows shows instead of a font only macOS ships: the nearest face
+ * Windows has, under its own name, so the menu never offers a font that would
+ * silently fall back to something else.
+ */
+const WINDOWS_FONT_SUBSTITUTES: Partial<
+  Record<FontId, { label: string; stack: string }>
+> = {
+  iowan: {
+    label: "Sitka Text",
+    stack: '"Sitka Text", "Palatino Linotype", Georgia, serif',
+  },
+  "new-york": {
+    label: "Cambria",
+    stack: 'Cambria, "Sitka Text", Georgia, serif',
+  },
+  charter: {
+    label: "Constantia",
+    stack: "Constantia, Cambria, Georgia, serif",
+  },
+  palatino: {
+    label: "Palatino Linotype",
+    stack: '"Palatino Linotype", Palatino, Georgia, serif',
+  },
+  system: {
+    label: "Segoe UI Variable",
+    stack: '"Segoe UI Variable Text", "Segoe UI", sans-serif',
+  },
+  avenir: {
+    label: "Corbel",
+    stack: 'Corbel, "Segoe UI Variable Text", "Segoe UI", sans-serif',
+  },
+  helvetica: {
+    label: "Arial",
+    stack: 'Arial, "Helvetica Neue", Helvetica, sans-serif',
+  },
+  futura: {
+    label: "Century Gothic",
+    stack: '"Century Gothic", Corbel, sans-serif',
+  },
+  "sf-mono": {
+    label: "Cascadia Code",
+    stack: '"Cascadia Code", "Cascadia Mono", Consolas, monospace',
+  },
+  menlo: {
+    label: "Consolas",
+    stack: 'Consolas, "Cascadia Mono", "Courier New", monospace',
+  },
+  monaco: {
+    label: "Lucida Console",
+    stack: '"Lucida Console", Consolas, monospace',
+  },
+  courier: {
+    label: "Courier New",
+    stack: '"Courier New", Courier, monospace',
+  },
+};
+
+function windowsSubstitute(id: FontId) {
+  return IS_APPLE_PLATFORM ? undefined : WINDOWS_FONT_SUBSTITUTES[id];
+}
+
+/** The font's name as this platform's menu shows it. */
+function fontLabel(id: FontId) {
+  return (
+    windowsSubstitute(id)?.label ??
+    FONT_CHOICES.find((font) => font.id === id)?.label ??
+    id
+  );
+}
 type FontCategory = (typeof FONT_CHOICES)[number]["category"];
 
 const FONT_CATEGORIES: FontCategory[] = ["Serif", "Sans serif", "Monospace"];
@@ -620,9 +741,109 @@ function isFontId(value: string | null): value is FontId {
 
 function fontStack(id: FontId) {
   return (
-    FONT_CHOICES.find((font) => font.id === id)?.stack ?? FONT_CHOICES[0].stack
+    windowsSubstitute(id)?.stack ??
+    FONT_CHOICES.find((font) => font.id === id)?.stack ??
+    FONT_CHOICES[0].stack
   );
 }
+
+/** The first concrete family a stack names, or none when it opens on a var(). */
+function primaryFontFamily(stack: string) {
+  const first = stack.split(",")[0]?.trim() ?? "";
+  if (!first || first.startsWith("var(")) return undefined;
+  return first.replace(/^["']|["']$/g, "");
+}
+
+/**
+ * The font choices this machine can actually draw. A font counts as present
+ * when text set in it measures differently from the generic fallbacks: a
+ * missing font falls straight through to them and measures the same. Web
+ * fonts are loaded first, so a bundled face is judged once it has arrived.
+ */
+async function detectAvailableFonts(): Promise<Set<FontId>> {
+  const available = new Set<FontId>();
+  const context = document.createElement("canvas").getContext("2d");
+  if (!context) return new Set(FONT_CHOICES.map((font) => font.id));
+  const sample = "mmmmmmmmmmlli WWQQ@#&% 0123456789";
+  const width = (font: string) => {
+    context.font = font;
+    return context.measureText(sample).width;
+  };
+  const generics = ["monospace", "serif", "sans-serif"];
+  for (const choice of FONT_CHOICES) {
+    const family = primaryFontFamily(fontStack(choice.id));
+    if (!family) continue;
+    // Keyword faces such as -apple-system go unquoted.
+    const css = family.startsWith("-") ? family : `"${family}"`;
+    try {
+      await document.fonts.load(`32px ${css}`);
+    } catch {
+      // Not a web font: measuring below is the whole test.
+    }
+    const present = generics.some(
+      (generic) =>
+        width(`32px ${css}, ${generic}`) !== width(`32px ${generic}`),
+    );
+    if (present) available.add(choice.id);
+  }
+  return available;
+}
+
+/**
+ * A font menu that lists only fonts this machine has, each named in its own
+ * face. A chosen font that has gone missing stays listed, marked, so the menu
+ * never silently shows a different selection than the one in effect.
+ */
+function FontSelect({
+  label,
+  value,
+  available,
+  onChange,
+}: {
+  label: string;
+  value: FontId;
+  available: Set<FontId> | undefined;
+  onChange: (font: FontId) => void;
+}) {
+  return (
+    <label className="font-control">
+      <span>{label}</span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value as FontId)}
+        style={{ fontFamily: fontStack(value) }}
+      >
+        {FONT_CATEGORIES.map((category) => {
+          const fonts = FONT_CHOICES.filter(
+            (font) =>
+              font.category === category &&
+              (!available || available.has(font.id) || font.id === value),
+          );
+          if (!fonts.length) return null;
+          return (
+            <optgroup key={category} label={category}>
+              {fonts.map((font) => (
+                <option
+                  key={font.id}
+                  value={font.id}
+                  style={{ fontFamily: fontStack(font.id) }}
+                >
+                  {fontLabel(font.id)}
+                  {available && !available.has(font.id)
+                    ? " (not installed)"
+                    : ""}
+                </option>
+              ))}
+            </optgroup>
+          );
+        })}
+      </select>
+    </label>
+  );
+}
+
+/** The interface font when none has been chosen. */
+const DEFAULT_UI_FONT: FontId = "inter";
 
 // Notches for the reading-width slider: the widest the page column is allowed
 // to get. A pane narrower than the chosen width simply uses what it has, so
@@ -777,6 +998,11 @@ export function applyStoredAppearance() {
   if (isFontId(editorFont)) {
     root.style.setProperty("--font-code", fontStack(editorFont));
   }
+  const uiFont = storedPreference("folio-ui-font");
+  root.style.setProperty(
+    "--font-ui",
+    fontStack(isFontId(uiFont) ? uiFont : DEFAULT_UI_FONT),
+  );
 
   const width = readerWidthIndex(storedPreference("folio-reader-width"));
   if (width !== undefined) {
@@ -1145,12 +1371,37 @@ const EMPTY_NOTE: Note = {
 Create a Markdown file from the library panel to start writing. You can also create folders, then drag pages between them to organize your work.`,
 };
 
+/** The extension of a library page: Markdown, or HTML shown as authored. */
+const PAGE_EXTENSION_PATTERN = /\.(?:md|html?)$/i;
+const HTML_PAGE_PATTERN = /\.html?$/i;
+
+function isHtmlPage(path: string) {
+  return HTML_PAGE_PATTERN.test(path);
+}
+
+/** A page's extension including the dot (".md" when it has none). */
+function pageExtension(path: string) {
+  return fileNameFromPath(path).match(PAGE_EXTENSION_PATTERN)?.[0] ?? ".md";
+}
+
+const HTML_PAGE_TEMPLATE = (title: string) => `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>${title.replace(/[&<>]/g, (c) => `&#${c.charCodeAt(0)};`)}</title>
+</head>
+<body>
+  <h1>${title.replace(/[&<>]/g, (c) => `&#${c.charCodeAt(0)};`)}</h1>
+</body>
+</html>
+`;
+
 function cleanTitle(path: string) {
   return (
     path
       .split("/")
       .pop()
-      ?.replace(/\.md$/i, "")
+      ?.replace(PAGE_EXTENSION_PATTERN, "")
       .replace(/^\d+[._ -]*/, "") ?? path
   );
 }
@@ -1207,6 +1458,24 @@ function joinPath(parent: string, name: string) {
  * page it opens on. A library of any size reads as a short list of folders,
  * with the reader's own place in it already open.
  */
+/**
+ * Tree order: a folder, then everything inside it, then its next sibling.
+ * Compared segment by segment, so "Rivet/Android" stays under "Rivet" rather
+ * than after "Rivet Extra" as a plain string sort would put it.
+ */
+function compareFolderPaths(a: string, b: string) {
+  const left = a ? a.split("/") : [];
+  const right = b ? b.split("/") : [];
+  for (let index = 0; index < Math.min(left.length, right.length); index++) {
+    const order = left[index].localeCompare(right[index], undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    if (order) return order;
+  }
+  return left.length - right.length;
+}
+
 function foldersClosedAround(
   notes: { path: string }[],
   folders: string[],
@@ -2147,7 +2416,9 @@ const searchPanelControls = ViewPlugin.fromClass(
   },
 );
 
-function createEditorExtensions(theme: Theme) {
+// HTML pages get HTML highlighting and none of the Markdown-only behaviour
+// (block auto-close, heading decorations).
+function createEditorExtensions(theme: Theme, htmlPage = false) {
   const dark = theme === "dark";
   const highlightStyle = HighlightStyle.define([
     {
@@ -2199,14 +2470,18 @@ function createEditorExtensions(theme: Theme) {
   return [
     search({ top: true }),
     searchPanelControls,
-    markdown({
-      codeLanguages: languages,
-      extensions: [mathMarkdownExtension],
-    }),
+    ...(htmlPage
+      ? [html()]
+      : [
+          markdown({
+            codeLanguages: languages,
+            extensions: [mathMarkdownExtension],
+          }),
+          editorDecorationPlugin,
+          plainCodeDecorationPlugin,
+          markdownBlockAutoCloseExtension,
+        ]),
     syntaxHighlighting(highlightStyle),
-    editorDecorationPlugin,
-    plainCodeDecorationPlugin,
-    markdownBlockAutoCloseExtension,
     EditorView.lineWrapping,
     EditorView.contentAttributes.of({
       spellcheck: "false",
@@ -2372,7 +2647,7 @@ async function readDirectory(
       const nested = await readDirectory(entry, path);
       notes.push(...nested.notes);
       folders.push(...nested.folders);
-    } else if (/\.md$/i.test(entry.name)) {
+    } else if (PAGE_EXTENSION_PATTERN.test(entry.name)) {
       const file = await entry.getFile();
       notes.push({
         id: path,
@@ -2380,6 +2655,7 @@ async function readDirectory(
         title: cleanTitle(path),
         content: await file.text(),
         handle: entry,
+        modified: file.lastModified,
       });
     }
   }
@@ -2534,6 +2810,410 @@ function MarkdownImage({
   );
 }
 
+// Docked panel widths. The reading pane takes whatever is left, so a page
+// reflows as either panel is dragged wider or narrower.
+const PANEL_LIMITS = {
+  library: { min: 200, max: 520, initial: 276 },
+  outline: { min: 180, max: 460, initial: 248 },
+} as const;
+type PanelSide = keyof typeof PANEL_LIMITS;
+// The narrowest the reading pane may be squeezed by a dragged panel.
+const READING_PANE_MIN_WIDTH = 420;
+
+function clampPanelWidth(side: PanelSide, width: number, otherWidth = 0) {
+  const { min, max } = PANEL_LIMITS[side];
+  const room =
+    typeof window === "undefined"
+      ? max
+      : window.innerWidth - otherWidth - READING_PANE_MIN_WIDTH;
+  return Math.round(Math.max(min, Math.min(width, max, room)));
+}
+
+function readStoredPanelWidth(side: PanelSide) {
+  try {
+    const stored = Number(localStorage.getItem(`folio-${side}-width`));
+    if (Number.isFinite(stored) && stored > 0) {
+      const { min, max } = PANEL_LIMITS[side];
+      return Math.max(min, Math.min(stored, max));
+    }
+  } catch {
+    // Storage unavailable: the default width stands.
+  }
+  return PANEL_LIMITS[side].initial;
+}
+
+/**
+ * The draggable edge of a docked panel. Arrow keys nudge it, and a double
+ * click puts it back to its default width.
+ */
+function PanelResizer({
+  side,
+  width,
+  otherWidth,
+  onResize,
+}: {
+  side: PanelSide;
+  width: number;
+  otherWidth: number;
+  onResize: (width: number) => void;
+}) {
+  // The library grows rightward, the outline leftward.
+  const direction = side === "library" ? 1 : -1;
+  const label =
+    side === "library" ? "Resize library panel" : "Resize outline panel";
+
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = width;
+    document.body.classList.add("resizing-panel");
+    const move = (moveEvent: PointerEvent) =>
+      onResize(
+        clampPanelWidth(
+          side,
+          startWidth + direction * (moveEvent.clientX - startX),
+          otherWidth,
+        ),
+      );
+    const end = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+      document.body.classList.remove("resizing-panel");
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  };
+
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const step = event.shiftKey ? 48 : 16;
+    let delta = 0;
+    if (event.key === "ArrowRight") delta = step * direction;
+    else if (event.key === "ArrowLeft") delta = -step * direction;
+    else return;
+    event.preventDefault();
+    onResize(clampPanelWidth(side, width + delta, otherWidth));
+  };
+
+  return (
+    // A focusable separator is an ARIA widget (it takes aria-valuenow and
+    // arrow keys); the a11y lint rules predate that and read it as static.
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
+    <div
+      className={`panel-resizer ${side}`}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      aria-valuenow={width}
+      aria-valuemin={PANEL_LIMITS[side].min}
+      aria-valuemax={PANEL_LIMITS[side].max}
+      // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex
+      tabIndex={0}
+      title="Drag to resize · double-click to reset"
+      onPointerDown={onPointerDown}
+      onKeyDown={onKeyDown}
+      onDoubleClick={() =>
+        onResize(clampPanelWidth(side, PANEL_LIMITS[side].initial, otherWidth))
+      }
+    />
+  );
+}
+
+// Read view for an HTML page: the file as authored, in a frame sized to its
+// content so the reading pane, not the frame, scrolls. In the desktop app the
+// frame loads from Folio's `folio-page` scheme, where the page's own scripts
+// run in a sandboxed origin of its own (see src-tauri/src/page_frame.rs) and
+// reach Folio only through postMessage. Without a native library it falls
+// back to a static, script-free copy of the page.
+function HtmlPage(props: {
+  notePath: string;
+  title: string;
+  content: string;
+  live: boolean;
+  dark: boolean;
+  onFollow: (link: LibraryLink) => void;
+}) {
+  return props.live ? (
+    <LiveHtmlPage {...props} />
+  ) : (
+    <StaticHtmlPage {...props} />
+  );
+}
+
+/** Sends a link clicked inside a framed page where a Markdown link would go. */
+function routeFrameLink(
+  notePath: string,
+  href: string,
+  onFollow: (link: LibraryLink) => void,
+) {
+  const link = resolveNoteLink(notePath, href);
+  if (link.kind === "fragment") return;
+  if (link.kind === "external") {
+    // Handed to the app window, as a Markdown link would be.
+    const proxy = document.createElement("a");
+    proxy.href = href;
+    proxy.rel = "noopener noreferrer";
+    proxy.click();
+    return;
+  }
+  onFollow(link);
+}
+
+/** The nearest ancestor that actually scrolls. */
+function scrollParent(element: HTMLElement): HTMLElement | undefined {
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const overflow = getComputedStyle(node).overflowY;
+    if (
+      (overflow === "auto" || overflow === "scroll") &&
+      node.scrollHeight > node.clientHeight
+    ) {
+      return node;
+    }
+  }
+  return undefined;
+}
+
+type FrameMessage =
+  | { folio: 1; type: "height"; value: number }
+  | { folio: 1; type: "scroll"; top: number }
+  | { folio: 1; type: "link"; href: string }
+  | {
+      folio: 1;
+      type: "key";
+      key: string;
+      code: string;
+      ctrlKey: boolean;
+      metaKey: boolean;
+      shiftKey: boolean;
+      altKey: boolean;
+    };
+
+// Frames taller than this are a page measuring itself against its own frame
+// (100vh and the like) in a loop; the cap stops the runaway.
+const HTML_FRAME_MAX_HEIGHT = 200_000;
+
+type HtmlFrameProps = {
+  notePath: string;
+  title: string;
+  content: string;
+  dark: boolean;
+  onFollow: (link: LibraryLink) => void;
+};
+
+function LiveHtmlPage({
+  notePath,
+  title,
+  content,
+  dark,
+  onFollow,
+}: HtmlFrameProps) {
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const [height, setHeight] = useState(480);
+  // Bumped whenever the staged text changes; part of the frame URL, so each
+  // bump reloads the page with what the editor holds.
+  const [version, setVersion] = useState(0);
+  const firstLoad = useRef(true);
+  const followRef = useRef(onFollow);
+  useEffect(() => {
+    followRef.current = onFollow;
+  }, [onFollow]);
+
+  // Debounced so typing in Split view reloads at a pause, not per keystroke.
+  useEffect(() => {
+    let cancelled = false;
+    const delay = firstLoad.current ? 0 : 400;
+    firstLoad.current = false;
+    const timer = window.setTimeout(() => {
+      nativeLibrary
+        .stagePagePreview(notePath, content)
+        // Unstaged, the page is still served from disk.
+        .catch(() => undefined)
+        .then(() => {
+          if (!cancelled) setVersion((current) => current + 1);
+        });
+    }, delay);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [notePath, content]);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const frame = frameRef.current;
+      // Only this frame's page speaks here; its origin is opaque, so the
+      // window it came from is the check.
+      if (!frame || event.source !== frame.contentWindow) return;
+      const data = event.data as FrameMessage | undefined;
+      if (!data || data.folio !== 1) return;
+      switch (data.type) {
+        case "height":
+          if (Number.isFinite(data.value) && data.value > 0) {
+            setHeight(Math.min(Math.ceil(data.value), HTML_FRAME_MAX_HEIGHT));
+          }
+          break;
+        case "scroll": {
+          const scroller = scrollParent(frame);
+          if (!scroller || !Number.isFinite(data.top)) break;
+          const frameTop =
+            frame.getBoundingClientRect().top -
+            scroller.getBoundingClientRect().top;
+          scroller.scrollTo({
+            top: scroller.scrollTop + frameTop + data.top - 16,
+            behavior: "smooth",
+          });
+          break;
+        }
+        case "link":
+          if (typeof data.href === "string") {
+            routeFrameLink(notePath, data.href, followRef.current);
+          }
+          break;
+        case "key":
+          // Focus inside the frame would otherwise swallow Folio's shortcuts.
+          window.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: data.key,
+              code: data.code,
+              ctrlKey: data.ctrlKey,
+              metaKey: data.metaKey,
+              shiftKey: data.shiftKey,
+              altKey: data.altKey,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+          break;
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [notePath]);
+
+  // Pages that follow the `data-theme` convention switch with Folio; others
+  // still see the scheme through the frame's color-scheme.
+  const postTheme = useCallback(() => {
+    frameRef.current?.contentWindow?.postMessage(
+      { folio: 1, type: "theme", value: dark ? "dark" : "light" },
+      "*",
+    );
+  }, [dark]);
+  useEffect(postTheme, [postTheme]);
+
+  const style = { height, colorScheme: dark ? "dark" : "light" };
+  if (!version) {
+    return <div className="html-page-frame" style={style} aria-busy="true" />;
+  }
+  return (
+    <iframe
+      ref={frameRef}
+      className="html-page-frame"
+      title={title}
+      // No allow-same-origin: the page runs in an opaque origin, walled off
+      // from Folio's own.
+      sandbox="allow-scripts allow-modals allow-downloads"
+      src={`${pageFrameUrl(notePath)}?v=${version}`}
+      onLoad={postTheme}
+      style={style}
+    />
+  );
+}
+
+// The fallback when there is no native library to serve from: same-origin
+// access but no scripts, so nothing in the page runs (the app's CSP would
+// refuse its inline scripts anyway) while Folio can still reach in to size
+// the frame, load library images, and route link clicks.
+function StaticHtmlPage({
+  notePath,
+  title,
+  content,
+  dark,
+  onFollow,
+}: HtmlFrameProps) {
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const [height, setHeight] = useState(320);
+  const cleanupRef = useRef<() => void>(undefined);
+  // Read through a ref so a new callback identity never reloads the frame.
+  const followRef = useRef(onFollow);
+  useEffect(() => {
+    followRef.current = onFollow;
+  }, [onFollow]);
+
+  useEffect(() => () => cleanupRef.current?.(), []);
+
+  const handleLoad = useCallback(() => {
+    cleanupRef.current?.();
+    const frameDocument = frameRef.current?.contentDocument;
+    if (!frameDocument) return;
+    const root = frameDocument.documentElement;
+
+    const measure = () =>
+      setHeight(
+        Math.min(Math.max(120, root.scrollHeight), HTML_FRAME_MAX_HEIGHT),
+      );
+    measure();
+    const resize = new ResizeObserver(measure);
+    resize.observe(root);
+    if (frameDocument.body) resize.observe(frameDocument.body);
+
+    // Library-relative images resolve through the native bridge, as in
+    // Markdown pages; remote and data: sources load on their own.
+    let cancelled = false;
+    for (const image of Array.from(frameDocument.images)) {
+      const source = image.getAttribute("src") ?? "";
+      if (!source || isDirectImageSrc(source)) continue;
+      Promise.resolve(resolveNoteImage(notePath, source))
+        .then((url) => {
+          if (!cancelled) image.src = url;
+        })
+        .catch(() => undefined);
+    }
+
+    const onClick = (event: Event) => {
+      const target = event.target as Element | null;
+      const anchor = target?.closest?.("a[href]");
+      if (!anchor) return;
+      // Never let the frame navigate: the app CSP would leave it blank.
+      event.preventDefault();
+      const href = anchor.getAttribute("href") ?? "";
+      if (href.startsWith("#")) {
+        const id = decodeURIComponent(href.slice(1));
+        const destination =
+          frameDocument.getElementById(id) ??
+          frameDocument.getElementsByName(id)[0];
+        // The frame grows to fit its page, so the reading pane is what
+        // scrolls; scrollIntoView reaches through to it.
+        destination?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      routeFrameLink(notePath, href, followRef.current);
+    };
+    frameDocument.addEventListener("click", onClick);
+
+    cleanupRef.current = () => {
+      cancelled = true;
+      resize.disconnect();
+      frameDocument.removeEventListener("click", onClick);
+    };
+  }, [notePath]);
+
+  return (
+    <iframe
+      ref={frameRef}
+      className="html-page-frame"
+      title={title}
+      sandbox="allow-same-origin"
+      srcDoc={content}
+      onLoad={handleLoad}
+      style={{ height, colorScheme: dark ? "dark" : "light" }}
+    />
+  );
+}
+
 // What the editor's image extension needs to know about the open note. The
 // extension is rebuilt when these change (and the editor itself remounts per
 // note), so plain captured values stay correct.
@@ -2646,7 +3326,7 @@ function sameEntry(a: LibraryEntry | undefined, b: LibraryEntry | undefined) {
 function entryEditName(entry: LibraryEntry, path: string) {
   const name = fileNameFromPath(path);
   if (entry.kind === "folder") return name;
-  return name.replace(/\.md$/i, "");
+  return name.replace(PAGE_EXTENSION_PATTERN, "");
 }
 
 /**
@@ -3178,6 +3858,18 @@ export default function Home() {
   const [palette, setPalette] = useState<PaletteId>("sage");
   const [readerFont, setReaderFont] = useState<FontId>("iowan");
   const [editorFont, setEditorFont] = useState<FontId>("sf-mono");
+  const [uiFont, setUiFont] = useState<FontId>(DEFAULT_UI_FONT);
+  // Which fonts render here; undefined until measured, when all are listed.
+  const [availableFonts, setAvailableFonts] = useState<Set<FontId>>();
+  useEffect(() => {
+    let cancelled = false;
+    void detectAvailableFonts().then((fonts) => {
+      if (!cancelled) setAvailableFonts(fonts);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [readerWidth, setReaderWidth] = useState(DEFAULT_READER_WIDTH_INDEX);
   const [appearancePreferencesLoaded, setAppearancePreferencesLoaded] =
     useState(false);
@@ -3213,6 +3905,12 @@ export default function Home() {
 
   const [libraryCollapsed, setLibraryCollapsed] = useState(false);
   const [outlineCollapsed, setOutlineCollapsed] = useState(false);
+  const [libraryWidth, setLibraryWidth] = useState<number>(
+    PANEL_LIMITS.library.initial,
+  );
+  const [outlineWidth, setOutlineWidth] = useState<number>(
+    PANEL_LIMITS.outline.initial,
+  );
   const [splitScrollLocked, setSplitScrollLocked] = useState(true);
   const [showEmptyFolders, setShowEmptyFolders] = useState(false);
   const [layoutPreferencesLoaded, setLayoutPreferencesLoaded] = useState(false);
@@ -3380,20 +4078,25 @@ export default function Home() {
   }, []);
   const imageNotePath = active.id === EMPTY_NOTE.id ? "" : active.path;
   const imageNativeStore = desktopMode && nativeLibraryOpen;
+  const editingHtml = isHtmlPage(active.path);
   const editorExtensions = useMemo(
     () => [
-      ...createEditorExtensions(theme),
+      ...createEditorExtensions(theme, editingHtml),
       createSnippetExtension(textSnippets, appShortcuts),
       editorFolding(rememberFolds(activeId)),
-      ...createEditorImageExtensions({
-        notePath: imageNotePath,
-        nativeStore: imageNativeStore,
-        notice: showNotice,
-      }),
+      // Image widgets and paste/drop write Markdown image lines.
+      ...(editingHtml
+        ? []
+        : createEditorImageExtensions({
+            notePath: imageNotePath,
+            nativeStore: imageNativeStore,
+            notice: showNotice,
+          })),
     ],
     [
       activeId,
       appShortcuts,
+      editingHtml,
       imageNativeStore,
       imageNotePath,
       showNotice,
@@ -3426,7 +4129,7 @@ export default function Home() {
       groups.set(group, [...(groups.get(group) ?? []), note]);
     });
     return Array.from(groups.entries()).sort(([a], [b]) =>
-      a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+      compareFolderPaths(a, b),
     );
   }, [folders, notes]);
 
@@ -3568,7 +4271,8 @@ export default function Home() {
   const backlinks = useMemo(() => {
     if (!active) return [];
     const base =
-      active.path.split("/").pop()?.replace(/\.md$/i, "") ?? active.title;
+      active.path.split("/").pop()?.replace(PAGE_EXTENSION_PATTERN, "") ??
+      active.title;
     const needles = [
       `[[${active.title.toLowerCase()}`,
       `[[${base.toLowerCase()}`,
@@ -3959,6 +4663,7 @@ export default function Home() {
       const storedPalette = localStorage.getItem("folio-color-palette");
       const storedReaderFont = localStorage.getItem("folio-reader-font");
       const storedEditorFont = localStorage.getItem("folio-editor-font");
+      const storedUiFont = localStorage.getItem("folio-ui-font");
       const storedWidth = readerWidthIndex(
         localStorage.getItem("folio-reader-width"),
       );
@@ -3966,6 +4671,7 @@ export default function Home() {
       if (isPaletteId(storedPalette)) setPalette(storedPalette);
       if (isFontId(storedReaderFont)) setReaderFont(storedReaderFont);
       if (isFontId(storedEditorFont)) setEditorFont(storedEditorFont);
+      if (isFontId(storedUiFont)) setUiFont(storedUiFont);
       if (storedWidth !== undefined) setReaderWidth(storedWidth);
       setAppearancePreferencesLoaded(true);
     }, 0);
@@ -3994,9 +4700,11 @@ export default function Home() {
       "--font-code",
       fontStack(editorFont),
     );
+    document.documentElement.style.setProperty("--font-ui", fontStack(uiFont));
     localStorage.setItem("folio-reader-font", readerFont);
     localStorage.setItem("folio-editor-font", editorFont);
-  }, [appearancePreferencesLoaded, editorFont, readerFont]);
+    localStorage.setItem("folio-ui-font", uiFont);
+  }, [appearancePreferencesLoaded, editorFont, readerFont, uiFont]);
 
   useEffect(() => {
     if (!appearancePreferencesLoaded) return;
@@ -4094,6 +4802,8 @@ export default function Home() {
       setShowEmptyFolders(
         localStorage.getItem("folio-show-empty-folders") === "true",
       );
+      setLibraryWidth(readStoredPanelWidth("library"));
+      setOutlineWidth(readStoredPanelWidth("outline"));
       setLayoutPreferencesLoaded(true);
     }, 0);
 
@@ -4119,10 +4829,14 @@ export default function Home() {
       "folio-show-empty-folders",
       String(showEmptyFolders),
     );
+    localStorage.setItem("folio-library-width", String(libraryWidth));
+    localStorage.setItem("folio-outline-width", String(outlineWidth));
   }, [
     layoutPreferencesLoaded,
     libraryCollapsed,
+    libraryWidth,
     outlineCollapsed,
+    outlineWidth,
     splitScrollLocked,
     showEmptyFolders,
   ]);
@@ -4820,7 +5534,17 @@ export default function Home() {
           nativePendingSaves.current.delete(noteId);
 
           try {
-            await nativeLibrary.write(pending.path, pending.content);
+            const saved = await nativeLibrary.write(
+              pending.path,
+              pending.content,
+            );
+            setNotes((current) =>
+              current.map((note) =>
+                note.id === noteId
+                  ? { ...note, created: saved.created, modified: saved.modified }
+                  : note,
+              ),
+            );
           } catch (error) {
             // An edit made during this write is newer than `pending` and must
             // win. Requeue the failed write only when nothing newer is waiting.
@@ -5130,15 +5854,20 @@ export default function Home() {
       return;
     }
 
-    const fileName = /\.md$/i.test(rawName) ? rawName : `${rawName}.md`;
+    // Typing "name.html" makes an HTML page; anything else is Markdown.
+    const fileName = PAGE_EXTENSION_PATTERN.test(rawName)
+      ? rawName
+      : `${rawName}.md`;
     const path = joinPath(newEntryParent, fileName);
     if (notes.some((note) => note.path.toLowerCase() === path.toLowerCase())) {
-      showNotice("A Markdown file with that name already exists here.");
+      showNotice("A page with that name already exists here.");
       return;
     }
 
     const title = cleanTitle(fileName);
-    const content = `# ${title}\n\n`;
+    const content = isHtmlPage(fileName)
+      ? HTML_PAGE_TEMPLATE(title)
+      : `# ${title}\n\n`;
     try {
       let handle: FileHandleLike | undefined;
       if (desktopMode) {
@@ -5187,13 +5916,11 @@ export default function Home() {
   /** The name a page can take in `folder` without displacing another page. */
   const availableFileName = (note: Note, folder: string) => {
     const originalName = fileNameFromPath(note.path);
-    const extensionIndex = originalName.toLowerCase().lastIndexOf(".md");
-    const baseName =
-      extensionIndex >= 0
-        ? originalName.slice(0, extensionIndex)
-        : originalName;
-    const extension =
-      extensionIndex >= 0 ? originalName.slice(extensionIndex) : ".md";
+    const extensionMatch = originalName.match(PAGE_EXTENSION_PATTERN);
+    const baseName = extensionMatch
+      ? originalName.slice(0, extensionMatch.index)
+      : originalName;
+    const extension = extensionMatch?.[0] ?? ".md";
     let name = originalName;
     let counter = 2;
     while (
@@ -5242,7 +5969,8 @@ export default function Home() {
         const snapshot = moving
           ? await nativeLibrary.move(note.path, destinationPath)
           : undefined;
-        const pruned = prunedOrder(ordered, snapshot?.notes ?? notes);
+        const present: Note[] = snapshot?.notes ?? notes;
+        const pruned = prunedOrder(ordered, present);
         try {
           await nativeLibrary.writeOrder(serializeFolderOrder(pruned));
           applyNoteOrder(pruned);
@@ -5427,7 +6155,17 @@ export default function Home() {
     }
 
     const parent = parentPath(entry.path);
-    const fileName = entry.kind === "folder" ? name : `${name}.md`;
+    // A page keeps its format: typing a page extension switches it only
+    // between .html and .htm, never between HTML and Markdown.
+    const typedExtension = name.match(PAGE_EXTENSION_PATTERN)?.[0];
+    const currentExtension = pageExtension(entry.path);
+    const fileName =
+      entry.kind === "folder"
+        ? name
+        : typedExtension &&
+            isHtmlPage(typedExtension) === isHtmlPage(currentExtension)
+          ? name
+          : `${name}${currentExtension}`;
     const destination = joinPath(parent, fileName);
     const label = entry.kind === "folder" ? "folder" : "page";
 
@@ -6094,12 +6832,14 @@ export default function Home() {
 
   const downloadNote = useCallback((note: Note) => {
     const blob = new Blob([note.content], {
-      type: "text/markdown;charset=utf-8",
+      type: isHtmlPage(note.path)
+        ? "text/html;charset=utf-8"
+        : "text/markdown;charset=utf-8",
     });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${note.title}.md`;
+    link.download = `${note.title}${pageExtension(note.path)}`;
     link.click();
     URL.revokeObjectURL(url);
   }, []);
@@ -6332,7 +7072,7 @@ export default function Home() {
 
   const importFolder = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []).filter((file) =>
-      /\.md$/i.test(file.name),
+      PAGE_EXTENSION_PATTERN.test(file.name),
     );
     if (!files.length) return;
     const loaded = await Promise.all(
@@ -6401,8 +7141,9 @@ export default function Home() {
       return currentNotes.find(
         (note) =>
           note.title.toLowerCase() === target ||
-          fileNameFromPath(note.path).replace(/\.md$/i, "").toLowerCase() ===
-            target,
+          fileNameFromPath(note.path)
+            .replace(PAGE_EXTENSION_PATTERN, "")
+            .toLowerCase() === target,
       );
     }
     // A link that walks above the library root names a file the open library
@@ -6594,7 +7335,18 @@ export default function Home() {
     [activeId, active.path, handleMarkdownLink, setFenceRunnable],
   );
 
-  const markdown = (
+  const activeIsHtml = isHtmlPage(active.path);
+  const markdown = activeIsHtml ? (
+    <HtmlPage
+      key={active.id}
+      notePath={active.path}
+      title={active.title}
+      content={active.content}
+      live={desktopMode && nativeLibraryOpen && active.id !== EMPTY_NOTE.id}
+      dark={theme === "dark"}
+      onFollow={followMarkdownLink}
+    />
+  ) : (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: true }]]}
       rehypePlugins={[
@@ -6736,7 +7488,7 @@ export default function Home() {
               className="visually-hidden"
               type="file"
               multiple
-              accept=".md,text/markdown"
+              accept=".md,.html,.htm,text/markdown,text/html"
               onChange={importFolder}
               {...({
                 webkitdirectory: "",
@@ -6829,27 +7581,26 @@ export default function Home() {
                   </div>
                 </fieldset>
 
-                <label className="font-control">
-                  <span>Reader font</span>
-                  <select
-                    value={readerFont}
-                    onChange={(event) =>
-                      setReaderFont(event.target.value as FontId)
-                    }
-                  >
-                    {FONT_CATEGORIES.map((category) => (
-                      <optgroup key={category} label={category}>
-                        {FONT_CHOICES.filter(
-                          (font) => font.category === category,
-                        ).map((font) => (
-                          <option key={font.id} value={font.id}>
-                            {font.label}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                </label>
+                <FontSelect
+                  label="Interface font"
+                  value={uiFont}
+                  available={availableFonts}
+                  onChange={setUiFont}
+                />
+                <div
+                  className="font-sample ui-sample"
+                  style={{ fontFamily: fontStack(uiFont) }}
+                >
+                  <span>Aa</span>
+                  <p>Library, outline, menus, and buttons.</p>
+                </div>
+
+                <FontSelect
+                  label="Reader font"
+                  value={readerFont}
+                  available={availableFonts}
+                  onChange={setReaderFont}
+                />
                 <div
                   className="font-sample reader-sample"
                   style={{ fontFamily: fontStack(readerFont) }}
@@ -6858,27 +7609,12 @@ export default function Home() {
                   <p>The shape of a thoughtful page.</p>
                 </div>
 
-                <label className="font-control">
-                  <span>Editor font</span>
-                  <select
-                    value={editorFont}
-                    onChange={(event) =>
-                      setEditorFont(event.target.value as FontId)
-                    }
-                  >
-                    {FONT_CATEGORIES.map((category) => (
-                      <optgroup key={category} label={category}>
-                        {FONT_CHOICES.filter(
-                          (font) => font.category === category,
-                        ).map((font) => (
-                          <option key={font.id} value={font.id}>
-                            {font.label}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                </label>
+                <FontSelect
+                  label="Editor font"
+                  value={editorFont}
+                  available={availableFonts}
+                  onChange={setEditorFont}
+                />
                 <div
                   className="font-sample editor-sample"
                   style={{ fontFamily: fontStack(editorFont) }}
@@ -7448,6 +8184,12 @@ export default function Home() {
         className={`workspace ${libraryCollapsed ? "library-collapsed" : ""} ${
           outlineCollapsed ? "outline-collapsed" : ""
         }`}
+        style={
+          {
+            "--library-width": `${libraryWidth}px`,
+            "--outline-width": `${outlineWidth}px`,
+          } as React.CSSProperties
+        }
       >
         {navOpen && (
           <button
@@ -7460,6 +8202,12 @@ export default function Home() {
           id="library-panel"
           className={`library-panel ${navOpen ? "is-open" : ""}`}
         >
+          <PanelResizer
+            side="library"
+            width={libraryWidth}
+            otherWidth={outlineCollapsed ? 0 : outlineWidth}
+            onResize={setLibraryWidth}
+          />
           <div className="panel-mobile-head">
             <span>Library</span>
             <button
@@ -7553,6 +8301,16 @@ export default function Home() {
 
               const dragging =
                 draggedEntry?.kind === "folder" && draggedEntry.path === group;
+              // Shared by the caret and the folder's name. Opening a folder
+              // also makes it where new files and folders are offered.
+              const toggleFolder = () => {
+                setCollapsedGroups((current) =>
+                  current.has(group)
+                    ? openedTo(current, group)
+                    : new Set(current).add(group),
+                );
+                setLastOpenedFolder(group);
+              };
 
               return (
                 <section
@@ -7575,6 +8333,20 @@ export default function Home() {
                       be a button itself: a click on the folder opens it, a
                       click on its mark asks how it should look. */}
                   <div className="section-head">
+                    <button
+                      type="button"
+                      className="section-caret"
+                      // The folder name is the keyboard's way to toggle; the
+                      // caret is the pointer's, so it stays out of tab order.
+                      tabIndex={-1}
+                      aria-hidden="true"
+                      onClick={toggleFolder}
+                    >
+                      <ChevronRight
+                        size={14}
+                        className={collapsed ? "" : "open"}
+                      />
+                    </button>
                     <button
                       type="button"
                       className="section-icon"
@@ -7621,16 +8393,9 @@ export default function Home() {
                           // A click only opens or closes the folder — the
                           // accent outline is reserved for the row a right
                           // click or the entry menu actually selected.
-                          setCollapsedGroups((current) =>
-                            current.has(group)
-                              ? openedTo(current, group)
-                              : new Set(current).add(group),
-                          );
-                          // Whichever folder was last opened is the one a new
-                          // file or folder is offered, so the click that opens
-                          // it is the click that says where things go.
-                          setLastOpenedFolder(group);
+                          toggleFolder();
                         }}
+                        aria-expanded={!collapsed}
                         onContextMenu={(event) =>
                           group &&
                           openEntryMenu(event, { kind: "folder", path: group })
@@ -7647,10 +8412,6 @@ export default function Home() {
                             ? (folderTotals.get(group) ?? groupNotes.length)
                             : groupNotes.length}
                         </small>
-                        <ChevronDown
-                          size={14}
-                          className={collapsed ? "rotated" : ""}
-                        />
                       </button>
                     )}
                   </div>
@@ -7745,7 +8506,24 @@ export default function Home() {
                               <span className="page-order">
                                 {String(noteIndex + 1).padStart(2, "0")}
                               </span>
-                              <span className="page-title">{note.title}</span>
+                              <span className="page-name">
+                                <span className="page-title">{note.title}</span>
+                                {isHtmlPage(note.path) ? (
+                                  <span
+                                    className="page-kind html"
+                                    title="HTML page"
+                                  >
+                                    HTML
+                                  </span>
+                                ) : (
+                                  <span
+                                    className="page-kind md"
+                                    title="Markdown page"
+                                  >
+                                    MD
+                                  </span>
+                                )}
+                              </span>
                               {dirty.has(note.id) && (
                                 <i aria-label="Unsaved changes" />
                               )}
@@ -8034,7 +8812,7 @@ export default function Home() {
           <div className={`reading-scroll mode-${view}`}>
             {(view === "preview" || view === "split") && (
               <article
-                className="markdown-page"
+                className={`markdown-page${activeIsHtml ? " is-html" : ""}`}
                 ref={previewScrollRef}
                 onScroll={handlePreviewScroll}
               >
@@ -8082,109 +8860,115 @@ export default function Home() {
                     {dirty.has(active.id) && <i />}
                   </span>
                   <span className="editor-chrome-end">
-                    <button
-                      type="button"
-                      className="editor-image-button"
-                      onClick={() => void insertImagesFromPicker()}
-                      title="Insert image — or paste and drop images right into the editor"
-                      aria-label="Insert image"
-                    >
-                      <ImagePlus size={13} aria-hidden="true" />
-                      <span>Image</span>
-                    </button>
-                    <input
-                      ref={imageFileInput}
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      hidden
-                      onChange={handleImageFilePick}
-                    />
-                    <div className="editor-table-menu" ref={tableMenu}>
-                      <button
-                        type="button"
-                        className="editor-image-button"
-                        onClick={() => setTableMenuOpen((open) => !open)}
-                        title="Insert a table"
-                        aria-label="Insert a table"
-                        aria-expanded={tableMenuOpen}
-                        aria-haspopup="dialog"
-                      >
-                        <Table2 size={13} aria-hidden="true" />
-                        <span>Table</span>
-                      </button>
-                      {tableMenuOpen && (
-                        <div
-                          className="table-popover"
-                          role="dialog"
-                          aria-label="Table size"
+                    {!editingHtml && (
+                      <>
+                        <button
+                          type="button"
+                          className="editor-image-button"
+                          onClick={() => void insertImagesFromPicker()}
+                          title="Insert image — or paste and drop images right into the editor"
+                          aria-label="Insert image"
                         >
-                          <div
-                            className="table-grid"
-                            ref={tableGrid}
-                            role="group"
-                            aria-label="Table size"
+                          <ImagePlus size={13} aria-hidden="true" />
+                          <span>Image</span>
+                        </button>
+                        <input
+                          ref={imageFileInput}
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          hidden
+                          onChange={handleImageFilePick}
+                        />
+                        <div className="editor-table-menu" ref={tableMenu}>
+                          <button
+                            type="button"
+                            className="editor-image-button"
+                            onClick={() => setTableMenuOpen((open) => !open)}
+                            title="Insert a table"
+                            aria-label="Insert a table"
+                            aria-expanded={tableMenuOpen}
+                            aria-haspopup="dialog"
                           >
-                            {Array.from(
-                              { length: TABLE_MAX_ROWS },
-                              (_, row) => (
-                                <div className="table-grid-row" key={row}>
-                                  {Array.from(
-                                    { length: TABLE_MAX_COLUMNS },
-                                    (_, column) => {
-                                      const columns = column + 1;
-                                      const rows = row + 1;
-                                      const active =
-                                        columns <= tableSize.columns &&
-                                        rows <= tableSize.rows;
-                                      return (
-                                        <button
-                                          type="button"
-                                          key={column}
-                                          data-cell={`${columns}x${rows}`}
-                                          className={`table-grid-cell${active ? " active" : ""}${
-                                            rows === 1 ? " heading" : ""
-                                          }`}
-                                          tabIndex={
-                                            columns === tableSize.columns &&
-                                            rows === tableSize.rows
-                                              ? 0
-                                              : -1
-                                          }
-                                          aria-label={`${columns} columns by ${rows} rows`}
-                                          onKeyDown={handleTableGridKey}
-                                          onMouseEnter={() =>
-                                            setTableSize({ columns, rows })
-                                          }
-                                          onFocus={() =>
-                                            setTableSize({ columns, rows })
-                                          }
-                                          onClick={() =>
-                                            insertTable(columns, rows)
-                                          }
-                                        />
-                                      );
-                                    },
-                                  )}
-                                </div>
-                              ),
-                            )}
-                          </div>
-                          <p className="table-readout" aria-live="polite">
-                            <strong>
-                              {tableSize.columns} × {tableSize.rows}
-                            </strong>
-                            <span>
-                              {tableSize.columns} column
-                              {tableSize.columns === 1 ? "" : "s"}, header +{" "}
-                              {tableSize.rows - 1} row
-                              {tableSize.rows - 1 === 1 ? "" : "s"}
-                            </span>
-                          </p>
+                            <Table2 size={13} aria-hidden="true" />
+                            <span>Table</span>
+                          </button>
+                          {tableMenuOpen && (
+                            <div
+                              className="table-popover"
+                              role="dialog"
+                              aria-label="Table size"
+                            >
+                              <div
+                                className="table-grid"
+                                ref={tableGrid}
+                                role="group"
+                                aria-label="Table size"
+                              >
+                                {Array.from(
+                                  { length: TABLE_MAX_ROWS },
+                                  (_, row) => (
+                                    <div className="table-grid-row" key={row}>
+                                      {Array.from(
+                                        { length: TABLE_MAX_COLUMNS },
+                                        (_, column) => {
+                                          const columns = column + 1;
+                                          const rows = row + 1;
+                                          const active =
+                                            columns <= tableSize.columns &&
+                                            rows <= tableSize.rows;
+                                          return (
+                                            <button
+                                              type="button"
+                                              key={column}
+                                              data-cell={`${columns}x${rows}`}
+                                              className={`table-grid-cell${active ? " active" : ""}${
+                                                rows === 1 ? " heading" : ""
+                                              }`}
+                                              tabIndex={
+                                                columns === tableSize.columns &&
+                                                rows === tableSize.rows
+                                                  ? 0
+                                                  : -1
+                                              }
+                                              aria-label={`${columns} columns by ${rows} rows`}
+                                              onKeyDown={handleTableGridKey}
+                                              onMouseEnter={() =>
+                                                setTableSize({ columns, rows })
+                                              }
+                                              onFocus={() =>
+                                                setTableSize({ columns, rows })
+                                              }
+                                              onClick={() =>
+                                                insertTable(columns, rows)
+                                              }
+                                            />
+                                          );
+                                        },
+                                      )}
+                                    </div>
+                                  ),
+                                )}
+                              </div>
+                              <p className="table-readout" aria-live="polite">
+                                <strong>
+                                  {tableSize.columns} × {tableSize.rows}
+                                </strong>
+                                <span>
+                                  {tableSize.columns} column
+                                  {tableSize.columns === 1 ? "" : "s"}, header +{" "}
+                                  {tableSize.rows - 1} row
+                                  {tableSize.rows - 1 === 1 ? "" : "s"}
+                                </span>
+                              </p>
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                    <span className="editor-language">Markdown</span>
+                      </>
+                    )}
+                    <span className="editor-language">
+                      {editingHtml ? "HTML" : "Markdown"}
+                    </span>
                   </span>
                 </div>
                 <div className="editor-workspace">
@@ -8223,6 +9007,12 @@ export default function Home() {
           id="outline-panel"
           className={`outline-panel ${outlineOpen ? "is-open" : ""}`}
         >
+          <PanelResizer
+            side="outline"
+            width={outlineWidth}
+            otherWidth={libraryCollapsed ? 0 : libraryWidth}
+            onResize={setOutlineWidth}
+          />
           <div className="panel-mobile-head">
             <span>On this page</span>
             <button
@@ -8282,6 +9072,28 @@ export default function Home() {
             </div>
           </section>
 
+          {(active.created || active.modified) && (
+            <section className="details-section" aria-label="Page details">
+              <dl className="page-dates">
+                {active.created ? (
+                  <div>
+                    <dt>Created</dt>
+                    <dd title={fullFileTime(active.created)}>
+                      {friendlyFileTime(active.created)}
+                    </dd>
+                  </div>
+                ) : null}
+                {active.modified ? (
+                  <div>
+                    <dt>Modified</dt>
+                    <dd title={fullFileTime(active.modified)}>
+                      {friendlyFileTime(active.modified)}
+                    </dd>
+                  </div>
+                ) : null}
+              </dl>
+            </section>
+          )}
           <div className="keyboard-hint">
             {(appShortcuts["previous-page"] || appShortcuts["next-page"]) && (
               <span>

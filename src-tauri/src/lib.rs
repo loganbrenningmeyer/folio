@@ -1,3 +1,4 @@
+mod page_frame;
 mod sync;
 
 use base64::Engine as _;
@@ -13,7 +14,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
         mpsc, LazyLock, Mutex, MutexGuard,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -65,6 +66,11 @@ pub struct NoteRecord {
     path: String,
     title: String,
     content: String,
+    /// When the file was created, in milliseconds since the Unix epoch, where
+    /// the filesystem records it.
+    created: Option<u64>,
+    /// When the file's contents last changed, in milliseconds since the epoch.
+    modified: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -343,7 +349,7 @@ fn follow_link_in_library(
     )))
 }
 
-/// Resolves a Markdown link to an existing `.md` file. The href is joined onto
+/// Resolves a page link to an existing `.md` or `.html` file. The href is joined onto
 /// the linking page's folder lexically — `..` may leave the library — and the
 /// result must be a real file reached without crossing a symbolic link.
 fn resolve_link_target(root: &Path, note_directory: &Path, href: &str) -> Option<PathBuf> {
@@ -373,7 +379,7 @@ fn resolve_link_target(root: &Path, note_directory: &Path, href: &str) -> Option
             segment => resolved.push(segment),
         }
     }
-    if !has_markdown_extension(&resolved) {
+    if !has_page_extension(&resolved) {
         return None;
     }
 
@@ -957,7 +963,8 @@ async fn write_note(
         .map_err(|error| io_error("save the Markdown file", &destination, error))?;
 
     let normalized_path = relative_path_to_string(&relative)?;
-    Ok(note_record(normalized_path, content))
+    let metadata = fs::metadata(&destination).ok();
+    Ok(note_record(normalized_path, content, metadata.as_ref()))
 }
 
 #[tauri::command]
@@ -1094,7 +1101,7 @@ fn move_folder_in_library(root: &Path, from_path: &str, to_path: &str) -> Result
 }
 
 /// Renames a note or folder in place. `name` is a single path segment; a note
-/// keeps (or gains) its `.md` extension.
+/// keeps its page extension, or gains `.md` when the name has none.
 #[tauri::command]
 async fn rename_entry(
     path: String,
@@ -1198,8 +1205,8 @@ async fn delete_entry(
     scan_library_root(&root)
 }
 
-/// Validates a single path segment typed by the user. Markdown files keep an
-/// `.md` extension whether or not the typed name included one.
+/// Validates a single path segment typed by the user. A page keeps its `.md`,
+/// `.html`, or `.htm` extension, and gains `.md` when the name has none.
 fn validate_entry_name(value: &str, kind: PathKind) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1223,7 +1230,7 @@ fn validate_entry_name(value: &str, kind: PathKind) -> Result<String, String> {
     let name = match kind {
         PathKind::Folder => trimmed.to_string(),
         PathKind::MarkdownFile => {
-            if has_markdown_extension(Path::new(trimmed)) {
+            if has_page_extension(Path::new(trimmed)) {
                 trimmed.to_string()
             } else {
                 format!("{trimmed}.md")
@@ -1740,35 +1747,66 @@ fn scan_directory(
         if file_type.is_dir() {
             folders.push(relative_path);
             scan_directory(root, &entry_path, notes, folders)?;
-        } else if file_type.is_file() && has_markdown_extension(relative) {
+        } else if file_type.is_file() && has_page_extension(relative) {
             let content = fs::read_to_string(&entry_path)
                 .map_err(|error| io_error("read a Markdown file", &entry_path, error))?;
-            notes.push(note_record(relative_path, content));
+            let metadata = fs::metadata(&entry_path).ok();
+            notes.push(note_record(relative_path, content, metadata.as_ref()));
         }
     }
 
     Ok(())
 }
 
-fn note_record(path: String, content: String) -> NoteRecord {
+fn note_record(path: String, content: String, metadata: Option<&fs::Metadata>) -> NoteRecord {
     NoteRecord {
         id: path.clone(),
         title: clean_title(&path),
         path,
         content,
+        created: metadata.and_then(|metadata| epoch_millis(metadata.created())),
+        modified: metadata.and_then(|metadata| epoch_millis(metadata.modified())),
     }
+}
+
+/// A file time as milliseconds since the Unix epoch, when the platform has it.
+fn epoch_millis(time: io::Result<SystemTime>) -> Option<u64> {
+    let elapsed = time.ok()?.duration_since(UNIX_EPOCH).ok()?;
+    u64::try_from(elapsed.as_millis()).ok()
+}
+
+/// Gives a replacement file the creation time of the file it replaces. A save
+/// writes a new file and renames it over the old one, which would otherwise
+/// make every save the page's "creation". Best effort: a filesystem that keeps
+/// no creation time simply has none to carry over.
+#[cfg(windows)]
+fn carry_creation_time(file: &File, created: SystemTime) -> io::Result<()> {
+    use std::os::windows::fs::FileTimesExt;
+    file.set_times(fs::FileTimes::new().set_created(created))
+}
+
+#[cfg(target_os = "macos")]
+fn carry_creation_time(file: &File, created: SystemTime) -> io::Result<()> {
+    use std::os::macos::fs::FileTimesExt;
+    file.set_times(fs::FileTimes::new().set_created(created))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn carry_creation_time(_file: &File, _created: SystemTime) -> io::Result<()> {
+    Ok(())
 }
 
 fn clean_title(path: &str) -> String {
     let file_name = path.rsplit('/').next().unwrap_or(path);
-    let stem = if file_name
-        .get(file_name.len().saturating_sub(3)..)
-        .is_some_and(|extension| extension.eq_ignore_ascii_case(".md"))
-    {
-        &file_name[..file_name.len() - 3]
-    } else {
-        file_name
-    };
+    let stem = PAGE_EXTENSIONS
+        .iter()
+        .find_map(|extension| {
+            let suffix_start = file_name.len().checked_sub(extension.len() + 1)?;
+            let suffix = file_name.get(suffix_start..)?;
+            (suffix.starts_with('.') && suffix[1..].eq_ignore_ascii_case(extension))
+                .then(|| &file_name[..suffix_start])
+        })
+        .unwrap_or(file_name);
     let digits = stem
         .chars()
         .take_while(|character| character.is_ascii_digit())
@@ -1823,8 +1861,8 @@ fn validate_relative_path(value: &str, kind: PathKind) -> Result<PathBuf, String
         return Err("Paths must stay inside the selected library.".to_string());
     }
 
-    if matches!(kind, PathKind::MarkdownFile) && !has_markdown_extension(&relative) {
-        return Err("Markdown file paths must end in .md.".to_string());
+    if matches!(kind, PathKind::MarkdownFile) && !has_page_extension(&relative) {
+        return Err("Page paths must end in .md, .html, or .htm.".to_string());
     }
     if matches!(kind, PathKind::ImageFile) && !has_image_extension(&relative) {
         return Err("Image paths must end in an image extension.".to_string());
@@ -1833,10 +1871,19 @@ fn validate_relative_path(value: &str, kind: PathKind) -> Result<PathBuf, String
     Ok(relative)
 }
 
-fn has_markdown_extension(path: &Path) -> bool {
+/// File extensions a library page can have: Markdown, plus HTML pages that
+/// the reading view shows as authored.
+const PAGE_EXTENSIONS: [&str; 3] = ["md", "html", "htm"];
+
+/// Whether `path` names a library page (Markdown or HTML).
+fn has_page_extension(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        .is_some_and(|extension| {
+            PAGE_EXTENSIONS
+                .iter()
+                .any(|page| extension.eq_ignore_ascii_case(page))
+        })
 }
 
 fn has_image_extension(path: &Path) -> bool {
@@ -1964,6 +2011,14 @@ fn atomic_write(
     let result = (|| {
         temporary_file.write_all(contents)?;
         temporary_file.flush()?;
+        if replace {
+            if let Some(created) = fs::metadata(destination)
+                .ok()
+                .and_then(|metadata| metadata.created().ok())
+            {
+                let _ = carry_creation_time(&temporary_file, created);
+            }
+        }
         if let Some(permissions) = permissions {
             temporary_file.set_permissions(permissions)?;
         }
@@ -2094,6 +2149,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(LibraryState::default())
         .manage(WatcherState::default())
+        .manage(page_frame::PagePreviewState::default())
+        // HTML pages are framed from this scheme, in an origin of their own;
+        // see `page_frame` for why. Requests are answered off the main thread
+        // so a large page asset never stalls the window.
+        .register_asynchronous_uri_scheme_protocol(
+            page_frame::PAGE_SCHEME,
+            |context, request, responder| {
+                let app = context.app_handle().clone();
+                std::thread::spawn(move || responder.respond(page_frame::serve(&app, &request)));
+            },
+        )
         // Closing goes through the frontend first: uncommitted work in a
         // synced library earns one question before the window goes. Both ways
         // out — the window's close button and Quit — raise the same event.
@@ -2161,7 +2227,8 @@ pub fn run() {
             write_asset,
             import_assets,
             read_asset,
-            rename_asset
+            rename_asset,
+            page_frame::stage_page_preview
         ])
         .build(tauri::generate_context!())
         .expect("error while building Folio")
@@ -2181,6 +2248,29 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn saving_keeps_the_creation_time() {
+        let directory = std::env::temp_dir().join(format!(
+            "folio-created-{}-{}",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, AtomicOrdering::Relaxed)
+        ));
+        fs::create_dir_all(&directory).expect("create test folder");
+        let page = directory.join("Idea.md");
+        fs::write(&page, "first").expect("write page");
+        let created = fs::metadata(&page).and_then(|m| m.created()).expect("created");
+
+        std::thread::sleep(Duration::from_millis(50));
+        atomic_write(&page, b"second", None, true).expect("save");
+
+        let metadata = fs::metadata(&page).expect("metadata");
+        assert_eq!(fs::read_to_string(&page).unwrap(), "second");
+        assert_eq!(metadata.created().expect("created"), created);
+        assert!(metadata.modified().expect("modified") > created);
+        let _ = fs::remove_dir_all(&directory);
+    }
+
     #[test]
     fn validates_entry_names_for_renames() {
         assert_eq!(
@@ -2191,6 +2281,15 @@ mod tests {
         assert_eq!(
             validate_entry_name("Field notes.md", PathKind::MarkdownFile).unwrap(),
             "Field notes.md"
+        );
+        // HTML pages keep their own extension.
+        assert_eq!(
+            validate_entry_name("Report.html", PathKind::MarkdownFile).unwrap(),
+            "Report.html"
+        );
+        assert_eq!(
+            validate_entry_name("Legacy.htm", PathKind::MarkdownFile).unwrap(),
+            "Legacy.htm"
         );
         assert_eq!(
             validate_entry_name("  Research  ", PathKind::Folder).unwrap(),
@@ -2247,6 +2346,8 @@ mod tests {
     #[test]
     fn accepts_only_strict_relative_markdown_paths() {
         assert!(validate_relative_path("01 Notes/Idea.md", PathKind::MarkdownFile).is_ok());
+        assert!(validate_relative_path("01 Notes/Idea.html", PathKind::MarkdownFile).is_ok());
+        assert!(validate_relative_path("01 Notes/Idea.txt", PathKind::MarkdownFile).is_err());
         assert!(validate_relative_path("../Idea.md", PathKind::MarkdownFile).is_err());
         assert!(validate_relative_path("Notes//Idea.md", PathKind::MarkdownFile).is_err());
         assert!(validate_relative_path("/tmp/Idea.md", PathKind::MarkdownFile).is_err());
@@ -2262,6 +2363,9 @@ mod tests {
         );
         assert_eq!(clean_title("Notes/Mixed case.Md"), "Mixed case");
         assert_eq!(clean_title("Notes/Plain title.md"), "Plain title");
+        assert_eq!(clean_title("Notes/03 Report.html"), "Report");
+        assert_eq!(clean_title("Notes/Legacy.HTM"), "Legacy");
+        assert_eq!(clean_title("Notes/Archive.tar"), "Archive.tar");
     }
 
     #[test]
