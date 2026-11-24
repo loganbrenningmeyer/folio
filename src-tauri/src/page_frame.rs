@@ -12,8 +12,8 @@
 //! the app's DOM, storage, or cookies. The policy sent with every page also
 //! leaves the IPC endpoints out of `connect-src`, so its scripts cannot talk
 //! to the backend either. A small bridge script, added to each HTML response,
-//! talks to the app by `postMessage` instead: it reports the page height and
-//! hands link clicks and app shortcuts back to Folio.
+//! talks to the app by `postMessage` instead: it reports and sets the page's
+//! scroll position and hands link clicks and app shortcuts back to Folio.
 
 use std::{
     borrow::Cow,
@@ -226,27 +226,30 @@ fn percent_decode(value: &str) -> Result<String, String> {
 /// The bridge between a framed page and the app. Kept to `postMessage`: the
 /// sandbox gives the page no other way out, which is the point.
 ///
-/// The frame is sized to its page, so the page itself never needs to scroll
-/// vertically, and must not: a document that can scroll even a few pixels
-/// captures a whole trackpad gesture (scroll latching) instead of passing it
-/// on to Folio's reading pane, so trackpad scrolling would stall over the
-/// page. Turning off its vertical overflow lets every gesture pass through.
-const BRIDGE_SCRIPT: &str = r##"<style>html,body{overflow-y:hidden!important}</style><script>(function(){
+/// The frame fills the reading pane and the page scrolls itself, as it would
+/// in a browser, so its fixed and sticky elements stay on screen. The bridge
+/// reports where the page is scrolled (`scrolled`, with `moved` set only when
+/// the position changed, so a load or resize is not taken for the reader
+/// scrolling) and scrolls it when Folio asks (`scrollTo`), which Split view's
+/// scroll lock and the restore after a reload use. In-page `#` links scroll
+/// the page here; other links are handed to Folio.
+const BRIDGE_SCRIPT: &str = r##"<script>(function(){
 var post=function(message){message.folio=1;try{parent.postMessage(message,"*");}catch(e){}};
-var root=document.documentElement,last=-1;
-function measure(){var body=document.body,h=root.getBoundingClientRect().height;
-if(body){var style=getComputedStyle(body);h=Math.max(h,body.scrollHeight+(parseFloat(style.marginTop)||0)+(parseFloat(style.marginBottom)||0),body.getBoundingClientRect().bottom+scrollY+(parseFloat(style.marginBottom)||0));}
-h=Math.ceil(h);if(h!==last){last=h;post({type:"height",value:h});}}
-function observe(){try{var ro=new ResizeObserver(measure);ro.observe(root);if(document.body)ro.observe(document.body);}catch(e){}measure();}
+var root=document.documentElement,lastTop=0;
+function scroller(){return document.scrollingElement||root;}
+function report(){var s=scroller(),top=s.scrollTop,max=Math.max(0,s.scrollHeight-s.clientHeight);
+var moved=Math.abs(top-lastTop)>=1;lastTop=top;post({type:"scrolled",top:top,max:max,moved:moved});}
+function observe(){try{var ro=new ResizeObserver(report);ro.observe(root);if(document.body)ro.observe(document.body);}catch(e){}report();}
 if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",observe);else observe();
-addEventListener("load",measure);
+addEventListener("load",report);addEventListener("scroll",report,{passive:true});
 addEventListener("message",function(event){if(event.source!==parent||!event.data||event.data.folio!==1)return;
-if(event.data.type==="theme")root.setAttribute("data-theme",event.data.value);});
+var data=event.data;if(data.type==="theme")root.setAttribute("data-theme",data.value);
+else if(data.type==="scrollTo"&&isFinite(data.top))scrollTo({top:data.top,behavior:"instant"});});
 addEventListener("click",function(event){if(event.defaultPrevented||event.button!==0)return;
 var anchor=event.target&&event.target.closest?event.target.closest("a[href]"):null;if(!anchor)return;
 var href=anchor.getAttribute("href")||"";event.preventDefault();
 if(href.charAt(0)==="#"){var id=decodeURIComponent(href.slice(1));var target=id?(document.getElementById(id)||document.getElementsByName(id)[0]):null;
-post({type:"scroll",top:target?target.getBoundingClientRect().top+scrollY:0});return;}
+if(target)target.scrollIntoView({block:"start"});else scrollTo({top:0});return;}
 post({type:"link",href:href});});
 addEventListener("keydown",function(event){if(!(event.ctrlKey||event.metaKey||event.key==="Escape"))return;
 post({type:"key",key:event.key,code:event.code,ctrlKey:event.ctrlKey,metaKey:event.metaKey,shiftKey:event.shiftKey,altKey:event.altKey});});
@@ -308,15 +311,15 @@ mod tests {
     fn inserts_the_bridge_after_the_doctype() {
         let page = with_bridge(b"<!doctype html><html><body>hi</body></html>");
         let page = String::from_utf8(page).unwrap();
-        assert!(page.starts_with("<!doctype html><style>"));
+        assert!(page.starts_with("<!doctype html><script>"));
         assert!(page.ends_with("<html><body>hi</body></html>"));
 
         let bare = String::from_utf8(with_bridge(b"<p>hi</p>")).unwrap();
-        assert!(bare.starts_with("<style>"));
+        assert!(bare.starts_with("<script>"));
         assert!(bare.ends_with("<p>hi</p>"));
 
         let padded = String::from_utf8(with_bridge(b"\n  <!DOCTYPE html>\n<p>x</p>")).unwrap();
-        assert!(padded.starts_with("\n  <!DOCTYPE html><style>"));
+        assert!(padded.starts_with("\n  <!DOCTYPE html><script>"));
     }
 
     #[test]

@@ -148,8 +148,6 @@ import {
   Command,
   Compass,
   Download,
-  Eye,
-  EyeClosed,
   Feather,
   FileCode2,
   FilePlus2,
@@ -2929,20 +2927,15 @@ function PanelResizer({
   );
 }
 
-// Read view for an HTML page: the file as authored, in a frame sized to its
-// content so the reading pane, not the frame, scrolls. In the desktop app the
-// frame loads from Folio's `folio-page` scheme, where the page's own scripts
-// run in a sandboxed origin of its own (see src-tauri/src/page_frame.rs) and
-// reach Folio only through postMessage. Without a native library it falls
-// back to a static, script-free copy of the page.
-function HtmlPage(props: {
-  notePath: string;
-  title: string;
-  content: string;
-  live: boolean;
-  dark: boolean;
-  onFollow: (link: LibraryLink) => void;
-}) {
+// Read view for an HTML page: the file as authored, in a frame. In the desktop
+// app the frame loads from Folio's `folio-page` scheme, where the page's own
+// scripts run in a sandboxed origin of its own (see
+// src-tauri/src/page_frame.rs) and reach Folio only through postMessage. The
+// frame fills the reading pane and the page scrolls itself, as it would in a
+// browser, so its fixed and sticky elements (a play bar, a toolbar) stay put
+// on screen. Without a native library it falls back to a static, script-free
+// copy of the page, sized to its content.
+function HtmlPage(props: HtmlFrameProps & { live: boolean }) {
   return props.live ? (
     <LiveHtmlPage {...props} />
   ) : (
@@ -2969,23 +2962,17 @@ function routeFrameLink(
   onFollow(link);
 }
 
-/** The nearest ancestor that actually scrolls. */
-function scrollParent(element: HTMLElement): HTMLElement | undefined {
+/** The nearest ancestor that scrolls its content, whether or not it overflows. */
+function scrollContainer(element: HTMLElement): HTMLElement | undefined {
   for (let node = element.parentElement; node; node = node.parentElement) {
     const overflow = getComputedStyle(node).overflowY;
-    if (
-      (overflow === "auto" || overflow === "scroll") &&
-      node.scrollHeight > node.clientHeight
-    ) {
-      return node;
-    }
+    if (overflow === "auto" || overflow === "scroll") return node;
   }
   return undefined;
 }
 
 type FrameMessage =
-  | { folio: 1; type: "height"; value: number }
-  | { folio: 1; type: "scroll"; top: number }
+  | { folio: 1; type: "scrolled"; top: number; max: number; moved: boolean }
   | { folio: 1; type: "link"; href: string }
   | {
       folio: 1;
@@ -3002,12 +2989,26 @@ type FrameMessage =
 // (100vh and the like) in a loop; the cap stops the runaway.
 const HTML_FRAME_MAX_HEIGHT = 200_000;
 
+/**
+ * A live HTML page's own scroll, reached across the frame by message. The
+ * position is the last one the page reported, so it can trail a scroll that
+ * Folio has just asked for.
+ */
+type FrameScroller = {
+  position: () => { top: number; max: number };
+  scrollTo: (top: number) => void;
+};
+
 type HtmlFrameProps = {
   notePath: string;
   title: string;
   content: string;
   dark: boolean;
   onFollow: (link: LibraryLink) => void;
+  /** Hands over the live page's scroll while it is shown, then undefined. */
+  onScroller?: (scroller: FrameScroller | undefined) => void;
+  /** The reader scrolled the live page. */
+  onScroll?: () => void;
 };
 
 function LiveHtmlPage({
@@ -3016,17 +3017,31 @@ function LiveHtmlPage({
   content,
   dark,
   onFollow,
+  onScroller,
+  onScroll,
 }: HtmlFrameProps) {
-  const frameRef = useRef<HTMLIFrameElement>(null);
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  // The frame or its placeholder, whichever is mounted; sized to the pane.
+  const [box, setBox] = useState<HTMLElement | null>(null);
+  const attachFrame = useCallback((node: HTMLIFrameElement | null) => {
+    frameRef.current = node;
+    setBox(node);
+  }, []);
   const [height, setHeight] = useState(480);
   // Bumped whenever the staged text changes; part of the frame URL, so each
   // bump reloads the page with what the editor holds.
   const [version, setVersion] = useState(0);
   const firstLoad = useRef(true);
   const followRef = useRef(onFollow);
+  const scrollHandlerRef = useRef(onScroll);
   useEffect(() => {
     followRef.current = onFollow;
-  }, [onFollow]);
+    scrollHandlerRef.current = onScroll;
+  }, [onFollow, onScroll]);
+  // Where the page last reported it was scrolled to, and where to put it back
+  // after a reload, so editing in Split view does not jump to the top.
+  const scrollRef = useRef({ top: 0, max: 0 });
+  const restoreTopRef = useRef(0);
 
   // Debounced so typing in Split view reloads at a pause, not per keystroke.
   useEffect(() => {
@@ -3039,7 +3054,9 @@ function LiveHtmlPage({
         // Unstaged, the page is still served from disk.
         .catch(() => undefined)
         .then(() => {
-          if (!cancelled) setVersion((current) => current + 1);
+          if (cancelled) return;
+          restoreTopRef.current = scrollRef.current.top;
+          setVersion((current) => current + 1);
         });
     }, delay);
     return () => {
@@ -3047,6 +3064,35 @@ function LiveHtmlPage({
       window.clearTimeout(timer);
     };
   }, [notePath, content]);
+
+  // The frame is exactly as tall as the pane that holds it, so the page, not
+  // the pane, is what scrolls.
+  useEffect(() => {
+    if (!box) return;
+    const container = scrollContainer(box);
+    if (!container) return;
+    const fit = () =>
+      setHeight(
+        Math.min(Math.max(240, container.clientHeight), HTML_FRAME_MAX_HEIGHT),
+      );
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [box]);
+
+  useEffect(() => {
+    if (!onScroller) return;
+    onScroller({
+      position: () => scrollRef.current,
+      scrollTo: (top) =>
+        frameRef.current?.contentWindow?.postMessage(
+          { folio: 1, type: "scrollTo", top },
+          "*",
+        ),
+    });
+    return () => onScroller(undefined);
+  }, [onScroller]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -3057,23 +3103,11 @@ function LiveHtmlPage({
       const data = event.data as FrameMessage | undefined;
       if (!data || data.folio !== 1) return;
       switch (data.type) {
-        case "height":
-          if (Number.isFinite(data.value) && data.value > 0) {
-            setHeight(Math.min(Math.ceil(data.value), HTML_FRAME_MAX_HEIGHT));
-          }
+        case "scrolled":
+          if (!Number.isFinite(data.top) || !Number.isFinite(data.max)) break;
+          scrollRef.current = { top: data.top, max: data.max };
+          if (data.moved) scrollHandlerRef.current?.();
           break;
-        case "scroll": {
-          const scroller = scrollParent(frame);
-          if (!scroller || !Number.isFinite(data.top)) break;
-          const frameTop =
-            frame.getBoundingClientRect().top -
-            scroller.getBoundingClientRect().top;
-          scroller.scrollTo({
-            top: scroller.scrollTop + frameTop + data.top - 16,
-            behavior: "smooth",
-          });
-          break;
-        }
         case "link":
           if (typeof data.href === "string") {
             routeFrameLink(notePath, data.href, followRef.current);
@@ -3110,20 +3144,37 @@ function LiveHtmlPage({
   }, [dark]);
   useEffect(postTheme, [postTheme]);
 
+  const onFrameLoad = useCallback(() => {
+    postTheme();
+    if (restoreTopRef.current > 0) {
+      frameRef.current?.contentWindow?.postMessage(
+        { folio: 1, type: "scrollTo", top: restoreTopRef.current },
+        "*",
+      );
+    }
+  }, [postTheme]);
+
   const style = { height, colorScheme: dark ? "dark" : "light" };
   if (!version) {
-    return <div className="html-page-frame" style={style} aria-busy="true" />;
+    return (
+      <div
+        ref={setBox}
+        className="html-page-frame"
+        style={style}
+        aria-busy="true"
+      />
+    );
   }
   return (
     <iframe
-      ref={frameRef}
+      ref={attachFrame}
       className="html-page-frame"
       title={title}
       // No allow-same-origin: the page runs in an opaque origin, walled off
       // from Folio's own.
       sandbox="allow-scripts allow-modals allow-downloads"
       src={`${pageFrameUrl(notePath)}?v=${version}`}
-      onLoad={postTheme}
+      onLoad={onFrameLoad}
       style={style}
     />
   );
@@ -3918,7 +3969,6 @@ export default function Home() {
     PANEL_LIMITS.outline.initial,
   );
   const [splitScrollLocked, setSplitScrollLocked] = useState(true);
-  const [showEmptyFolders, setShowEmptyFolders] = useState(false);
   const [layoutPreferencesLoaded, setLayoutPreferencesLoaded] = useState(false);
 
   // Whether the first read of the stored library has finished, however it went.
@@ -4076,6 +4126,15 @@ export default function Home() {
   const handlePreviewScroll = useCallback(() => {
     splitScrollEventRef.current?.("preview");
   }, []);
+  // A live HTML page's own scroll, while one is shown; Split view's scroll
+  // lock follows it in place of the reading pane's.
+  const frameScrollerRef = useRef<FrameScroller | undefined>(undefined);
+  const handleFrameScroller = useCallback(
+    (scroller: FrameScroller | undefined) => {
+      frameScrollerRef.current = scroller;
+    },
+    [],
+  );
   const showNotice = useCallback((message: string) => {
     setNotice(message);
     window.setTimeout(() => {
@@ -4139,28 +4198,20 @@ export default function Home() {
     );
   }, [folders, notes]);
 
-  // Empty folders are either shown all the time or hidden all the time.
-  // Dragging does not change which folders appear in the library.
-  const grouped = useMemo(
-    () =>
-      allGroups.filter(
-        ([, groupNotes]) => groupNotes.length > 0 || showEmptyFolders,
-      ),
-    [allGroups, showEmptyFolders],
-  );
+  // Every folder is listed, empty or not, the way a code editor's explorer
+  // shows a folder the moment it is made.
+  const grouped = allGroups;
 
   /**
    * The library's folders as the tree they are on disk, so a folder inside a
    * folder is drawn inside it rather than listed again from the root under its
    * whole path.
    *
-   * Empty folders are included only when the reader has explicitly enabled
-   * "Show empty folders". Dragging an entry never changes the tree.
+   * Empty folders are always included, after their populated siblings.
    */
   const libraryTree = useMemo(
-    () =>
-      emptyFoldersLast(folderTree(allGroups, () => showEmptyFolders)),
-    [allGroups, showEmptyFolders],
+    () => emptyFoldersLast(folderTree(allGroups, () => true)),
+    [allGroups],
   );
 
   /** The pages sitting loose at the top of the library, in their own section. */
@@ -4190,8 +4241,11 @@ export default function Home() {
     return totals;
   }, [libraryTree]);
 
-  /** Whether the root's own section should be drawn. */
-  const rootListed = Boolean(rootNotes.length || showEmptyFolders);
+  /**
+   * The root's own section is always drawn, so there is somewhere to drop a
+   * page back to the top of the library.
+   */
+  const rootListed = true;
 
   /**
    * The tree drawn as the list it becomes on screen: a folder, then whatever
@@ -4499,12 +4553,58 @@ export default function Home() {
       };
     };
 
+    // Remember a write so the scroll event it raises on the other pane is not
+    // mistaken for user input, which would sync back and stutter.
+    const guardScrollWrite = (side: ScrollSide, target: number) => {
+      splitScrollGuardRef.current = { side, target };
+      if (splitScrollGuardFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(splitScrollGuardFrameRef.current);
+      }
+      splitScrollGuardFrameRef.current = window.requestAnimationFrame(() => {
+        splitScrollGuardFrameRef.current = window.requestAnimationFrame(() => {
+          splitScrollGuardFrameRef.current = undefined;
+          splitScrollGuardRef.current = undefined;
+        });
+      });
+    };
+
     const syncSplitScroll = () => {
       splitScrollFrameRef.current = undefined;
       if (viewRef.current !== "split" || !splitScrollLockedRef.current) return;
       const editor = editorViewRef.current;
       const preview = previewScrollRef.current;
       if (!editor || !preview) return;
+
+      // A live HTML page scrolls inside its own frame and has no source-line
+      // anchors to align against, so the two sides map proportionally.
+      const frame = frameScrollerRef.current;
+      if (frame) {
+        const side = pendingScrollSideRef.current;
+        const scroller = editor.scrollDOM;
+        const editorLimit = Math.max(
+          0,
+          scroller.scrollHeight - scroller.clientHeight,
+        );
+        const page = frame.position();
+        if (side === "editor") {
+          const next = Math.round(
+            editorLimit ? (scroller.scrollTop / editorLimit) * page.max : 0,
+          );
+          // Rounding on both sides can leave a pixel or two of drift.
+          if (Math.abs(page.top - next) <= 2) return;
+          guardScrollWrite("preview", next);
+          frame.scrollTo(next);
+        } else {
+          const next = Math.round(
+            page.max ? (page.top / page.max) * editorLimit : 0,
+          );
+          if (Math.abs(scroller.scrollTop - next) <= 2) return;
+          guardScrollWrite("editor", next);
+          scroller.scrollTo({ top: next, behavior: "instant" });
+        }
+        return;
+      }
+
       const cached = splitScrollMapRef.current;
       const map =
         cached && cached.geometry === scrollGeometry(editor.scrollDOM, preview)
@@ -4531,21 +4631,7 @@ export default function Home() {
       const next = Math.min(Math.round(mapped), limit);
       if (Math.abs(target.scrollTop - next) < 1) return;
 
-      // Remember the write so the scroll event it raises on the other pane is
-      // not mistaken for user input, which would sync back and stutter.
-      splitScrollGuardRef.current = {
-        side: side === "editor" ? "preview" : "editor",
-        target: next,
-      };
-      if (splitScrollGuardFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(splitScrollGuardFrameRef.current);
-      }
-      splitScrollGuardFrameRef.current = window.requestAnimationFrame(() => {
-        splitScrollGuardFrameRef.current = window.requestAnimationFrame(() => {
-          splitScrollGuardFrameRef.current = undefined;
-          splitScrollGuardRef.current = undefined;
-        });
-      });
+      guardScrollWrite(side === "editor" ? "preview" : "editor", next);
       target.scrollTo({ top: next, behavior: "instant" });
     };
 
@@ -4561,11 +4647,14 @@ export default function Home() {
       const guard = splitScrollGuardRef.current;
       if (guard && guard.side === side) {
         splitScrollGuardRef.current = undefined;
-        const element =
+        const position =
           side === "editor"
-            ? editorViewRef.current?.scrollDOM
-            : previewScrollRef.current;
-        if (element && Math.abs(element.scrollTop - guard.target) <= 2) return;
+            ? editorViewRef.current?.scrollDOM.scrollTop
+            : (frameScrollerRef.current?.position().top ??
+              previewScrollRef.current?.scrollTop);
+        if (position !== undefined && Math.abs(position - guard.target) <= 2) {
+          return;
+        }
       }
       lastUserScrollerRef.current = side;
       if (!splitScrollLockedRef.current) return;
@@ -4805,9 +4894,8 @@ export default function Home() {
       setSplitScrollLocked(
         localStorage.getItem("folio-split-scroll-locked") !== "false",
       );
-      setShowEmptyFolders(
-        localStorage.getItem("folio-show-empty-folders") === "true",
-      );
+      // Left over from when empty folders could be hidden.
+      localStorage.removeItem("folio-show-empty-folders");
       setLibraryWidth(readStoredPanelWidth("library"));
       setOutlineWidth(readStoredPanelWidth("outline"));
       setLayoutPreferencesLoaded(true);
@@ -4831,10 +4919,6 @@ export default function Home() {
       "folio-split-scroll-locked",
       String(splitScrollLocked),
     );
-    localStorage.setItem(
-      "folio-show-empty-folders",
-      String(showEmptyFolders),
-    );
     localStorage.setItem("folio-library-width", String(libraryWidth));
     localStorage.setItem("folio-outline-width", String(outlineWidth));
   }, [
@@ -4844,7 +4928,6 @@ export default function Home() {
     outlineCollapsed,
     outlineWidth,
     splitScrollLocked,
-    showEmptyFolders,
   ]);
 
   /** Folio's built-in guide, which stands in for a library there isn't one. */
@@ -5847,11 +5930,7 @@ export default function Home() {
         }
         setCollapsedGroups((current) => openedTo(current, folderPath));
 
-        // If empty folders are hidden, don't leave the hidden new folder as the
-        // destination for the next item the reader creates.
-        setLastOpenedFolder(
-          showEmptyFolders ? folderPath : newEntryParent,
-        );
+        setLastOpenedFolder(folderPath);
         setCreateKind(undefined);
         showNotice(`Created ${displayGroup(folderPath)}.`);
       } catch {
@@ -7354,6 +7433,8 @@ export default function Home() {
       live={desktopMode && nativeLibraryOpen && active.id !== EMPTY_NOTE.id}
       dark={theme === "dark"}
       onFollow={followMarkdownLink}
+      onScroller={handleFrameScroller}
+      onScroll={handlePreviewScroll}
     />
   ) : (
     <ReactMarkdown
@@ -8258,25 +8339,6 @@ export default function Home() {
                   size={15}
                   className={refreshing ? "spinning" : ""}
                 />
-              </button>
-
-              <button
-                type="button"
-                className="subtle-icon"
-                onClick={() => setShowEmptyFolders((current) => !current)}
-                aria-pressed={showEmptyFolders}
-                aria-label={
-                  showEmptyFolders ? "Hide empty folders" : "Show empty folders"
-                }
-                title={
-                  showEmptyFolders ? "Hide empty folders" : "Show empty folders"
-                }
-              >
-                {showEmptyFolders ? (
-                  <EyeClosed size={15} />
-                ) : (
-                  <Eye size={15} />
-                )}
               </button>
             </div>
           </div>
