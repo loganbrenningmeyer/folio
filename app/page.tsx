@@ -71,7 +71,6 @@ import {
 } from "@/app/editor-utils.js";
 import {
   type FolderOrder,
-  emptyFoldersLast,
   folderMoveIssue,
   folderNames,
   type FolderNode,
@@ -4207,10 +4206,11 @@ export default function Home() {
    * folder is drawn inside it rather than listed again from the root under its
    * whole path.
    *
-   * Empty folders are always included, after their populated siblings.
+   * Empty folders are always included, in their natural place among their
+   * siblings inside the folder that holds them.
    */
   const libraryTree = useMemo(
-    () => emptyFoldersLast(folderTree(allGroups, () => true)),
+    () => folderTree(allGroups, () => true),
     [allGroups],
   );
 
@@ -4257,41 +4257,19 @@ export default function Home() {
       group: string;
       groupNotes: Note[];
       depth: number;
-      empty: boolean;
-      emptyDivider: boolean;
     }[] = [];
 
     const root = {
       group: "",
       groupNotes: rootNotes,
       depth: 0,
-      empty: false,
-      emptyDivider: false,
     };
 
     if (rootListed) rows.push(root);
 
     const walk = (nodes: FolderNode<Note>[], depth: number) => {
-      const firstEmpty = nodes.findIndex(
-        (node) => (folderTotals.get(node.path) ?? 0) === 0,
-      );
-
-      for (const [index, node] of nodes.entries()) {
-        const empty = index >= firstEmpty && firstEmpty >= 0;
-        rows.push({
-          group: node.path,
-          groupNotes: node.pages,
-          depth,
-          empty,
-          // At the top level Home is the populated area the divider follows.
-          // Deeper down, a divider is only needed when populated siblings came
-          // before the empty ones; an all-empty branch already has its dotted
-          // parent to set it apart.
-          emptyDivider:
-            empty &&
-            index === firstEmpty &&
-            (firstEmpty > 0 || (depth === 0 && rootListed)),
-        });
+      for (const node of nodes) {
+        rows.push({ group: node.path, groupNotes: node.pages, depth });
 
         if (!collapsedGroups.has(node.path)) {
           walk(node.children, depth + 1);
@@ -4302,7 +4280,7 @@ export default function Home() {
     walk(libraryTree, 0);
 
     return rows;
-  }, [collapsedGroups, folderTotals, libraryTree, rootListed, rootNotes]);
+  }, [collapsedGroups, libraryTree, rootListed, rootNotes]);
 
   const activeGroupPath = useMemo(() => {
     const segments = active.path.split("/");
@@ -8354,7 +8332,7 @@ export default function Home() {
               </p>
             )}
             {libraryRows.map(
-              ({ group, groupNotes, depth, empty, emptyDivider }) => {
+              ({ group, groupNotes, depth }) => {
               const collapsed = collapsedGroups.has(group);
 
               const aimedHere = Boolean(
@@ -8389,8 +8367,6 @@ export default function Home() {
                     group === activeGroupPath ? "active-section" : ""
                   } ${aimedHere ? "drop-target" : ""} ${
                     dragging ? "dragging" : ""
-                  } ${empty ? "empty-folder" : ""} ${
-                    emptyDivider ? "empty-folder-divider" : ""
                   }`}
                   key={group || "__root__"}
                   data-folder-path={group}

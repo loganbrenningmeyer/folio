@@ -1546,10 +1546,9 @@ body.resizing-panel .panel-resizer::after { background: var(--accent); }
   border-top: 1px solid var(--line);
 }
 
-/* Home, and empty folders shown on request, share the light dotted container
-   that marks somewhere structural rather than somewhere with pages to read. */
-.section-group[data-folder-path=""],
-.section-group.empty-folder[data-folder-path] {
+/* Home is the light dotted container that marks somewhere structural rather
+   than a folder of its own. */
+.section-group[data-folder-path=""] {
   padding: 5px;
   border: 1px dashed var(--line-strong);
   border-radius: 9px;
@@ -1559,46 +1558,10 @@ body.resizing-panel .panel-resizer::after { background: var(--accent); }
   margin-top: 0;
 }
 
-/* Nested empty folders keep their tree indent inside the dotted container. */
-.section-group.empty-folder:not([data-depth="0"]) {
-  padding-left: calc(var(--folder-depth, 0) * var(--indent-step) + 5px);
-}
-
-/* The first empty sibling sits below a labeled rule, separating the folders
-   that currently hold pages from the structural folders shown on request. */
-.section-group.empty-folder-divider[data-folder-path] {
-  margin-top: 58px;
-}
-
-.section-group.empty-folder-divider::after {
-  content: "Empty folders";
-  position: absolute;
-  top: -40px;
-  right: 0;
-  left: 0;
-  height: 28px;
-  padding: 7px 4px 1px;
-  border-top: 1px solid var(--line-strong);
-  color: var(--faint);
-  font-size: 9px;
-  font-weight: 650;
-  letter-spacing: .12em;
-  line-height: 1;
-  text-transform: uppercase;
-  pointer-events: none;
-}
-
 /* Give the first real folder below Home the normal spacing */
 .section-group[data-folder-path=""] +
 .section-group[data-depth="0"] {
   margin-top: 10px;
-}
-
-/* When every real top-level folder is empty, its divider still takes priority
-   over the ordinary Home-to-folder gap above. */
-.section-group[data-folder-path=""] +
-.section-group.empty-folder-divider[data-depth="0"] {
-  margin-top: 58px;
 }
 
 .library-empty { padding: 10px 6px; color: var(--muted); font-size: 11px; line-height: 1.6; }
