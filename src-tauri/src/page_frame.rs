@@ -252,6 +252,7 @@ if(href.charAt(0)==="#"){var id=decodeURIComponent(href.slice(1));var target=id?
 if(target)target.scrollIntoView({block:"start"});else scrollTo({top:0});return;}
 post({type:"link",href:href});});
 addEventListener("keydown",function(event){if(!(event.ctrlKey||event.metaKey||event.key==="Escape"))return;
+if((event.metaKey||event.ctrlKey)&&!event.shiftKey&&!event.altKey&&event.key.toLowerCase()==="f")event.preventDefault();
 post({type:"key",key:event.key,code:event.code,ctrlKey:event.ctrlKey,metaKey:event.metaKey,shiftKey:event.shiftKey,altKey:event.altKey});});
 })();</script>"##;
 
@@ -265,6 +266,17 @@ fn with_bridge(body: &[u8]) -> Vec<u8> {
     let mut output = String::with_capacity(text.len() + BRIDGE_SCRIPT.len());
     output.push_str(&text[..insert_at]);
     output.push_str(BRIDGE_SCRIPT);
+    output.push_str(r#"<script type="module">"#);
+    output.push_str(include_str!("../../app/reader-matches.js"));
+    output.push_str(r#"
+addEventListener("message", event => {
+  const data = event.data;
+  if (event.source !== parent || data?.folio !== 1 || data.type !== "find" ||
+      typeof data.query !== "string" || !Number.isSafeInteger(data.index)) return;
+  const result = findReaderMatch(document.body, data.query, data.index);
+  parent.postMessage({ folio: 1, type: "findResult", query: data.query, index: data.index, ...result }, "*");
+});
+</script>"#);
     output.push_str(&text[insert_at..]);
     output.into_bytes()
 }

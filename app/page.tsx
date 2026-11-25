@@ -13,6 +13,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { ReaderFind } from "./reader-find";
 import ReactMarkdown from "react-markdown";
 import CodeMirror from "@uiw/react-codemirror";
 import { snippet as applyCodeMirrorSnippet } from "@codemirror/autocomplete";
@@ -3248,12 +3249,23 @@ function StaticHtmlPage({
       }
       routeFrameLink(notePath, href, followRef.current);
     };
+    const forwardFind = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "f" || event.shiftKey || event.altKey ||
+          !(IS_APPLE_PLATFORM ? event.metaKey : event.ctrlKey)) return;
+      const shortcut = new KeyboardEvent("keydown", {
+        key: event.key, code: event.code, ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey, cancelable: true,
+      });
+      if (!window.dispatchEvent(shortcut)) event.preventDefault();
+    };
+    frameDocument.addEventListener("keydown", forwardFind);
     frameDocument.addEventListener("click", onClick);
 
     cleanupRef.current = () => {
       cancelled = true;
       resize.disconnect();
       frameDocument.removeEventListener("click", onClick);
+      frameDocument.removeEventListener("keydown", forwardFind);
     };
   }, [notePath]);
 
@@ -8856,6 +8868,10 @@ export default function Home() {
             </span>
           </div>
 
+          {view !== "editor" && (
+            <ReaderFind key={active.id} body={markdownBodyRef} content={active.content}
+              blocked={Boolean(preferencePanel || searchOpen || createKind || entryMenu)} />
+          )}
           <div className={`reading-scroll mode-${view}`}>
             {(view === "preview" || view === "split") && (
               <article

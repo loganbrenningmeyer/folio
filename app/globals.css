@@ -4598,3 +4598,26 @@ body.dragging-page .page-row { cursor: grabbing; }
   color: var(--accent-ink);
   outline: none;
 }
+
+.reader-find {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+}
+.reader-find input {
+  min-width: 0;
+  width: 15rem;
+  padding: 4px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--paper);
+  color: inherit;
+}
+.reader-find span { white-space: nowrap; font-size: 12px; color: var(--muted); }
+.reader-find button { display: grid; place-items: center; padding: 4px; }
+.reader-find button:disabled { opacity: .4; }
